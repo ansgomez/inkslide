@@ -90,3 +90,11 @@ As in `git log`:
 ## License
 
 By contributing you agree that your work is licensed under the MIT license of the project.
+
+## Releases
+
+Set the new version in `package.json` and `apps/desktop/package.json`, commit, then push a tag
+`v<version>` (for example `git tag v0.1.0 && git push origin v0.1.0`).
+`.github/workflows/release.yml` builds the AppImage and RPM, the Windows installer and the macOS
+DMGs and publishes them as a pre-release with `.github/release-notes.md`. Run the workflow by
+hand (Actions → Release → Run workflow) to build the packages without publishing them.

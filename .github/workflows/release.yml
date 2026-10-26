@@ -1,0 +1,82 @@
+name: Release
+
+# A tag v<version> builds the desktop packages on Linux, Windows and macOS and
+# publishes them as a GitHub release. Run by hand (Actions → Release → Run
+# workflow) it only builds them and keeps them as workflow artifacts.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            args: --linux AppImage rpm
+          - os: windows-latest
+            args: --win nsis
+          - os: macos-latest
+            args: --mac dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Check that the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME does not match version $version"; exit 1; }
+      - name: Install rpmbuild
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @inkslide/web build
+      - name: Package
+        shell: bash
+        env:
+          # Unsigned builds: no code signing certificate is used.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: node apps/desktop/scripts/dist.mjs ${{ matrix.args }} --publish never
+      - uses: actions/upload-artifact@v7
+        with:
+          name: inkslide-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/dist/*.AppImage
+            apps/desktop/dist/*.rpm
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.dmg
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd packages && sha256sum * > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" packages/* \
+            --title "Inkslide ${GITHUB_REF_NAME#v}" \
+            --notes-file .github/release-notes.md \
+            --prerelease

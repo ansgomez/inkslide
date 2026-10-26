@@ -1,8 +1,9 @@
 # Installing Inkslide
 
-Inkslide is pre-release software (0.1). No release builds are published yet; when they are,
-they will be on the [Releases](https://github.com/ansgomez/inkslide/releases) page. Until
-then, build it from source as below.
+Inkslide is pre-release software (0.1). Ready-made packages for Linux (AppImage, RPM), Windows
+and macOS are on the [Releases](https://github.com/ansgomez/inkslide/releases) page; they are
+not code-signed yet, and the release notes say how to open them. This page covers building
+Inkslide from source.
 
 ## Prerequisites
 
@@ -76,7 +77,8 @@ Screen. Notes are kept in the browser's storage for the site.
 
 ## Windows, macOS, iPad, Android
 
-Packaging is configured but has not been built or tested on those systems yet:
+The Windows and macOS packages are built by the release workflow
+(`.github/workflows/release.yml`) but have not been tested much on those systems yet:
 
 - **Windows and macOS:** see [apps/desktop/README.md](../apps/desktop/README.md#packaging)
   (`dist --win`, `dist --mac`; a DMG has to be built on a Mac).

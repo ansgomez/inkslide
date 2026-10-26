@@ -35,26 +35,19 @@ automatically in a separate notes file; the PDF itself is never modified.
 
 | Platform | App | State |
 |---|---|---|
-| Linux | Electron | Works; AppImage (RPM configured) |
+| Linux | Electron | Works; AppImage and RPM |
 | Browser | PWA | Works; installable and offline |
-| Windows, macOS | Electron | Configured, not yet tested |
+| Windows, macOS | Electron | Builds published, not yet tested much |
 | iPad, Android | PWA, Tauri 2 | Builds, not yet tested on a device |
 
 ## Install
 
-No release builds are published yet. To build the Linux AppImage
-([Node.js](https://nodejs.org/) 22.13+ and pnpm 9 needed):
+Download the AppImage or RPM (Linux), the installer (Windows) or the DMG (macOS) from the
+[Releases](https://github.com/ansgomez/inkslide/releases) page. The builds are not code-signed
+yet; the release notes say how to open them on Windows and macOS.
 
-```sh
-git clone https://github.com/ansgomez/inkslide.git
-cd inkslide
-pnpm install
-pnpm --filter @inkslide/desktop dist:linux
-apps/desktop/dist/Inkslide-0.1.0-x86_64.AppImage
-```
-
-[docs/INSTALL.md](docs/INSTALL.md) covers the prerequisites, the RPM, the browser app and the
-other platforms.
+The browser app, building from source and the iPad and Android shells are covered in
+[docs/INSTALL.md](docs/INSTALL.md).
 
 ## Usage
 
