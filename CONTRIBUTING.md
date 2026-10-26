@@ -2,8 +2,8 @@
 
 ## Setup
 
-Node.js 22.13 or newer and pnpm 9 (the repository pins 9.15.9); see the
-[README](README.md#linux-fedora-wayland-build-the-appimage) for installing them on Fedora.
+Node.js 22.13 or newer and pnpm 9 (the repository pins 9.15.9); see
+[docs/INSTALL.md](docs/INSTALL.md) for installing them on Fedora.
 
 ```sh
 pnpm install
