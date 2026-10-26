@@ -23,7 +23,7 @@ jobs:
           - os: windows-latest
             args: --win nsis
           - os: macos-latest
-            args: --mac dmg
+            args: --mac dmg --arm64 --x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
