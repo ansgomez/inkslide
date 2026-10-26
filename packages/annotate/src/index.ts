@@ -1,0 +1,26 @@
+/* @inkslide/annotate - public entry point.
+ * Each module is also importable on its own (e.g. '@inkslide/annotate/geometry').
+ * The stylesheet is '@inkslide/annotate/toolbar.css'.
+ */
+export * as geometry from './geometry';
+export * as model from './model';
+export * as render from './render';
+export * as input from './input';
+export * as tools from './tools';
+export * as toolbar from './toolbar';
+export * as pages from './pages';
+export * as io from './io';
+export * as app from './app';
+
+export type { Point, Vec2, XY, Stroke, StrokeTool, BBox, OutlineEngine } from './geometry';
+export { NotesDoc, History, createStroke } from './model';
+export type { Deck, DeckInit, Page, SlidePage, BlankPage, Paper, Size, Command, NotesJSON } from './model';
+export type { Layer, Laser } from './render';
+export type { Surface, Tool, ToolId, Tools, Prefs, Selection, ToolHost } from './tools';
+export type { InputHost, InputController, PenButton } from './input';
+export type { ToolbarHost, ToolbarGroup, ToolbarItem, Shortcut, Toolbar } from './toolbar';
+export type { PagesController, PagesHost } from './pages';
+export type { PlatformAdapter, PdfFile, PdfInfo, LoadResult, NotesBackup } from './io';
+export { createAnnotator } from './app';
+export type { Annotator, AnnotatorOptions } from './app';
+export { createAutosave, type Autosave, type AutosaveOptions, type AutosaveState } from './autosave';

@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "share-ios",
+  "description": "iOS: export and print through the share sheet, from a PDF in the app's tmp/ (where the share plugin expects it), removed at the next share.",
+  "windows": ["main"],
+  "platforms": ["iOS"],
+  "permissions": [
+    {
+      "identifier": "fs:scope",
+      "allow": [{ "path": "$TEMP/*.pdf" }]
+    },
+    "sharekit:allow-share-file"
+  ]
+}

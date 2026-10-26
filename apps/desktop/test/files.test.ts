@@ -1,0 +1,394 @@
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { canWriteIn, sameFile, writeFileAtomic } from '../src/main/fsutil';
+import {
+  backupBeforeSave, BACKUP_MIN_AGE_MS, hasBackup, isUsableNotes, notesWritePath, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup,
+  cleanupNotesStore, keepUnreadableFor, OLD_COPIES_MAX_AGE_DAYS,
+  revertToBackupFor, sha256OfBytes, writeNotesFor,
+} from '../src/main/notes';
+import { tempDir } from './helpers';
+
+const isRoot = !!process.getuid && process.getuid() === 0;
+const pdfBytes = new TextEncoder().encode('%PDF-1.4 test');
+const sha = sha256OfBytes(pdfBytes);
+
+function pdfIn(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, 'deck.pdf');
+  writeFileSync(p, pdfBytes);
+  return p;
+}
+
+describe('writeFileAtomic', () => {
+  it('writes and replaces, leaving no temp files', async () => {
+    const dir = tempDir();
+    const f = join(dir, 'a.json');
+    await writeFileAtomic(f, 'one');
+    await writeFileAtomic(f, new TextEncoder().encode('two'));
+    expect(readFileSync(f, 'utf8')).toBe('two');
+    expect(readdirSync(dir)).toEqual(['a.json']);
+  });
+  it('fails without touching the target when the folder is missing', async () => {
+    const f = join(tempDir(), 'nope', 'a.json');
+    await expect(writeFileAtomic(f, 'x')).rejects.toThrow();
+    expect(existsSync(f)).toBe(false);
+  });
+  it('writes a name that is near the length limit (the temp name is shorter)', async () => {
+    const dir = tempDir();
+    const f = join(dir, `${'n'.repeat(240)}.pdf.notes.json`);
+    await writeFileAtomic(f, 'long');
+    expect(readFileSync(f, 'utf8')).toBe('long');
+    expect(readdirSync(dir)).toHaveLength(1);
+  });
+  it.skipIf(process.platform === 'win32')('keeps the permissions of the file it replaces', async () => {
+    const f = join(tempDir(), 'shared.json');
+    writeFileSync(f, 'old');
+    chmodSync(f, 0o660);
+    await writeFileAtomic(f, 'new');
+    expect(statSync(f).mode & 0o777).toBe(0o660);
+  });
+  it.skipIf(process.platform === 'win32')('writes through a symlink, keeping the link', async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, 'synced'));
+    const target = join(dir, 'synced', 'deck.pdf.notes.json');
+    writeFileSync(target, 'old');
+    const link = join(dir, 'deck.pdf.notes.json');
+    symlinkSync(target, link);
+    await writeFileAtomic(link, 'new');
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe('new');
+  });
+  it.skipIf(isRoot)('keeps the old content when the write fails', async () => {
+    const dir = tempDir();
+    const f = join(dir, 'a.json');
+    writeFileSync(f, 'old');
+    chmodSync(dir, 0o555);
+    try {
+      await expect(writeFileAtomic(f, 'new')).rejects.toThrow();
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+    expect(readFileSync(f, 'utf8')).toBe('old');
+    expect(readdirSync(dir)).toEqual(['a.json']);
+  });
+});
+
+describe('sameFile', () => {
+  it('sees one file through links and other spellings', async () => {
+    const dir = tempDir();
+    const pdf = pdfIn(dir);
+    expect(await sameFile(pdf, join(dir, '.', 'deck.pdf'))).toBe(true);
+    linkSync(pdf, join(dir, 'hard.pdf'));
+    expect(await sameFile(join(dir, 'hard.pdf'), pdf)).toBe(true);
+    if (process.platform !== 'win32') {
+      symlinkSync(pdf, join(dir, 'soft.pdf'));
+      expect(await sameFile(join(dir, 'soft.pdf'), pdf)).toBe(true);
+    }
+    writeFileSync(join(dir, 'other.pdf'), pdfBytes);
+    expect(await sameFile(join(dir, 'other.pdf'), pdf)).toBe(false);
+    expect(await sameFile(join(dir, 'missing.pdf'), pdf)).toBe(false);
+  });
+});
+
+describe('notes location', () => {
+  it('uses the sidecar when the folder is writable', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(join(dir, 'lectures'));
+    expect(await canWriteIn(join(dir, 'lectures'))).toBe(true);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBeNull();
+    const written = await writeNotesFor({ path: pdf, sha256: sha }, '{"a":1}', ud);
+    expect(written).toBe(`${pdf}.notes.json`);
+    expect(await readNotesFor({ path: pdf }, ud)).toBe('{"a":1}');
+    expect(existsSync(join(ud, 'notes'))).toBe(false);
+  });
+
+  it.skipIf(isRoot)('falls back to userData/notes/<sha256> when the folder is read-only', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(join(dir, 'ro'));
+    chmodSync(join(dir, 'ro'), 0o555);
+    try {
+      expect(await notesWritePath({ path: pdf }, ud)).toBe(join(ud, 'notes', `${sha}.notes.json`));
+      await writeNotesFor({ path: pdf }, 'fallback', ud); // hash computed from the file
+      expect(await readNotesFor({ path: pdf }, ud)).toBe('fallback');
+      expect(existsSync(`${pdf}.notes.json`)).toBe(false);
+    } finally {
+      chmodSync(join(dir, 'ro'), 0o755);
+    }
+  });
+
+  it.skipIf(isRoot)('falls back when the sidecar itself is read-only', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    writeFileSync(`${pdf}.notes.json`, 'old');
+    chmodSync(`${pdf}.notes.json`, 0o444);
+    expect(await notesWritePath({ path: pdf, sha256: sha }, ud)).toBe(join(ud, 'notes', `${sha}.notes.json`));
+    // The notes written to app storage are the ones read back, not the old sidecar.
+    utimesSync(`${pdf}.notes.json`, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    await writeNotesFor({ path: pdf, sha256: sha }, 'new', ud);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('new');
+    expect(readFileSync(`${pdf}.notes.json`, 'utf8')).toBe('old');
+  });
+
+  it('reads app storage when it is newer than the sidecar (folder was read-only for a while)', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    writeFileSync(`${pdf}.notes.json`, 'stale');
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(`${pdf}.notes.json`, past, past);
+    await writeNotesFor({ path: null, sha256: sha }, 'newer', ud);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('newer');
+    // The next write goes to the (writable) sidecar, which is then the newest.
+    await writeNotesFor({ path: pdf, sha256: sha }, 'latest', ud);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('latest');
+  });
+
+  it('falls back to app storage when writing the sidecar fails', async () => {
+    // A sidecar path that passes the access probe but cannot be replaced (also
+    // what Windows ACLs do, which fs.access ignores).
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    mkdirSync(`${pdf}.notes.json`);
+    expect(await writeNotesFor({ path: pdf, sha256: sha }, 'saved', ud)).toBe(join(ud, 'notes', `${sha}.notes.json`));
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('saved');
+  });
+
+  it('reads a sidecar that changed after app storage was written, even with an older time', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const sidecar = `${pdf}.notes.json`;
+    const past = new Date(Date.now() - 3600_000);
+    // The sidecar cannot be written for a while: notes go to app storage.
+    mkdirSync(sidecar);
+    await writeNotesFor({ path: pdf, sha256: sha }, 'while-blocked', ud);
+    rmSync(sidecar, { recursive: true });
+    // A sidecar restored from a backup (older time) is what the user wants back.
+    writeFileSync(sidecar, 'restored');
+    utimesSync(sidecar, past, past);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('restored');
+    // A later sidecar write wins over the app-storage copy whatever its time.
+    await writeNotesFor({ path: pdf, sha256: sha }, 'latest', ud);
+    utimesSync(sidecar, past, past);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('latest');
+    // A broken record: the newer file wins, as without one.
+    writeFileSync(join(ud, 'notes', `${sha}.sidecar.json`), '{ broken');
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('while-blocked');
+  });
+
+  it.skipIf(isRoot)('keeps reading app storage while the sidecar stays as it was', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const sidecar = `${pdf}.notes.json`;
+    writeFileSync(sidecar, 'old');
+    chmodSync(sidecar, 0o444);
+    await writeNotesFor({ path: pdf, sha256: sha }, 'one', ud);
+    await writeNotesFor({ path: pdf, sha256: sha }, 'two', ud);
+    // Even if the sidecar looks newer (clock, copy), it has not changed since.
+    const future = new Date(Date.now() + 3600_000);
+    utimesSync(sidecar, future, future);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('two');
+  });
+
+  it('stores notes of a PDF without a path by hash (given or computed)', async () => {
+    const ud = tempDir();
+    await writeNotesFor({ path: null, bytes: pdfBytes }, 'mem', ud);
+    expect(readFileSync(join(ud, 'notes', `${sha}.notes.json`), 'utf8')).toBe('mem');
+    expect(await readNotesFor({ path: null, sha256: sha }, ud)).toBe('mem');
+    expect(await readNotesFor({ path: null }, ud)).toBeNull();
+    await expect(writeNotesFor({ path: null }, 'x', ud)).rejects.toThrow(/sha256/);
+    await expect(writeNotesFor({ path: null, sha256: '../x' }, 'x', ud)).rejects.toThrow(/sha256/);
+  });
+
+  it('prefers the sidecar over app storage when reading, unless app storage is newer', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    await writeNotesFor({ path: null, sha256: sha }, 'stored', ud);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('stored');
+    writeFileSync(`${pdf}.notes.json`, 'sidecar');
+    // Same modification time: the sidecar wins.
+    const t = new Date();
+    utimesSync(`${pdf}.notes.json`, t, t);
+    utimesSync(join(ud, 'notes', `${sha}.notes.json`), t, t);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('sidecar');
+  });
+});
+
+describe('notes backup', () => {
+  /** A notes file with `n` strokes on page 1. */
+  const notes = (n: number): string => JSON.stringify({
+    format: 'marp-notes', version: 2, deck: { source: 'pdf', sha256: sha },
+    pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: Array.from({ length: n }, (_, i) => ({ id: `s${i}`, tool: 'pen', color: '#000', size: 3, points: [[i, 0, 0.5], [i, 9, 0.5]] })) }],
+  });
+  const backupFile = (ud: string) => join(ud, 'notes', `${sha}.notes.backup.json`);
+  const age = (file: string, ms: number) => utimesSync(file, new Date(Date.now() - ms), new Date(Date.now() - ms));
+
+  it('knows usable notes: valid and not empty', () => {
+    expect(isUsableNotes(notes(1))).toBe(true);
+    expect(isUsableNotes(notes(0))).toBe(false);
+    expect(isUsableNotes(JSON.stringify({ format: 'marp-notes', version: 2, deck: {}, pages: [{ id: 'b-1', kind: 'blank', after: 1, strokes: [] }] }))).toBe(true);
+    expect(isUsableNotes('{ broken')).toBe(false);
+    expect(isUsableNotes(JSON.stringify({ format: 'marp-notes', version: 99, deck: {}, pages: [] }))).toBe(false);
+  });
+
+  it('a save copies the saved notes to app storage first, at most every 2 minutes', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const t = { path: pdf, sha256: sha };
+    await writeNotesFor(t, notes(1), ud, true); // nothing saved yet: no backup
+    expect(existsSync(backupFile(ud))).toBe(false);
+    await writeNotesFor(t, notes(2), ud, true);
+    expect(readFileSync(backupFile(ud), 'utf8')).toBe(notes(1));
+    expect(readFileSync(`${pdf}.notes.json`, 'utf8')).toBe(notes(2));
+    await writeNotesFor(t, notes(3), ud, true); // backup is fresh: kept
+    expect(readFileSync(backupFile(ud), 'utf8')).toBe(notes(1));
+    age(backupFile(ud), BACKUP_MIN_AGE_MS + 1000);
+    await writeNotesFor(t, notes(4), ud, true);
+    expect(readFileSync(backupFile(ud), 'utf8')).toBe(notes(3));
+    expect(readdirSync(dir).sort()).toEqual(['deck.pdf', 'deck.pdf.notes.json']); // never next to the PDF
+    const b = await readBackupFor(t, ud);
+    expect(b?.text).toBe(notes(3));
+    expect(Math.abs(b!.time - statSync(backupFile(ud)).mtimeMs)).toBeLessThan(1);
+  });
+
+  it('never copies unreadable, invalid or empty notes, and not with backups off', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const t = { path: pdf, sha256: sha };
+    for (const bad of ['{ broken', notes(0), JSON.stringify({ format: 'marp-notes', version: 99, deck: {}, pages: [] })]) {
+      writeFileSync(`${pdf}.notes.json`, bad);
+      await writeNotesFor(t, notes(1), ud, true);
+      expect(existsSync(backupFile(ud))).toBe(false);
+    }
+    await writeNotesFor(t, notes(2), ud, false);
+    expect(existsSync(backupFile(ud))).toBe(false);
+    expect(await backupBeforeSave(t, ud)).toBe(true);
+    // An old valid backup is not replaced by a broken notes file.
+    age(backupFile(ud), BACKUP_MIN_AGE_MS + 1000);
+    writeFileSync(`${pdf}.notes.json`, '{ broken');
+    await writeNotesFor(t, notes(3), ud, true);
+    expect(readFileSync(backupFile(ud), 'utf8')).toBe(notes(2));
+  });
+
+  it('a failed backup does not stop the save', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    writeFileSync(`${pdf}.notes.json`, notes(1));
+    mkdirSync(backupFile(ud), { recursive: true }); // a folder where the backup should be
+    age(backupFile(ud), BACKUP_MIN_AGE_MS + 1000);
+    await writeNotesFor({ path: pdf, sha256: sha }, notes(2), ud, true);
+    expect(readFileSync(`${pdf}.notes.json`, 'utf8')).toBe(notes(2));
+  });
+
+  it.skipIf(isRoot)('backs up notes kept in app storage (read-only folder) under the same key', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(join(dir, 'ro'));
+    chmodSync(join(dir, 'ro'), 0o555);
+    try {
+      await writeNotesFor({ path: pdf }, notes(1), ud, true);
+      await writeNotesFor({ path: pdf }, notes(2), ud, true);
+      expect(readFileSync(backupFile(ud), 'utf8')).toBe(notes(1));
+    } finally {
+      chmodSync(join(dir, 'ro'), 0o755);
+    }
+  });
+
+  it('revert swaps the notes and the backup; a second revert undoes the first', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const t = { path: pdf, sha256: sha };
+    await expect(revertToBackupFor(t, ud)).rejects.toThrow(/no usable backup/);
+    await writeNotesFor(t, notes(1), ud, true);
+    await writeNotesFor(t, notes(2), ud, true);
+    expect(await hasBackup(t, ud)).toBe(true);
+    expect(await revertToBackupFor(t, ud)).toBe(notes(1));
+    expect(await readNotesFor(t, ud)).toBe(notes(1));
+    expect((await readBackupFor(t, ud))?.text).toBe(notes(2));
+    // The swapped backup is fresh: the next save keeps it, so revert can be undone.
+    await writeNotesFor(t, notes(1), ud, true);
+    expect((await readBackupFor(t, ud))?.text).toBe(notes(2));
+    await revertToBackupFor(t, ud);
+    expect(await readNotesFor(t, ud)).toBe(notes(2));
+    expect((await readBackupFor(t, ud))?.text).toBe(notes(1));
+  });
+
+  it.skipIf(isRoot)('a revert whose notes write fails leaves notes and backup as they were', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const t = { path: pdf, sha256: sha };
+    writeFileSync(`${pdf}.notes.json`, notes(2));
+    mkdirSync(join(ud, 'notes'), { recursive: true });
+    writeFileSync(backupFile(ud), notes(1));
+    chmodSync(`${pdf}.notes.json`, 0o444); // the sidecar cannot be written...
+    const blocker = join(ud, 'notes', `${sha}.notes.json`);
+    mkdirSync(join(blocker, 'x'), { recursive: true }); // ...nor app storage
+    age(blocker, 60_000);
+    await expect(revertToBackupFor(t, ud)).rejects.toThrow();
+    expect(readFileSync(`${pdf}.notes.json`, 'utf8')).toBe(notes(2));
+    expect(readFileSync(backupFile(ud), 'utf8')).toBe(notes(1));
+  });
+
+  it('switching backups off removes every backup, but not the unreadable copies or the notes', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    await writeNotesFor({ path: pdf, sha256: sha }, notes(1), ud);
+    await backupBeforeSave({ path: pdf, sha256: sha }, ud);
+    const other = 'b'.repeat(64);
+    for (const f of [`${other}.notes.backup.json`, `${other}.notes.unreadable.json`, `${other}.notes.json`, 'notes.backup.json', `${other}.notes.backup.json.bak`]) {
+      writeFileSync(join(ud, 'notes', f), 'x');
+    }
+    expect((await removeAllBackups(ud)).length).toBe(2);
+    expect(readdirSync(join(ud, 'notes')).sort()).toEqual(
+      [`${other}.notes.backup.json.bak`, `${other}.notes.json`, `${other}.notes.unreadable.json`, 'notes.backup.json'].sort());
+    expect(await removeAllBackups(tempDir())).toEqual([]); // no notes folder: fine
+    expect(await readBackupFor({ path: pdf, sha256: sha }, ud)).toBeNull();
+    expect(await hasBackup({ path: pdf, sha256: sha }, ud)).toBe(false);
+    writeFileSync(`${pdf}.notes.backup.json`, notes(1));
+    writeFileSync(`${pdf}.notes.backup-20260101-000000.json`, 'other');
+    await removeLegacyBackup(pdf);
+    await removeLegacyBackup(pdf); // none: fine
+    expect(readdirSync(dir).sort()).toEqual(['deck.pdf', 'deck.pdf.notes.backup-20260101-000000.json', 'deck.pdf.notes.json']);
+  });
+
+  it('keeps an unreadable notes file as it is, the latest one only', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const t = { path: pdf, sha256: sha };
+    expect(await keepUnreadableFor(t, ud)).toBeNull(); // no notes file
+    const bad = Buffer.from([0x7b, 0xff, 0xfe, 0x00, 0x20]); // not even UTF-8
+    writeFileSync(`${pdf}.notes.json`, bad);
+    const copy = await keepUnreadableFor(t, ud);
+    expect(copy).toBe(join(ud, 'notes', `${sha}.notes.unreadable.json`));
+    expect(readFileSync(copy!)).toEqual(bad);
+    writeFileSync(`${pdf}.notes.json`, '{ newer broken');
+    await keepUnreadableFor(t, ud);
+    expect(readFileSync(copy!, 'utf8')).toBe('{ newer broken');
+    // The next save replaces the notes; the copy stays, and is never backed up.
+    await writeNotesFor(t, notes(1), ud, true);
+    expect(readFileSync(copy!, 'utf8')).toBe('{ newer broken');
+    expect(existsSync(backupFile(ud))).toBe(false);
+  });
+
+  it(`deletes backups and unreadable copies older than ${OLD_COPIES_MAX_AGE_DAYS} days at startup`, async () => {
+    const ud = tempDir();
+    mkdirSync(join(ud, 'notes'));
+    const day = 24 * 60 * 60_000, now = Date.now();
+    const files = {
+      [`${'a'.repeat(64)}.notes.backup.json`]: 100,
+      [`${'b'.repeat(64)}.notes.backup.json`]: 10,
+      [`${'c'.repeat(64)}.notes.unreadable.json`]: 91,
+      [`${'d'.repeat(64)}.notes.unreadable.json`]: 89,
+      [`${'e'.repeat(64)}.notes.json`]: 400, // notes are never cleaned up
+      ['other.notes.backup.json']: 400,
+    };
+    for (const [name, days] of Object.entries(files)) {
+      const f = join(ud, 'notes', name);
+      writeFileSync(f, 'x');
+      utimesSync(f, new Date(now - days * day), new Date(now - days * day));
+    }
+    const removed = await cleanupNotesStore(ud, now);
+    expect(removed.map(f => f.slice(-30)).sort()).toEqual(
+      [`${'a'.repeat(64)}.notes.backup.json`, `${'c'.repeat(64)}.notes.unreadable.json`].map(f => join(ud, 'notes', f).slice(-30)).sort());
+    expect(readdirSync(join(ud, 'notes')).length).toBe(4);
+    expect(await cleanupNotesStore(tempDir())).toEqual([]);
+  });
+});

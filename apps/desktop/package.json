@@ -1,0 +1,44 @@
+{
+  "name": "@inkslide/desktop",
+  "productName": "Inkslide",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Annotate PDFs with a pen (Inkslide desktop app, Electron)",
+  "license": "MIT",
+  "author": "Andres Gomez <8250065+ansgomez@users.noreply.github.com>",
+  "homepage": "https://github.com/ansgomez/inkslide",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ansgomez/inkslide.git",
+    "directory": "apps/desktop"
+  },
+  "bugs": "https://github.com/ansgomez/inkslide/issues",
+  "main": "out/main.js",
+  "desktopName": "inkslide.desktop",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs && node scripts/dev.mjs",
+    "start": "node scripts/build.mjs && electron .",
+    "dist": "pnpm --filter @inkslide/web build && node scripts/dist.mjs",
+    "dist:linux": "pnpm --filter @inkslide/web build && node scripts/dist.mjs --linux AppImage",
+    "smoke": "node scripts/build.mjs && node test/smoke.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "icons": "node scripts/icons.mjs",
+    "install-dev-entry": "pnpm --filter @inkslide/web build && node scripts/build.mjs && node scripts/dev-entry.mjs install",
+    "uninstall-dev-entry": "node scripts/dev-entry.mjs uninstall"
+  },
+  "devDependencies": {
+    "@inkslide/annotate": "workspace:*",
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/node": "^22",
+    "electron": "39.8.10",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "exports": {
+    "./bridge": "./src/shared/bridge.ts"
+  }
+}

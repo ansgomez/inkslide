@@ -1,0 +1,25 @@
+{
+  "name": "@inkslide/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Annotate PDFs with a pen (Inkslide for iPad and Android, Tauri 2)",
+  "license": "MIT",
+  "author": "Andres Gomez <8250065+ansgomez@users.noreply.github.com>",
+  "homepage": "https://github.com/ansgomez/inkslide",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ansgomez/inkslide.git",
+    "directory": "apps/mobile"
+  },
+  "bugs": "https://github.com/ansgomez/inkslide/issues",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Inkslide (16-24 px)</title>
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="#1f2228"/>
+  <rect x="72" y="112" width="368" height="288" rx="24" fill="#ffffff"/>
+  <path d="M128 300 C176 210 224 350 272 270 S352 220 384 280" fill="none" stroke="#be1e3c" stroke-width="48" stroke-linecap="round"/>
+</svg>

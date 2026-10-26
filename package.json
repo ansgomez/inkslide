@@ -1,0 +1,27 @@
+{
+  "name": "inkslide",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pen-first PDF annotator for lecture slides: Electron desktop app, Tauri 2 shell for iPad and Android, and a PWA",
+  "license": "MIT",
+  "author": "Andres Gomez <8250065+ansgomez@users.noreply.github.com>",
+  "homepage": "https://github.com/ansgomez/inkslide",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ansgomez/inkslide.git"
+  },
+  "bugs": "https://github.com/ansgomez/inkslide/issues",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "dev": "pnpm -r --parallel --if-present dev",
+    "icons": "pnpm --filter @inkslide/desktop icons",
+    "notices": "node scripts/notices.mjs",
+    "demo": "pnpm --filter @inkslide/web demo"
+  }
+}

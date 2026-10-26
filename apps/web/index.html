@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#1c1c1e">
+  <!-- PWA (browser build): manifest, icons, iPad home-screen app with the page under a translucent status bar -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/favicon.ico" sizes="48x48" media="(prefers-color-scheme: light)">
+  <link rel="icon" href="/icons/favicon-dark.ico" sizes="48x48" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="/icons/favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
+  <link rel="icon" href="/icons/favicon-dark.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Inkslide">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Inkslide</title>
+  <script type="module" src="./src/main.ts"></script>
+</head>
+<body>
+  <main class="ink-stage" hidden>
+    <div class="ink-page">
+      <canvas class="ink-pdf" aria-label="PDF page"></canvas>
+      <canvas class="ink-live" aria-hidden="true"></canvas>
+    </div>
+  </main>
+  <section class="ink-empty">
+    <h1>Inkslide</h1>
+    <p>Open a PDF to write on it.</p>
+    <button type="button" class="ink-open">Open PDF…</button>
+    <p class="ink-hint">or drop a PDF on the window · Ctrl/Cmd+O</p>
+  </section>
+</body>
+</html>

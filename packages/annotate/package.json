@@ -1,0 +1,49 @@
+{
+  "name": "@inkslide/annotate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Annotation core of Inkslide: geometry, notes model, tools, input, SVG rendering, toolbar, notes file format",
+  "license": "MIT",
+  "author": "Andres Gomez <8250065+ansgomez@users.noreply.github.com>",
+  "homepage": "https://github.com/ansgomez/inkslide",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ansgomez/inkslide.git",
+    "directory": "packages/annotate"
+  },
+  "bugs": "https://github.com/ansgomez/inkslide/issues",
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./geometry": "./src/geometry.ts",
+    "./model": "./src/model.ts",
+    "./tools": "./src/tools.ts",
+    "./input": "./src/input.ts",
+    "./render": "./src/render.ts",
+    "./toolbar": "./src/toolbar.ts",
+    "./pages": "./src/pages.ts",
+    "./app": "./src/app.ts",
+    "./io": "./src/io.ts",
+    "./autosave": "./src/autosave.ts",
+    "./toolbar.css": "./src/toolbar.css"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "perfect-freehand": "^1.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "happy-dom": "^20.0.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,77 @@
+# electron-builder config for Inkslide (desktop).
+# The front end (apps/web/dist, built with base './') is copied to resources/web.
+appId: io.github.ansgomez.inkslide
+productName: Inkslide
+copyright: Copyright © 2026 Andres Gomez
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - "!out/**/*.map"
+extraResources:
+  - from: ../web/dist
+    to: web
+    filter: ["**/*"]
+# Next to the executable (and electron-builder's LICENSE.electron.txt and
+# LICENSES.chromium.html): the app's license and the third-party notices.
+extraFiles:
+  - from: ../../LICENSE
+    to: LICENSE.inkslide.txt
+  - from: ../../THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.md
+asar: true
+# Everything is bundled by esbuild; no runtime node_modules.
+npmRebuild: false
+buildDependenciesFromSource: false
+linux:
+  target: [AppImage, rpm]
+  category: Office;Viewer
+  # hicolor PNGs 16-512 from scripts/icons.mjs (assets/icon/inkslide.svg).
+  icon: build/icons
+  executableName: inkslide
+  # app_id / WM_CLASS = desktopName (package.json), so GNOME links the window to the entry.
+  syncDesktopName: true
+  # MimeType=application/pdf in the desktop entry: "Open With" only, not the
+  # default handler. No fileAssociations here, so no mime XML that would
+  # redefine application/pdf is installed.
+  mimeTypes: [application/pdf]
+  desktop:
+    entry:
+      Name: Inkslide
+      GenericName: PDF Annotator
+      Comment: Annotate PDFs with a pen
+      Keywords: pdf;annotate;pen;ink;slides;
+  artifactName: ${productName}-${version}-${arch}.${ext}
+rpm:
+  # Electron's runtime libraries on Fedora.
+  depends: [gtk3, libnotify, nss, libXScrnSaver, libXtst, xdg-utils, at-spi2-core, libuuid]
+  fpm: ["--rpm-rpmbuild-define=_build_id_links none"]
+win:
+  target: [nsis]
+  icon: build/icon.ico
+  # zip / portable / dir; the installer's name is under nsis.
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+  # No fileAssociations: electron-builder's would make Inkslide the default
+  # .pdf handler. build/installer.nsh registers "Open with" only.
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  include: build/installer.nsh
+  artifactName: ${productName}-Setup-${version}.${ext}
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  icon: build/icon.icns
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  category: public.app-category.productivity
+  # Listed as an alternate PDF handler (rank Alternate), not the default.
+  fileAssociations:
+    - ext: pdf
+      name: PDF Document
+      description: PDF document
+      role: Editor
+      rank: Alternate

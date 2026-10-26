@@ -1,0 +1,351 @@
+/* Inkslide web - page shell, viewer and overview styles
+ * The toolbar, annotation layer and banner styles come unchanged from
+ * @inkslide/annotate/toolbar.css. The overview styles are ported from the
+ * Marp Notes stylesheet (© Andres Gomez, MIT).
+ */
+
+:root {
+  --ink-bg: #3a3a3e;
+  color-scheme: dark;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--ink-bg);
+  color: #f2f2f2;
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  /* No double-tap or pinch zoom of the whole app (iPad Safari ignores user-scalable=no). */
+  touch-action: pan-x pan-y;
+}
+
+[hidden] { display: none !important; }
+
+/* ── Page area ────────────────────────────────────────────────── */
+
+.ink-stage {
+  /* Inset by the bar and by the safe areas (iPad status bar; toolbar.css). */
+  position: fixed;
+  top: max(var(--ann-off-top, 0px), env(safe-area-inset-top, 0px));
+  right: max(var(--ann-off-right, 0px), env(safe-area-inset-right, 0px));
+  bottom: max(var(--ann-off-bottom, 0px), env(safe-area-inset-bottom, 0px));
+  left: max(var(--ann-off-left, 0px), env(safe-area-inset-left, 0px));
+  overflow: hidden;
+  touch-action: none; /* gestures.ts handles pinch, pan and swipe */
+}
+
+.ink-page {
+  position: absolute;
+  transform-origin: 0 0;
+  background: #fff;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+  contain: layout size;
+}
+
+.ink-page > canvas,
+.ink-page > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.ink-page.is-blank > .ink-pdf { visibility: hidden; }
+
+/* The live stroke never takes input: events reach the SVG below. */
+.ink-live { pointer-events: none; z-index: 2; }
+.ink-live.is-hl { opacity: 0.35; mix-blend-mode: multiply; }
+.ink-page > svg.ann-page { z-index: 1; }
+
+/* ── Empty state ──────────────────────────────────────────────── */
+
+.ink-empty {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  padding: calc(16px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
+  overflow-y: auto;
+  text-align: center;
+}
+/* Spacers centre the content and shrink away when the recent files overflow (then it scrolls). */
+.ink-empty::before,
+.ink-empty::after { content: ""; flex: 1 0 0; }
+.ink-empty h1 { margin: 0 0 4px; font-size: 32px; font-weight: 600; letter-spacing: 0.01em; }
+.ink-empty p { margin: 0; opacity: 0.75; }
+.ink-empty .ink-hint { font-size: 13px; opacity: 0.55; }
+.ink-open {
+  appearance: none;
+  margin: 18px 0 10px;
+  padding: 12px 26px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--ann-active, #be1e3c);
+  color: #fff;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ink-open:hover { filter: brightness(1.1); }
+.ink-open:focus-visible { outline: 2px solid #8ab4ff; outline-offset: 2px; }
+
+/* Recent files (recent-list.ts, browser build). */
+.ink-recent {
+  width: min(480px, 100%);
+  margin-top: 28px;
+  text-align: left;
+}
+.ink-recent h2 {
+  margin: 0 0 8px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+.ink-recent ul { margin: 0; padding: 0; list-style: none; }
+.ink-recent-item {
+  display: flex;
+  align-items: stretch;
+  border-radius: 10px;
+}
+.ink-recent-item:hover { background: rgba(255, 255, 255, 0.07); }
+.ink-recent-open,
+.ink-recent-remove {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.ink-recent-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  text-align: left;
+}
+.ink-recent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.ink-recent-details { font-size: 12px; opacity: 0.6; font-variant-numeric: tabular-nums; }
+.ink-recent-remove {
+  width: 44px;
+  border-radius: 10px;
+  font-size: 20px;
+  opacity: 0.55;
+}
+.ink-recent-remove:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
+.ink-recent-open:focus-visible,
+.ink-recent-remove:focus-visible { outline: 2px solid #8ab4ff; outline-offset: -2px; }
+
+/* Action button in a banner ("Reload to update"). */
+.ink-banner-action {
+  appearance: none;
+  align-self: center;
+  margin: -4px 0;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.18);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ink-banner-action:hover { background: rgba(255, 255, 255, 0.28); }
+
+body.ink-dropping::after {
+  content: "Drop a PDF to open it";
+  position: fixed;
+  inset: 12px;
+  z-index: 2147483002;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed #8ab4ff;
+  border-radius: 16px;
+  background: rgba(10, 20, 40, 0.55);
+  color: #fff;
+  font: 600 22px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  pointer-events: none;
+}
+
+/* ── Unsaved indicator on the save button ─────────────────────── */
+
+.ann-btn[data-id="save"] { position: relative; }
+.ann-btn[data-id="save"].is-unsaved::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffb020;
+  box-shadow: 0 0 0 2px var(--ann-bar-bg);
+}
+.ann-btn[data-id="save"].is-error::after { background: #e5484d; }
+
+/* ── Page overview (overview.ts) ──────────────────────────────── */
+
+.ann-ov {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483001;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px); /* iPad status bar */
+  background: #121214;
+  color: var(--ann-fg);
+  font: 14px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ann-ov[hidden] { display: none; }
+.ann-ov-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 8px 8px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.ann-ov-title { font-size: 17px; font-weight: 600; }
+.ann-ov-count { margin-left: 4px; font-weight: 400; opacity: 0.6; font-variant-numeric: tabular-nums; }
+.ann-ov-hint { flex: 1; font-size: 13px; opacity: 0.6; }
+.ann-ov-close {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.ann-ov-close svg { width: 30px; height: 30px; }
+.ann-ov-close:hover { background: var(--ann-hover); }
+.ann-ov-grid {
+  position: relative; /* offsetParent of the thumbnails */
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 42vw), 1fr));
+  align-content: start;
+  gap: 18px;
+  padding: 18px 20px 32px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+.ann-ov-item {
+  appearance: none;
+  position: relative;
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15), 0 2px 8px rgba(0, 0, 0, 0.4);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: pan-y;
+}
+.ann-ov-item:hover { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4); }
+.ann-ov-item:focus-visible { outline: none; box-shadow: 0 0 0 3px #8ab4ff, 0 2px 8px rgba(0, 0, 0, 0.4); }
+.ann-ov-item.is-current { box-shadow: 0 0 0 4px var(--ann-active), 0 0 18px rgba(190, 30, 60, 0.6); }
+/* The button carries the aspect ratio and the tile clips: content-visibility
+   on the tile, or overflow on a grid item, would let the grid row collapse. */
+.ann-ov-item { aspect-ratio: var(--ann-ov-ratio, 16 / 9); }
+.ann-ov-tile {
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+  overflow: hidden;
+  content-visibility: auto; /* off-screen thumbnails are not rendered */
+}
+#ann-ov *, #ann-ov *::before, #ann-ov *::after {
+  animation: none !important;
+  transition: none !important;
+  view-transition-name: none !important;
+}
+.ann-ov-num, .ann-ov-badges {
+  position: absolute;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 12px;
+  background: rgba(20, 20, 22, 0.82);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.ann-ov-num { left: 6px; }
+.ann-ov-item.is-current .ann-ov-num { background: var(--ann-active); }
+.ann-ov-badges { right: 6px; }
+.ann-ov-badges:empty { display: none; }
+.ann-ov-badge { display: inline-flex; align-items: center; gap: 2px; }
+.ann-ov-badge svg { width: 16px; height: 16px; }
+
+/* Thumbnail: the PDF render with the notes SVG on top. */
+.ann-ov-tile { position: relative; background: #fff; }
+.ann-ov-tile > canvas,
+.ann-ov-tile > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+@media print {
+  .ann-ov, .ink-empty { display: none !important; }
+}
+
+/* ── Print (print.ts): only the page images ───────────────────── */
+
+.ink-print { display: none; }
+@media print {
+  html.ink-printing, body.ink-printing {
+    height: auto;
+    overflow: visible;
+    background: #fff;
+  }
+  body.ink-printing > :not(.ink-print) { display: none !important; }
+  body.ink-printing > .ink-print { display: block; }
+  .ink-print-page {
+    width: 100%;
+    max-height: 100vh;
+    overflow: hidden;
+    break-inside: avoid;
+    break-after: page;
+  }
+  .ink-print-page:last-child { break-after: auto; }
+  .ink-print-page > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+}

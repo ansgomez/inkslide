@@ -1,0 +1,87 @@
+/* Inkslide web - entry point: page shell, platform adapter, open requests */
+import '@inkslide/annotate/toolbar.css';
+import './style.css';
+import { banner } from './banner';
+import { getAdapter, isWebAdapter } from './platform';
+import { setupPwa } from './pwa';
+import { createViewer } from './viewer';
+
+const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
+
+const adapter = getAdapter();
+const viewer = createViewer({
+  stage: $('.ink-stage'),
+  page: $('.ink-page'),
+  pdfCanvas: $('canvas.ink-pdf'),
+  liveCanvas: $('canvas.ink-live'),
+  empty: $('.ink-empty'),
+}, adapter);
+
+document.body.dataset.platform = adapter.platform;
+$('.ink-open').addEventListener('click', () => void viewer.openFrom());
+
+// Drag and drop: a PDF opens, a .json imports notes into the open PDF.
+const hasFiles = (e: DragEvent): boolean => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+window.addEventListener('dragover', e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer!.dropEffect = 'copy';
+  document.body.classList.add('ink-dropping');
+});
+window.addEventListener('dragleave', e => {
+  if (!e.relatedTarget) document.body.classList.remove('ink-dropping');
+});
+window.addEventListener('drop', e => {
+  document.body.classList.remove('ink-dropping');
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  const files = [...e.dataTransfer!.files];
+  const pdf = files.find(f => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
+  const json = files.find(f => /\.json$/i.test(f.name));
+  if (pdf) void viewer.openFile(pdf);
+  else if (json && viewer.session) void json.text().then(text => viewer.importNotes({ name: json.name, text }));
+  else banner('Drop a PDF to open it, or a notes .json file to import it.', 'warn');
+});
+
+// Browser build: service worker, recent files, launchQueue (pwa.ts).
+const web = isWebAdapter(adapter) ? adapter : null;
+if (web) setupPwa(viewer, web, $('.ink-empty'));
+
+// Files the OS asks the app to open while it runs.
+if (adapter.onOpenRequest) adapter.onOpenRequest(path => void viewer.openFrom(path));
+
+// Native menu commands (Electron) that need the front end.
+if (window.inkslide) {
+  window.inkslide.onMenuCommand(command => {
+    if (command === 'export') void viewer.exportPdf();
+    else if (command === 'import-notes') void viewer.importNotes();
+    else if (command === 'print') void viewer.print();
+    else if (command === 'revert-backup') void viewer.revertToBackup();
+  });
+}
+
+// Startup: the file from the command line (Electron), or ?pdf=<url> (web).
+void (async () => {
+  try {
+    const initial = adapter.initialPath ? await adapter.initialPath() : null;
+    const url = new URLSearchParams(location.search).get('pdf');
+    if (initial) await viewer.openFrom(initial);
+    else if (url && adapter.platform === 'web') await viewer.openFrom(url);
+  } catch (e) {
+    banner(`Could not open the file: ${(e as Error).message || e}`, 'error');
+  }
+})();
+
+// Leaving the page: write unsaved notes now.
+const flush = (): void => { if (viewer.session) void viewer.save(); };
+window.addEventListener('pagehide', flush);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+
+// Electron: the window closes (or the app quits) only after the notes are
+// written; if that fails, the user decides. pagehide cannot wait for a write.
+if (window.inkslide) {
+  window.inkslide.onCloseRequest(() => viewer.saveOrAsk('The notes could not be saved. Close anyway and lose the unsaved notes?'));
+}
+
+// For tests and debugging in the console.
+(window as unknown as { inkslideViewer: typeof viewer }).inkslideViewer = viewer;

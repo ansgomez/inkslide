@@ -1,0 +1,45 @@
+{
+  "name": "@inkslide/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Inkslide front end: PDF viewer with the Marp Notes annotation tools (web, Electron, Tauri)",
+  "license": "MIT",
+  "author": "Andres Gomez <8250065+ansgomez@users.noreply.github.com>",
+  "homepage": "https://github.com/ansgomez/inkslide",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ansgomez/inkslide.git",
+    "directory": "apps/web"
+  },
+  "bugs": "https://github.com/ansgomez/inkslide/issues",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:tauri": "vite build --mode tauri",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p sw/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "demo": "node scripts/record-demo.mjs"
+  },
+  "dependencies": {
+    "@choochmeque/tauri-plugin-sharekit-api": "0.3.1",
+    "@inkslide/annotate": "workspace:*",
+    "@inkslide/export": "workspace:*",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "@tauri-apps/plugin-fs": "^2.7.1",
+    "pdfjs-dist": "^6.4.299"
+  },
+  "devDependencies": {
+    "@inkslide/desktop": "workspace:*",
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^22",
+    "happy-dom": "^20.0.0",
+    "pdf-lib": "^1.17.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.12",
+    "vitest": "^3.2.4"
+  }
+}
