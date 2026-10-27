@@ -190,6 +190,17 @@ describe('annotator snapshot', () => {
     expect(messages[0]).toMatch(/Not pasted: A page can hold at most 32 images/);
   });
 
+  it('Clear page is enabled for a page with only images, and clears them', () => {
+    const { app, doc } = setup();
+    app.mount();
+    const clear = document.querySelector('.ann-bar [data-id="clear"]') as HTMLButtonElement;
+    expect(clear.disabled).toBe(true);
+    doc.addItems('p1', [], [img('i', 0, 0, 10, 10)]);
+    expect(clear.disabled).toBe(false);
+    clear.click();
+    expect(doc.images('p1')).toEqual([]);
+  });
+
   it('C selects the snapshot tool and Escape leaves it', () => {
     const { app } = setup();
     app.setTool('laser');

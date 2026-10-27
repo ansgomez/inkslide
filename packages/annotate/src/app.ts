@@ -157,6 +157,7 @@ export interface Annotator {
   currentTool(): Tool;
   activeSurface(): Surface | null;
   activeStrokes(): readonly Stroke[];
+  activeImages(): readonly PageImage[];
   toggle(on?: boolean): void;
   setTool(id: ToolId): void;
   currentColor(): string | null;
@@ -309,6 +310,10 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     activeStrokes() {
       const s = app.activeSurface();
       return s ? doc.strokes(s.pageId) : [];
+    },
+    activeImages() {
+      const s = app.activeSurface();
+      return s ? doc.images(s.pageId) : [];
     },
 
     toggle(on = !app.enabled) {

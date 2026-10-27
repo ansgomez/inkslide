@@ -108,6 +108,8 @@ export interface ToolbarHost {
   redo(): void;
   clearPage(): void;
   activeStrokes(): readonly Stroke[];
+  /** Images of the shown page (Clear page is enabled for them too). */
+  activeImages?(): readonly unknown[];
   deleteSelection(): void;
   select(sel: null): void;
   copySelection(): void;
@@ -207,7 +209,7 @@ registerGroup('history', app => ({
   items: [
     { id: 'undo', title: 'Undo (Ctrl/Cmd+Z)', icon: 'undo', onClick: () => app.undo(), disabled: () => !app.doc.history.canUndo() },
     { id: 'redo', title: 'Redo (Ctrl/Cmd+Shift+Z)', icon: 'redo', onClick: () => app.redo(), disabled: () => !app.doc.history.canRedo() },
-    { id: 'clear', title: 'Clear page (undoable)', icon: 'clear', onClick: () => app.clearPage(), disabled: () => !app.activeStrokes().length },
+    { id: 'clear', title: 'Clear page (undoable)', icon: 'clear', onClick: () => app.clearPage(), disabled: () => !app.activeStrokes().length && !(app.activeImages && app.activeImages().length) },
   ],
 }));
 
