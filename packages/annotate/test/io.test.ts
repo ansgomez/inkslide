@@ -117,8 +117,8 @@ describe('v1 load', () => {
   it('passes pages or strokes that are not arrays on to the model, which skips them', () => {
     const data = { ...v1File(), pages: 'pages' } as unknown as NotesJSON;
     const res = loadNotes(new NotesDoc(pdfDeck()), data);
-    expect(res.scaled).toBeNull();
-    expect(res.warnings).toContain('Skipped the pages: not a list');
+    expect(res.scaled).toBe(0.75); // page 1 fits
+    expect(res.warnings).toEqual(['Notes were made for "Signals – Übung 1", not "lecture.pdf"', 'Skipped the pages: not a list']);
     const odd = v1File();
     (odd.pages[0] as { strokes: unknown }).strokes = 'ab';
     const doc = new NotesDoc(pdfDeck());
@@ -153,6 +153,31 @@ describe('v1 load', () => {
     ]);
     expect(doc.strokes('p1')[0].size).toBe(3);
     expect(doc.strokes('p2')[0]).toMatchObject({ size: 4, points: [[100, 200, 0.5]] });
+  });
+
+  describe('the deck size matches when page 1 fits, whatever pages have ink', () => {
+    // pages 1 and 2 are 16:9 like the slides, page 3 is 4:3
+    const mixed = () => new NotesDoc(deckFromPdf({ title: 'Signals – Übung 1', pageSizes: [[960, 540], [960, 540], [720, 540]] }));
+    const file = (pages: NotesJSON['pages']): NotesJSON => ({ ...v1File(), pages });
+    const ink = { id: 'k', tool: 'pen' as const, color: '#000', size: 4, points: [[100, 200, 0.5]] as [number, number, number][] };
+
+    it('no pages', () => {
+      expect(loadNotes(mixed(), file([]))).toEqual({ warnings: [], notices: [], scaled: 0.75 });
+    });
+
+    it('only empty pages', () => {
+      const res = loadNotes(mixed(), file([{ id: 's1', kind: 'slide', slide: 1, strokes: [] }, { id: 's3', kind: 'slide', slide: 3, strokes: [] }]));
+      expect(res).toEqual({ warnings: [], notices: [], scaled: 0.75 });
+    });
+
+    it('ink only on the page that does not fit', () => {
+      const doc = mixed();
+      const res = loadNotes(doc, file([{ id: 's3', kind: 'slide', slide: 3, strokes: [ink] }]));
+      expect(res).toEqual({
+        warnings: ['Notes not scaled to the PDF (page aspect ratio differs): slide 3'], notices: [], scaled: 0.75,
+      });
+      expect(doc.strokes('p3')[0]).toMatchObject({ size: 4, points: [[100, 200, 0.5]] });
+    });
   });
 
   it('scales later pages when page 1 needs no scaling or does not fit', () => {

@@ -165,13 +165,16 @@ PDF exported from that deck. Its strokes are in slide px; the PDF is in points. 
   (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays.
   Only numbers are scaled: other values are left as they are, so the stroke is skipped as
   invalid on load;
-- a page whose aspect ratio differs is left unscaled; when other pages were scaled, one
-  warning names the pages left unscaled ("Notes not scaled to the PDF …");
+- a page with strokes whose aspect ratio differs is left unscaled; when page 1 or another
+  page fits, one warning names the pages left unscaled ("Notes not scaled to the PDF …");
 - pages beyond the PDF (kept, see above) are scaled with the size of page 1, since they are
   saved as v2 too;
-- the deck's `size` counts as matching once page 1 fits (no size warning then); if page 1
-  does not match, the size warning stays even when other pages are scaled;
-- if no page matches, nothing is scaled and only the size warning is shown.
+- the deck's `size` counts as matching whenever PDF page 1 fits, whether or not any page has
+  strokes (no size warning then); if page 1 does not fit, the size warning stays even when
+  other pages are scaled;
+- the scale reported (and shown in the banner) is page 1's if it fits and is not 1, else that
+  of the first page scaled, else none;
+- if no page fits, nothing is scaled and only the size warning is shown.
 
 Marp exports 1280×720 px slides as 960×540 pt pages, so the usual scale is 0.75. The app says
 so in a banner. Once saved, the notes are a v2 file.
