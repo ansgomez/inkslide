@@ -201,11 +201,14 @@ test.describe('service worker', () => {
       (window as unknown as { inkslide: unknown }).inkslide = {
         platform: 'electron', onMenuCommand() {}, onCloseRequest() {}, openPdf: async () => null,
         readNotes: async () => null, writeNotes: async () => {}, exportPdf: async () => false,
+        initialPath: async () => null, recentFiles: async () => [], onRecentChanged() {},
       };
     });
     await page.goto('/');
     await page.waitForTimeout(500);
     expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
-    await expect(page.locator('.ink-recent')).toHaveCount(0);
+    // The desktop lists its own recent files (main process), not the browser's: none here.
+    await expect(page.locator('.ink-recent')).toHaveCount(1);
+    await expect(page.locator('.ink-recent')).toBeHidden();
   });
 });
