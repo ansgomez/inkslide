@@ -12,7 +12,7 @@
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
-import type { Size } from '@inkslide/annotate';
+import type { RectLike, Size } from '@inkslide/annotate';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -38,6 +38,11 @@ export interface PdfDoc {
   renderBitmap(n: number, scale: number, priority?: number): Promise<ImageBitmap>;
   /** Render page n into an existing canvas (thumbnails). */
   renderInto(canvas: HTMLCanvasElement, n: number, scale: number, priority?: number): Promise<void>;
+  /**
+   * Render only the area `rect` (points, as shown) of page n into `canvas`, whose size the caller
+   * sets (rect × scale): a snapshot.
+   */
+  renderArea(canvas: HTMLCanvasElement, n: number, rect: RectLike, scale: number, priority?: number): Promise<void>;
   destroy(): Promise<void>;
 }
 
@@ -119,6 +124,16 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
     },
     renderInto(canvas, n, scale, priority = PRIORITY.thumb) {
       return enqueue(priority, () => draw(canvas, n, scale));
+    },
+    renderArea(canvas, n, rect, scale, priority = PRIORITY.current) {
+      return enqueue(priority, async () => {
+        if (destroyed) throw new Error('document closed');
+        const page = pages[n - 1];
+        if (!page) throw new Error(`no page ${n}`);
+        // The offsets move the area's top-left corner to the canvas origin (after rotation).
+        const vp = page.getViewport({ scale, offsetX: -rect.x * scale, offsetY: -rect.y * scale });
+        await page.render({ canvas, viewport: vp, background: '#ffffff' }).promise;
+      });
     },
     async destroy() {
       destroyed = true;
