@@ -32,10 +32,6 @@ desktop app uses Electron.
   print through a real printer dialog on Linux, Windows and macOS.
 - **Stroke look:** choose between perfect-freehand and the classic Marp Notes outline and tune
   `FREEHAND_OPTIONS`.
-- **Copy and paste:** copy, cut and paste selected strokes (Ctrl+C, Ctrl+X, Ctrl+V, plus
-  buttons for pen-only use), across pages and documents. Pasted strokes get new ids, keep their
-  position (offset on the same page), scale with the page size and are clamped to the page; one
-  undo step per paste. Ctrl+D duplicates.
 - **Backups beyond the desktop:** the browser, PWA and Tauri apps keep no notes backup; revisit
   for Tauri after the device tests.
 - **Later:** a presenter mode that mirrors page, ink and laser on a second window; opening Marp

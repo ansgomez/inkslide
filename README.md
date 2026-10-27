@@ -60,6 +60,7 @@ the file manager. It opens ready to write on.
 | E, Shift+E | Stroke eraser, partial eraser |
 | 1–4 | Size |
 | Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
+| Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+D | Copy, cut, paste, duplicate the selected strokes |
 | ← → | Previous, next page |
 | G, a number, Enter | Go to that page (G, Enter: overview) |
 | W | Fit width |

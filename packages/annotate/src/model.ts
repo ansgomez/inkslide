@@ -454,6 +454,11 @@ export class NotesDoc {
     return this.replaceStrokes(pageId, [...this.strokes(pageId), stroke], 'draw');
   }
 
+  /** Add strokes on top of a page in one command (a paste); their ids must be new. */
+  addStrokes(pageId: string, strokes: readonly Stroke[], label = 'paste'): Command | null {
+    return this.replaceStrokes(pageId, [...this.strokes(pageId), ...strokes], label);
+  }
+
   removeStrokes(pageId: string, ids: readonly string[], label = 'delete'): Command | null {
     const gone = new Set(ids);
     return this.replaceStrokes(pageId, this.strokes(pageId).filter(s => !gone.has(s.id)), label);

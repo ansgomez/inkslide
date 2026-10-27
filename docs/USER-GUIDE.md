@@ -49,7 +49,7 @@ it to the next edge. The choice is remembered.
 |---|---|---|
 | Pen | P | Pressure-sensitive ink. Hold **Shift** to draw a straight line. |
 | Highlighter | H | Wide, transparent strokes, always drawn under the pen ink. Shift for a straight line. |
-| Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it; Delete or Backspace removes it; Esc deselects. |
+| Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it; Delete or Backspace removes it; Esc deselects. Copy, cut, paste and duplicate: see below. |
 | Laser pointer | L | A red trail that fades out. Never saved. |
 | Stroke eraser | E | Removes every stroke it touches. |
 | Partial eraser | Shift+E | Erases only the parts of strokes it touches. |
@@ -60,6 +60,24 @@ highlighter each remember their own color.
 **Sizes:** S, M, L, XL (keys **1**–**4**). Pen, highlighter and both erasers each remember
 their own size. Sizes are relative to the page: they look the same on a slide, a 960×540 PDF
 or an A4 page.
+
+## Copy and paste
+
+With strokes selected, **Ctrl/Cmd+C** copies them, **Ctrl/Cmd+X** cuts them and
+**Ctrl/Cmd+D** duplicates them on their page. **Ctrl/Cmd+V** pastes onto the shown page, also
+after turning the page or opening another PDF. The pasted strokes become the selection (the
+select tool is switched on), ready to drag into place. For writing with the pen alone, copy and
+cut buttons appear in the toolbar while strokes are selected, and a paste button once something
+was copied.
+
+Pasted strokes keep their place on the page. Where they would cover the strokes they were
+copied from (or an earlier paste), they are moved a little down and to the right, a bit further
+with every paste. On a page of another size they are scaled with the page, and they are always
+kept on the page. A paste, a cut and a duplicate are each one undo step.
+
+Copied strokes also go on the system clipboard where the platform allows it (as text that
+other programs show as JSON), so Ctrl/Cmd+V pastes them into Inkslide in another browser
+window or tab too.
 
 **Undo** (Ctrl/Cmd+Z) and **redo** (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y) work per finished stroke,
 erase, move or page change. **Clear page** (trash button) removes all ink on the page and can

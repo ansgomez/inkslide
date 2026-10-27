@@ -20,6 +20,7 @@ import '@inkslide/annotate/toolbar.css';
 | `geometry` | no | Smoothing, pressure width, stroke outlines (classic Marp outline or perfect-freehand), bounding boxes, hit tests, partial erase, lasso, laser trail. |
 | `model` | no | `NotesDoc` (pages, blank pages, kept pages, change events), `History` (undo/redo), `createStroke`, the notes file JSON (`toJSON` / `load`), deck warnings. |
 | `io` | no | Notes file text (`serializeNotes`, `parseNotes`, `loadNotes`), v1 to PDF scaling, `deckFromPdf`, `sha256Hex`, the sidecar name, the `PlatformAdapter` interface. |
+| `clipboard` | no | Copy and paste of strokes: the window's clip, its system clipboard text, `placeClip` (new ids, scaling, offset, clamping). |
 | `autosave` | no | `createAutosave`: debounced, serialized, retried writes and the saved / dirty / saving / error state. |
 | `tools` | no¹ | Pen, highlighter, selector, laser, erasers; colors, sizes, prefs. |
 | `input` | yes | Pointer routing to the tools, pen buttons, palm rejection, two-finger swipe. |
