@@ -231,4 +231,20 @@ describe('tools with a real NotesDoc', () => {
       expect(doc.history.top()!.label).toBe('clear');
     }
   });
+
+  it('an erase survives another window pushing equal strokes mid-gesture', () => {
+    for (const id of ['eraser', 'partial'] as const) {
+      const doc = pdfDoc();
+      const t = createTools(host(doc), noop)[id];
+      doc.addStroke('p1', stroke('a'));
+      doc.addStroke('p1', stroke('b', [[300, 300, 0.5], [350, 300, 0.5]]));
+      const s = surf('p1', pageUnit(A4));
+      t.down!(s, [30, 35, 0.5]); // erases a
+      // the peer sends the page back unchanged: new stroke objects, same content
+      doc.applyRemoteStrokes('p1', JSON.parse(JSON.stringify(doc.strokes('p1'))));
+      t.up!(s, null);
+      expect(doc.strokes('p1').map(x => x.id)).not.toContain('a');
+      expect(doc.strokes('p1').map(x => x.id)).toContain('b');
+    }
+  });
 });

@@ -194,6 +194,13 @@ function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
 
 // ── Erasers ────────────────────────────────────────────────────
 
+/** Same tool, color, size and points (the id is compared by the caller). */
+function sameStroke(a: Stroke, b: Stroke): boolean {
+  if (a === b) return true;
+  if (a.tool !== b.tool || a.color !== b.color || a.size !== b.size || a.points.length !== b.points.length) return false;
+  return a.points.every((p, i) => p[0] === b.points[i][0] && p[1] === b.points[i][1] && p[2] === b.points[i][2]);
+}
+
 /**
  * Works on a private copy of the page; one command on release, which applies
  * only what was erased to the page as it is then (edits made meanwhile stay).
@@ -212,8 +219,9 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       if (base!.get(s.id) === s) left.delete(s.id); // untouched
       else left.get(origin!.get(s.id)!)!.push(s);
     }
-    // A stroke changed meanwhile (moved, restyled) is kept as it is now.
-    return current.flatMap(s => (left.has(s.id) && base!.get(s.id) === s ? left.get(s.id)! : [s]));
+    // A stroke changed meanwhile (moved, restyled) is kept as it is now. Compared by
+    // content: another window's push or undo rebuilds equal strokes as new objects.
+    return current.flatMap(s => (left.has(s.id) && sameStroke(base!.get(s.id)!, s) ? left.get(s.id)! : [s]));
   }
 
   const radius = (surface: Surface): number => sizeOf(app, id, surface);
