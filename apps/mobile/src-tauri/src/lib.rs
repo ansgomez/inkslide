@@ -20,6 +20,13 @@
 //!
 //! The dialog and fs plugins are still used from Rust (`DialogExt`, `FsExt`:
 //! content URIs on Android, security-scoped URLs on iOS).
+//!
+//! Known limit: on iOS and Android the dialog plugin's Rust API
+//! (`blocking_pick_file`, `blocking_save_file`) reports a failed dialog (no
+//! activity, a provider error) as `None`, the same as a cancel, so
+//! `pick_file` and `save_pdf` answer such a failure as "cancelled" (null,
+//! false) and the page shows nothing. The plugin gives no way to tell them
+//! apart on top of these calls.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -42,8 +49,11 @@ const NOTES_SUFFIX: &str = ".notes.json";
 const MAX_KEY_BYTES: usize = 200;
 /// Max. bytes of a shared file's name (200 before ".pdf", as `shareName` of tauri.ts).
 const MAX_SHARE_NAME_BYTES: usize = 204;
-/// Max. size of a PDF the web view hands over (export, share).
-const MAX_FILE_BYTES: usize = 1 << 30;
+/// Max. size of a PDF the web view hands over (export, share): `MAX_FILE_BYTES`
+/// of tauri.ts, which refuses larger files before encoding them. Android sends
+/// base64, a string a third larger, and web views cap strings at a few hundred
+/// MB; Tauri has also built the whole request before this check runs.
+const MAX_FILE_BYTES: usize = 256 << 20;
 
 /// A notes key (the PDF's SHA-256 in hex, or `name-<safe name>`): 1 to 200 of `[A-Za-z0-9_-]`.
 fn notes_key(key: &str) -> Result<&str, String> {
@@ -85,11 +95,12 @@ fn percent_decode(value: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|_| format!("not UTF-8: {value:?}"))
 }
 
-/// The file bytes and name of a request. Three forms:
+/// The file bytes and name of a request, in one of two forms:
 /// - a raw body with the name percent-encoded in the `name` header (iOS, desktop);
 /// - JSON `{ name, data }` with `data` a base64 string (Android, where Tauri
-///   has no raw bodies; a number array costs ~32 bytes per byte as JSON);
-/// - JSON `{ name, data }` with `data` an array of numbers 0..=255 (fallback).
+///   has no raw bodies).
+/// A JSON number array is refused: Tauri would hold it as a `serde_json::Value`
+/// of ~32 bytes per byte, unbounded, before any check here.
 fn payload<'a>(body: &'a InvokeBody, name_header: Option<&str>) -> Result<(Cow<'a, [u8]>, String), String> {
     match body {
         InvokeBody::Raw(bytes) => {
@@ -103,22 +114,12 @@ fn payload<'a>(body: &'a InvokeBody, name_header: Option<&str>) -> Result<(Cow<'
             let name = json.get("name").and_then(|n| n.as_str()).ok_or("missing name")?.to_owned();
             let bytes = match json.get("data") {
                 Some(serde_json::Value::String(b64)) => {
-                    if b64.len() / 4 * 3 > MAX_FILE_BYTES + 3 {
+                    if b64.len() > MAX_FILE_BYTES.div_ceil(3) * 4 {
                         return Err("file too large".into());
                     }
                     base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("bad base64: {e}"))?
                 }
-                Some(serde_json::Value::Array(items)) => {
-                    if items.len() > MAX_FILE_BYTES {
-                        return Err("file too large".into());
-                    }
-                    items
-                        .iter()
-                        .map(|v| v.as_u64().filter(|&b| b <= 255).map(|b| b as u8))
-                        .collect::<Option<Vec<u8>>>()
-                        .ok_or("data must be bytes (0 to 255)")?
-                }
-                _ => return Err("missing data: a base64 string or an array of bytes".into()),
+                _ => return Err("missing data: a base64 string".into()),
             };
             if bytes.len() > MAX_FILE_BYTES {
                 return Err("file too large".into());
@@ -218,18 +219,31 @@ async fn pick_file<R: Runtime>(app: AppHandle<R>, picked: State<'_, Picked>, kin
     Ok(app.dialog().file().add_filter(name, extensions).blocking_pick_file().map(|f| picked.add(f)))
 }
 
+/// Options to read a file. `OpenOptions::new()` of plugin-fs has `read: false`
+/// (only its JSON form defaults to true), which `std` refuses to open.
+fn read_options() -> OpenOptions {
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    opts
+}
+
+/// All bytes of the file `open` opens with [`read_options`].
+fn read_all(open: impl FnOnce(OpenOptions) -> std::io::Result<fs::File>) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open(read_options())?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 /// The bytes of a file picked with `pick_file` in this session; any other path is refused.
 #[tauri::command]
 async fn read_picked<R: Runtime>(app: AppHandle<R>, picked: State<'_, Picked>, id: String) -> Result<Response, String> {
     let file = picked.get(&id)?;
-    let mut bytes = Vec::new();
-    let read = app.fs().open(file.clone(), OpenOptions::new()).and_then(|mut f| f.read_to_end(&mut bytes));
+    let read = read_all(|opts| app.fs().open(file.clone(), opts));
     #[cfg(target_os = "ios")]
     let _ = app.fs().stop_accessing_security_scoped_resource(file);
     #[cfg(not(target_os = "ios"))]
     drop(file);
-    read.map_err(|e| e.to_string())?;
-    Ok(Response::new(bytes))
+    Ok(Response::new(read.map_err(|e| e.to_string())?))
 }
 
 /// Reads the notes of a PDF (app data `notes/<key>.notes.json`); null if there are none.
@@ -292,6 +306,15 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_sharekit::init())
         .manage(Picked::default())
+        .setup(|_app| {
+            // The smoke test (apps/mobile/test/smoke.mjs, built with --features smoke) can not use
+            // the picker: it hands over one file as if picked.
+            #[cfg(feature = "smoke")]
+            if let Some(path) = std::env::var_os("INKSLIDE_SMOKE_PICK") {
+                _app.state::<Picked>().add(FilePath::from(PathBuf::from(path)));
+            }
+            Ok(())
+        })
         // build.rs lists the same commands (an `allow-<command>` permission each).
         .invoke_handler(tauri::generate_handler![
             pick_file, read_picked, read_notes, write_notes, save_pdf, write_share_file, remove_share_file
@@ -380,12 +403,37 @@ mod tests {
     }
 
     #[test]
-    fn payload_json_number_array() {
+    fn payload_refuses_number_arrays() {
         let body = InvokeBody::Json(json!({ "name": "a.pdf", "data": [0, 37, 255] }));
-        assert_eq!(&*payload(&body, None).unwrap().0, &[0u8, 37, 255][..]);
-        for bad in [json!([256]), json!([-1]), json!([1.5]), json!(["1"]), json!([null])] {
-            assert!(payload(&InvokeBody::Json(json!({ "name": "a.pdf", "data": bad })), None).is_err(), "{bad}");
-        }
+        assert!(payload(&body, None).is_err());
+    }
+
+    #[test]
+    fn payload_size_limit() {
+        // Base64 of exactly MAX_FILE_BYTES zero bytes (256 MiB is 1 mod 3: the last group is "AA==").
+        assert_eq!(MAX_FILE_BYTES % 3, 1);
+        let body = "A".repeat(MAX_FILE_BYTES.div_ceil(3) * 4 - 4);
+        let ok = InvokeBody::Json(json!({ "name": "a.pdf", "data": format!("{body}AA==") }));
+        assert_eq!(payload(&ok, None).unwrap().0.len(), MAX_FILE_BYTES);
+        let one_more = InvokeBody::Json(json!({ "name": "a.pdf", "data": format!("{body}AAA=") }));
+        assert!(payload(&one_more, None).is_err());
+        let longer = InvokeBody::Json(json!({ "name": "a.pdf", "data": format!("{body}AAAAAAAA") }));
+        assert!(payload(&longer, None).is_err());
+        assert!(payload(&InvokeBody::Raw(vec![0; MAX_FILE_BYTES + 1]), Some("a.pdf")).is_err());
+        assert!(payload(&InvokeBody::Raw(vec![0; MAX_FILE_BYTES]), Some("a.pdf")).is_ok());
+    }
+
+    /// The read path of `read_picked`, with the options turned into std's as plugin-fs does on
+    /// the desktop and for iOS file URLs (Android content URIs map them to mode "r").
+    #[test]
+    fn reads_a_file_with_the_read_options() {
+        let path = std::env::temp_dir().join(temp_name("inkslide-read-test.pdf"));
+        fs::write(&path, b"%PDF-1.4 test").unwrap();
+        let bytes = read_all(|opts| std::fs::OpenOptions::from(opts).open(&path));
+        fs::remove_file(&path).unwrap();
+        assert_eq!(bytes.unwrap(), b"%PDF-1.4 test");
+        // What the read path did before: plugin-fs's OpenOptions::new() alone does not read.
+        assert!(std::fs::OpenOptions::from(OpenOptions::new()).open(std::env::temp_dir()).is_err());
     }
 
     #[test]
