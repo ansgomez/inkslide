@@ -4,7 +4,7 @@
  * The bar is built from groups in GROUP_ORDER. Each group builder is
  * registered with registerGroup(id, builder) and returns { id, label, items }
  * where an item is { id, title, icon | swatch | dot | text, onClick, active(),
- * disabled() }. The app registers its own builders for 'pages' (pages.ts
+ * disabled(), hidden() }. The app registers its own builders for 'pages' (pages.ts
  * pagesGroup) and 'file'; otherwise the disabled placeholders below are used.
  */
 import type { NotesDoc } from './model';
@@ -73,6 +73,8 @@ export interface ToolbarItem {
   onClick?: () => void;
   active?: () => boolean;
   disabled?: () => boolean;
+  /** Leave the button out of the bar for now (e.g. an action that has nothing to act on yet). */
+  hidden?: () => boolean;
 }
 
 /** A group of toolbar items. */
@@ -338,6 +340,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
       btn.classList.toggle('is-active', on);
       if (item.active) btn.setAttribute('aria-pressed', String(on));
       (btn as HTMLButtonElement).disabled = item.disabled ? !!item.disabled() : false;
+      btn.hidden = item.hidden ? !!item.hidden() : false;
     }
     setOffset();
   }

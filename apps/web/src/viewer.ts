@@ -51,6 +51,7 @@ const FIT_KEY = 'inkslide-fit-mode';
 const PAGE_KEYS = new Set(['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'PageDown', 'PageUp', ' ', 'Home', 'End']);
 
 ICONS.open = '<path d="M3 7V5a1 1 0 011-1h5l2 2h8a1 1 0 011 1v2"/><path d="M3 9h18l-2 10H5z"/>';
+ICONS.revert = '<path d="M3.5 12a8.5 8.5 0 102.5-6"/><path d="M3 3.5V9h5.5"/><path d="M12 7.5V12l3 2"/>';
 ICONS.fitWidth = '<path d="M7 3h10v18H7z"/><path d="M3 12h6M21 12h-6M5 10l-2 2 2 2M19 10l2 2-2 2"/>';
 
 /** Wait before reading saved notes that could not be read or loaded once more (a sync client may hold them). */
@@ -83,6 +84,8 @@ interface Session {
   defaultPaper: Paper;
   /** The page controller (also app.pages). */
   pages: ViewerPages;
+  /** The PDF has a notes backup (shows the Revert to Backup button). */
+  hasBackup: boolean;
   unbind: () => void;
 }
 
@@ -126,8 +129,9 @@ export interface Viewer {
    */
   saveOrAsk(question: string): Promise<boolean>;
   /**
-   * File → Revert to Backup… (desktop): save, ask, swap the saved notes and
-   * the backup, and load the notes again (no undo step).
+   * Revert to Backup (desktop: File menu; browser: File group of the
+   * toolbar): save, ask, swap the saved notes and the backup, and load the
+   * notes again (no undo step).
    */
   revertToBackup(): Promise<void>;
 }
@@ -149,6 +153,12 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
   let printing = false;
   /** Bitmap key on the PDF canvas (to skip redundant draws). */
   let shownKey = '';
+
+  /**
+   * Revert to Backup is a toolbar button where the adapter has backups but no
+   * menu for it (browser, PWA); the desktop has File → Revert to Backup….
+   */
+  const backupButton = adapter.platform !== 'electron' && !!adapter.revertToBackup;
 
   const dpr = (): number => window.devicePixelRatio || 1;
   const ask = (message: string): Promise<boolean> =>
@@ -183,7 +193,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     }
   }
 
-  /** The backup (desktop) loaded into a new document; null if there is none or it does not load. */
+  /** Find out whether the session's PDF has a backup now; the toolbar shows Revert to Backup if so. */
+  async function checkBackup(ses: Session): Promise<void> {
+    if (!backupButton) return;
+    const has = !!(await readBackup(ses.file, ses.sha256));
+    if (s !== ses || has === ses.hasBackup) return;
+    ses.hasBackup = has;
+    ses.app.refresh();
+  }
+
+  /** The backup loaded into a new document; null if there is none or it does not load. */
   async function loadBackup(file: PdfFile, sha256: string, newDoc: () => NotesDoc):
     Promise<{ doc: NotesDoc; warnings: string[]; when: string } | null> {
     const backup = await readBackup(file, sha256);
@@ -594,7 +613,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
       const newDoc = (): NotesDoc => new NotesDoc(deckFromPdf({ title, pageSizes, sha256 }));
       // Saved notes that cannot be read or loaded (broken file, newer version, a
       // sync client holding it) are read once more after a second. Then the
-      // backup is offered (desktop), else the user decides whether to open
+      // backup is offered (desktop, browser), else the user decides whether to open
       // anyway; either way the unreadable file is kept before it is replaced.
       let saved = await loadSaved(file, sha256, newDoc);
       if (saved.problem) {
@@ -638,7 +657,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
   function startSession(file: PdfFile, sha256: string, pdf: PdfDoc, doc: NotesDoc): void {
     const app = createAnnotator({ doc, activeSurface: () => currentSurface(), renderer: liveInk.renderer });
     const ses: Session = {
-      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: 'plain',
+      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: 'plain', hasBackup: false,
       overview: null as unknown as Overview, pages: null as unknown as ViewerPages, unbind: () => {},
     };
     s = ses;
@@ -671,8 +690,13 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     };
     setSaveTarget({ doc, adapter, pdf: file, sha256 }, {
       onError: e => banner(`Saving the notes failed (retrying): ${(e as Error).message || e}`, 'error'),
-      onState: () => app.refresh(),
+      onState: state => {
+        // A save may have made the first backup (until then, look after each one).
+        if (state === 'saved' && !ses.hasBackup) void checkBackup(ses);
+        app.refresh();
+      },
     });
+    void checkBackup(ses);
     els.empty.hidden = true;
     stage.hidden = false;
     document.body.classList.add('has-doc');
@@ -710,6 +734,8 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
       { id: 'pdf', title: 'Export PDF with notes', icon: 'pdf', onClick: () => void viewer.exportPdf() },
       { id: 'print', title: 'Print with notes (Ctrl/Cmd+P)', icon: 'print', onClick: () => void viewer.print(),
         disabled: () => printing },
+      { id: 'revert', title: 'Revert to backup: the notes as saved a few minutes ago (asks first)', icon: 'revert',
+        onClick: () => void viewer.revertToBackup(), hidden: () => !backupButton || !s?.hasBackup },
     ],
   }));
 

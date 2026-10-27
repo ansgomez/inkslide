@@ -2,11 +2,13 @@
  * backup, keeping the unreadable file, and File → Revert to Backup…. The
  * Electron bridge is a stand-in
  * (window.inkslide) that keeps its files in memory; the backup itself is
- * made by the main process (tested in apps/desktop). */
+ * made by the main process (tested in apps/desktop).
+ * Browser: the web adapter's backup in OPFS and the toolbar's Revert to
+ * Backup button (the last tests). */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { FIXTURE, penStroke, penStrokes } from './helpers';
+import { FIXTURE, openPdf, penStroke, penStrokes } from './helpers';
 
 const sha = createHash('sha256').update(readFileSync(FIXTURE)).digest('hex');
 
@@ -198,4 +200,35 @@ test('Revert to Backup without a backup says so', async ({ page }) => {
   await menu(page, 'revert-backup');
   await expect(page.locator('.ann-banner-warn')).toContainText('There is no backup of these notes.');
   expect((await stub(page)).questions).toEqual([]);
+});
+
+test('browser: a save after a save makes a backup, and the toolbar\'s Revert to Backup swaps it in and back', async ({ page }) => {
+  page.on('dialog', d => void d.accept());
+  await page.goto('/');
+  await openPdf(page);
+  const revert = page.locator('.ann-bar [data-id="revert"]');
+  const saved = page.locator('.ann-bar [data-id="save"]:not(.is-unsaved)');
+  await expect(revert).toBeHidden();
+  // The first save has no saved notes before it: no backup yet.
+  await penStroke(page, [0.2, 0.2], [0.3, 0.5]);
+  await page.keyboard.press('Control+s');
+  await expect(saved).toHaveCount(1);
+  await expect(revert).toBeHidden();
+  // The second copies the 1-stroke notes to the backup.
+  await penStroke(page, [0.5, 0.2], [0.6, 0.5]);
+  await page.keyboard.press('Control+s');
+  await expect(saved).toHaveCount(1);
+  await expect(revert).toBeVisible();
+
+  await revert.click();
+  await expect(penStrokes(page)).toHaveCount(1);
+  await expect(page.locator('.ann-banner-info')).toContainText('Reverted to the backup');
+  await revert.click();
+  await expect(penStrokes(page)).toHaveCount(2);
+
+  // Reopened, the notes are the 2 strokes and the button is there at once.
+  await page.reload();
+  await openPdf(page);
+  await expect(penStrokes(page)).toHaveCount(2);
+  await expect(revert).toBeVisible();
 });

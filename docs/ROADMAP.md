@@ -11,7 +11,7 @@ desktop app uses Electron.
 | Viewer: fit to window or width, page turns, overview | Done |
 | Ink: pen, highlighter, erasers, selector, laser, undo/redo | Done |
 | Pages: blank pages with plain, lined or grid paper | Done |
-| Notes: sidecar file, autosave, backup on the desktop | Done |
+| Notes: sidecar file, autosave, backup on the desktop and in the browser | Done |
 | Export to an annotated PDF, print | Done |
 | Desktop on Linux (AppImage) | Done |
 | Web app and PWA (installable, offline) | Done |
@@ -36,8 +36,10 @@ desktop app uses Electron.
   buttons for pen-only use), across pages and documents. Pasted strokes get new ids, keep their
   position (offset on the same page), scale with the page size and are clamped to the page; one
   undo step per paste. Ctrl+D duplicates.
-- **Backups beyond the desktop:** the browser, PWA and Tauri apps keep no notes backup; revisit
-  for Tauri after the device tests.
+- **Backup in the Tauri apps:** the browser and PWA keep a notes backup like the desktop
+  (OPFS); the iPad and Android apps still keep none. Revisit after the device tests (the
+  backup could sit next to the notes in the app data directory, with a toolbar button as in
+  the browser).
 - **Later:** a presenter mode that mirrors page, ink and laser on a second window; opening Marp
   HTML decks directly.
 

@@ -149,8 +149,8 @@ Inkslide asks before closing.
 If saved notes exist but cannot be read (a damaged file, one made by a newer Inkslide, or one a
 sync app is holding), Inkslide tries again a second later. If they still cannot be read:
 
-- On the desktop, if there is a backup (below), it asks *The notes file could not be read
-  (<reason>). Open the backup from <time> instead?* **OK** opens the backup.
+- If there is a backup (below; desktop and browser), it asks *The notes file could not be
+  read (<reason>). Open the backup from <time> instead?* **OK** opens the backup.
 - Otherwise, or after **Cancel**, it asks whether to open the PDF anyway, because new notes
   would replace the saved ones. **Cancel** leaves everything as it is.
 
@@ -165,7 +165,7 @@ the PDF in the newer version. Otherwise repair it if you can (it is JSON text) a
 **File → Import Notes…**. If the copy cannot be made, Inkslide says so and asks before opening.
 Kept copies are deleted after 90 days (below), so recover what you need before then.
 
-### Backup (desktop)
+### Backup
 
 The desktop app keeps one backup of each PDF's notes in its own storage
 (`notes/<checksum>.notes.backup.json`, next to the notes it keeps there, see above), never in
@@ -184,8 +184,18 @@ backup has the format of a notes file, so **File → Import Notes…** can load 
 remembered). Turning it off deletes the backups of all PDFs (not the kept unreadable files)
 and greys out Revert to Backup.
 
-Backups and kept unreadable files older than 90 days are deleted when Inkslide starts. The
-browser, the PWA and the iPad and Android apps keep no backup.
+Backups and kept unreadable files older than 90 days are deleted when Inkslide starts.
+
+**In the browser and the installed web app (PWA)** the backup works the same way, kept in the
+browser's storage for the site next to the notes. Instead of a menu, a **Revert to backup**
+button (a clock with an arrow) appears in the File group of the toolbar once the PDF has a
+backup; it asks the same question, and pressing it again undoes the revert. There is no switch
+to turn backups off. The backup goes when the PDF is removed from the recent files on the start
+screen (by you, or because newer PDFs pushed it out); its notes stay. Clearing the site data
+deletes the backup together with the notes, so it guards against unwanted changes, not against
+losing the browser's storage: export a PDF with notes for that. Safari before version 26 keeps
+no backup (it cannot write that storage from the page), and neither do the iPad and Android
+apps.
 
 ### Notes from a Marp deck
 

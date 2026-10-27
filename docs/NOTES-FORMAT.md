@@ -195,7 +195,7 @@ so in a banner. Once saved, the notes are a v2 file.
   or older than 2 minutes by its modification time. File → Revert to Backup… swaps the notes
   and the backup. For a notes file that cannot be read or parsed (also on a second try a
   second later), the app offers to open the backup instead (see
-  [USER-GUIDE.md](USER-GUIDE.md#backup-desktop)). Off with File → Keep a Backup of the Notes
+  [USER-GUIDE.md](USER-GUIDE.md#backup)). Off with File → Keep a Backup of the Notes
   (`<userData>/preferences.json`, `{"backups": false}`), which deletes every backup in
   `<userData>/notes`. A `<pdf path>.notes.backup.json` next to a PDF (written by development
   builds before 2026-10-27) is deleted when the PDF is opened.
@@ -215,8 +215,16 @@ There are no file paths. Notes are kept in the site's storage, keyed by the PDF'
 - else `localStorage`, key `inkslide-notes:<sha256>`.
 
 Clearing the site data deletes the notes. The same PDF opened from another folder or under
-another name finds its notes, because the key is the hash. No backup is kept: a copy in the
-same site storage would be lost together with the notes.
+another name finds its notes, because the key is the hash.
+
+- **Backup:** OPFS file `notes/inkslide-notes_<sha256>.notes.backup.json`, same format and
+  same rules as the desktop's (copied before a save if usable and the backup is missing or
+  older than 2 minutes, by the file's `lastModified`; Revert to Backup swaps). Only where the
+  page can write OPFS: there is no `localStorage` backup, because that store is small (about
+  5 MB) and shared with the notes that fall back to it, and a full store fails their save. A
+  failed backup write never fails the save. The backup is deleted when the PDF leaves the
+  recent files (`apps/web/src/recent.ts`); the notes stay. It lives in the same site storage
+  as the notes, so it protects against unwanted changes, not against clearing the site data.
 
 ### iPad and Android (Tauri)
 

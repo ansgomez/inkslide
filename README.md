@@ -26,7 +26,7 @@ automatically in a separate notes file; the PDF itself is never modified.
   eraser, 8 colors, 4 sizes, undo/redo.
 - **Pages:** page turns by key or two-finger swipe, pinch zoom, fit width, blank pages with
   plain, lined or grid paper, an overview of all pages.
-- **Notes:** autosaved next to the PDF with crash-safe writes, plus a backup on the desktop.
+- **Notes:** autosaved next to the PDF with crash-safe writes, plus a backup on the desktop and in the browser.
 - **Export and print:** an annotated PDF with vector ink; the original text stays selectable.
 - **Marp Notes:** the same toolbar and shortcuts as the annotation mode of Marp HTML decks,
   and it opens the notes saved there.
