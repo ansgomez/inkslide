@@ -165,7 +165,20 @@ test.describe('service worker', () => {
       await reloaded;
       await expect(other.locator('.ann-banner-warn')).toContainText('updated in another window');
       await controlled(page);
-      await expect.poll(cacheNames).toEqual(['inkslide-e2e0000000000000']);
+      // The build before is kept: the other window may still load its files lazily.
+      await expect.poll(cacheNames).toEqual([`inkslide-${oldVersion}`, 'inkslide-e2e0000000000000']);
+      const lazy = await page.evaluate(async () => {
+        const cache = await caches.open('inkslide-e2e0000000000000');
+        const name = (await cache.keys()).map(r => r.url).find(u => /pdf\.worker/.test(u))!;
+        await cache.delete(name); // now only the build before has it
+        return name;
+      });
+      await page.context().setOffline(true);
+      try {
+        expect(await other.evaluate(async u => (await fetch(u)).status, lazy)).toBe(200);
+      } finally {
+        await page.context().setOffline(false);
+      }
     } finally {
       writeFileSync(SW_JS, original);
     }

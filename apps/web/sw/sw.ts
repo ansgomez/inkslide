@@ -8,7 +8,11 @@
  *
  * Updates: a new build means a new sw.js. It installs next to the old one
  * and waits; the page shows "Reload to update" and posts 'skip-waiting'
- * when the user agrees (src/pwa.ts). On activation the old caches go.
+ * when the user agrees (src/pwa.ts). On activation the caches of older
+ * builds go, except the one before this: windows still running it (told to
+ * reload, src/pwa.ts) load files lazily (the PDF.js worker, CMaps, fonts,
+ * wasm, the export chunk) that the new build does not have. A request this
+ * build's cache does not have is looked up in that one.
  */
 /// <reference lib="webworker" />
 
@@ -32,9 +36,9 @@ sw.addEventListener('install', event => {
 
 sw.addEventListener('activate', event => {
   event.waitUntil((async () => {
-    for (const name of await caches.keys()) {
-      if (name.startsWith(PREFIX) && name !== CACHE) await caches.delete(name);
-    }
+    // keys() lists the caches oldest first: keep the newest other one (the build before).
+    const older = (await caches.keys()).filter(name => name.startsWith(PREFIX) && name !== CACHE);
+    for (const name of older.slice(0, -1)) await caches.delete(name);
     await sw.clients.claim();
   })());
 });
@@ -57,7 +61,15 @@ sw.addEventListener('fetch', event => {
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     // ignoreVary: the precache requests had no Origin header; module scripts (crossorigin) do.
-    const hit = await cache.match(isShell(req) ? url(SHELL) : req, { ignoreVary: true });
-    return hit || fetch(req);
+    const key = isShell(req) ? url(SHELL) : req;
+    const hit = await cache.match(key, { ignoreVary: true });
+    if (hit) return hit;
+    // A file of the build before (a window not yet reloaded), else the network.
+    for (const name of await caches.keys()) {
+      if (name === CACHE || !name.startsWith(PREFIX) || isShell(req)) continue;
+      const old = await (await caches.open(name)).match(key, { ignoreVary: true });
+      if (old) return old;
+    }
+    return fetch(req);
   })());
 });
