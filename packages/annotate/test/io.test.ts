@@ -113,6 +113,68 @@ describe('v1 load', () => {
     const kept = saved.pages.find((p: { slide?: number }) => p.slide === 4);
     expect(kept.strokes[0]).toMatchObject({ size: 3, points: [[75, 150, 0.5]] });
   });
+
+  it('passes pages or strokes that are not arrays on to the model, which skips them', () => {
+    const data = { ...v1File(), pages: 'pages' } as unknown as NotesJSON;
+    const res = loadNotes(new NotesDoc(pdfDeck()), data);
+    expect(res.scaled).toBeNull();
+    expect(res.warnings).toContain('Skipped the pages: not a list');
+    const odd = v1File();
+    (odd.pages[0] as { strokes: unknown }).strokes = 'ab';
+    const doc = new NotesDoc(pdfDeck());
+    const again = loadNotes(doc, odd);
+    expect(again.scaled).toBe(0.75);
+    expect(again.warnings).toContain('Skipped the strokes of page s1: not a list');
+    expect(doc.strokes('b-xy-1')[0].size).toBe(15);
+  });
+
+  it('scales only numbers: other values reach the model and are rejected, not coerced', () => {
+    const data = v1File();
+    data.pages[0].strokes.push(...[
+      { id: 'nulls', tool: 'pen', color: '#000', size: 4, points: [[null, null, 0.5]] },
+      { id: 'strings', tool: 'pen', color: '#000', size: 4, points: [['100', '200', 0.5]] },
+      { id: 'size', tool: 'pen', color: '#000', size: '4', points: [[100, 200, 0.5]] },
+    ] as never[]);
+    const doc = new NotesDoc(pdfDeck());
+    const res = loadNotes(doc, data);
+    expect(doc.strokes('p1').map(s => s.id)).toEqual(['k1-0']);
+    expect(res.warnings.filter(w => /malformed stroke on page s1/.test(w))).toHaveLength(3);
+  });
+
+  it('decides per page: scales the pages that fit and warns about the others', () => {
+    const doc = new NotesDoc(deckFromPdf({ title: 'lecture.pdf', pageSizes: [[960, 540], [595, 842], [960, 540]] }));
+    const data = v1File();
+    data.pages.push({ id: 's2', kind: 'slide', slide: 2, strokes: [{ id: 'a4', tool: 'pen', color: '#000', size: 4, points: [[100, 200, 0.5]] }] });
+    const res = loadNotes(doc, data);
+    expect(res.scaled).toBe(0.75);
+    expect(res.warnings).toEqual([
+      'Notes were made for "Signals – Übung 1", not "lecture.pdf"',
+      'Notes not scaled to the PDF (page aspect ratio differs): slide 2',
+    ]);
+    expect(doc.strokes('p1')[0].size).toBe(3);
+    expect(doc.strokes('p2')[0]).toMatchObject({ size: 4, points: [[100, 200, 0.5]] });
+  });
+
+  it('scales later pages when page 1 needs no scaling or does not fit', () => {
+    const data = v1File();
+    data.pages.push({ id: 's2', kind: 'slide', slide: 2, strokes: [{ id: 'b', tool: 'pen', color: '#000', size: 4, points: [[100, 200, 0.5]] }] });
+    // page 1 has the slide size (scale 1), page 2 is half of it
+    const same = new NotesDoc(deckFromPdf({ title: 'Signals – Übung 1', pageSizes: [[1280, 720], [640, 360], [1280, 720]] }));
+    const res = loadNotes(same, data);
+    expect(res).toEqual({ warnings: [], notices: [], scaled: 0.5 });
+    expect(same.strokes('p1')[0].size).toBe(4);
+    expect(same.strokes('p2')[0]).toMatchObject({ size: 2, points: [[50, 100, 0.5]] });
+    // page 1 does not fit: its size warning stays, the page that fits is scaled
+    const portrait = new NotesDoc(deckFromPdf({ title: 'Signals – Übung 1', pageSizes: [[595, 842], [960, 540], [595, 842]] }));
+    const res2 = loadNotes(portrait, data);
+    expect(res2.scaled).toBe(0.75);
+    expect(res2.warnings).toEqual([
+      'Page size differs (1280x720 vs 595x842)',
+      'Notes not scaled to the PDF (page aspect ratio differs): slide 1, blank page b-xy-1',
+    ]);
+    expect(portrait.strokes('p1')[0].size).toBe(4);
+    expect(portrait.strokes('p2')[0].size).toBe(3);
+  });
 });
 
 describe('v2 save/load', () => {
