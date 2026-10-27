@@ -60,25 +60,28 @@ function appCommands() {
   return { build: [...build[1].matchAll(/"([a-z_]+)"/g)].map(m => m[1]), handler: handler[1].split(',').map(c => c.trim()).filter(Boolean) };
 }
 
-/** The web view's only write paths: these commands, which take file names, never paths. */
-const WRITE_COMMANDS = ['write_notes', 'save_pdf', 'write_share_file', 'remove_share_file'];
+/**
+ * The web view's only file access: these commands, which take a notes key or a
+ * checked file name, never a free path (read_picked: only files pick_file picked).
+ */
+const FILE_COMMANDS = ['pick_file', 'read_picked', 'read_notes', 'write_notes', 'save_pdf', 'write_share_file', 'remove_share_file'];
 
 test('capabilities: least privilege', () => {
   const capDir = join(tauriDir, 'capabilities');
   const caps = readdirSync(capDir).filter(f => f.endsWith('.json')).map(f => JSON.parse(readFileSync(join(capDir, f), 'utf8')));
-  const scopes = cap => cap.permissions.filter(p => p.identifier === 'fs:scope').flatMap(p => p.allow.map(a => a.path));
   const ids = cap => cap.permissions.map(p => (typeof p === 'string' ? p : p.identifier));
   for (const cap of caps) {
     assert.deepEqual(cap.windows, ['main'], cap.identifier);
     for (const id of ids(cap)) {
-      // No blanket permission sets (fs:default, fs:read-all …), no shell or http, no save dialog
-      // (save_pdf opens its own), and the fs plugin only reads: every picked file is in its scope.
-      assert.ok(/^(core:default|fs:scope|fs:allow-(exists|read-file|read-text-file)|dialog:allow-(open|message)|sharekit:allow-share-file|allow-(write-notes|save-pdf|write-share-file|remove-share-file))$/.test(id), `${cap.identifier}: ${id}`);
-      assert.ok(!/^fs:([a-z-]*(write|remove|rename|mkdir|create|copy|truncate|open)|default$|.*-all$)/.test(id), `${cap.identifier}: ${id} can change files`);
-      // No inline scopes on a permission either (they would only add paths).
-      if (typeof cap.permissions.find(p => p.identifier === id) === 'object') assert.equal(id, 'fs:scope', `${cap.identifier}: ${id}`);
+      // No fs plugin permission at all (on mobile it reads and writes file and content URLs without
+      // a scope check), no open or save dialog command (they add the chosen file to the fs scope),
+      // no shell or http: files only through the app's commands.
+      assert.ok(/^(core:default|dialog:allow-message|sharekit:allow-share-file|allow-(pick-file|read-picked|read-notes|write-notes|save-pdf|write-share-file|remove-share-file))$/.test(id), `${cap.identifier}: ${id}`);
+      assert.ok(!/^fs:/.test(id), `${cap.identifier}: ${id}: no fs plugin permission`);
+      assert.ok(!/^dialog:(allow-(open|save)|default)$/.test(id), `${cap.identifier}: ${id}`);
     }
-    for (const path of scopes(cap)) assert.match(path, /^\$APPDATA\/notes(\/\*)?$/, `${cap.identifier}: ${path}`);
+    // No inline scopes either.
+    for (const p of cap.permissions) assert.equal(typeof p, 'string', `${cap.identifier}: ${JSON.stringify(p)}`);
   }
   const byId = Object.fromEntries(caps.map(c => [c.identifier, c]));
   // Sharing only on the platforms that share.
@@ -87,12 +90,23 @@ test('capabilities: least privilege', () => {
   for (const id of ['share-ios', 'share-android']) {
     assert.deepEqual(ids(byId[id]).sort(), ['allow-remove-share-file', 'allow-write-share-file', 'sharekit:allow-share-file'], id);
   }
-  assert.deepEqual(ids(byId.default).filter(i => /^allow-/.test(i)).sort(), ['allow-save-pdf', 'allow-write-notes']);
-  assert.deepEqual(scopes(byId.default), ['$APPDATA/notes', '$APPDATA/notes/*']);
+  assert.deepEqual(ids(byId.default).filter(i => /^allow-/.test(i)).sort(),
+    ['allow-pick-file', 'allow-read-notes', 'allow-read-picked', 'allow-save-pdf', 'allow-write-notes']);
 });
 
 test('app commands: each has a permission (build.rs) and a handler', () => {
   const { build, handler } = appCommands();
-  assert.deepEqual([...build].sort(), [...WRITE_COMMANDS].sort());
-  assert.deepEqual([...handler].sort(), [...WRITE_COMMANDS].sort());
+  assert.deepEqual([...build].sort(), [...FILE_COMMANDS].sort());
+  assert.deepEqual([...handler].sort(), [...FILE_COMMANDS].sort());
+});
+
+test('share names: the shared cases of the Rust and front-end tests are well-formed', () => {
+  const cases = JSON.parse(readFileSync(join(tauriDir, '..', 'test', 'share-names.json'), 'utf8'));
+  assert.ok(cases.length > 10);
+  for (const c of cases) {
+    assert.equal(typeof c.input, 'string');
+    assert.match(c.output, /\.pdf$/);
+  }
+  // C1 controls are in the list (Rust's char::is_control rejects them).
+  assert.ok(cases.some(c => /[\x80-\x9f]/.test(c.input) && c.bad));
 });

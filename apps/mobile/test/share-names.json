@@ -1,0 +1,145 @@
+[
+  {
+    "input": "",
+    "output": "document.pdf",
+    "bad": true
+  },
+  {
+    "input": ".pdf",
+    "output": "pdf.pdf",
+    "bad": true
+  },
+  {
+    "input": "..",
+    "output": "document.pdf",
+    "bad": true
+  },
+  {
+    "input": ".",
+    "output": "document.pdf",
+    "bad": true
+  },
+  {
+    "input": "../a.pdf",
+    "output": "_a.pdf",
+    "bad": true
+  },
+  {
+    "input": "../../etc/passwd",
+    "output": "_.._etc_passwd.pdf",
+    "bad": true
+  },
+  {
+    "input": "a/b.pdf",
+    "output": "a_b.pdf",
+    "bad": true
+  },
+  {
+    "input": "a\\b.pdf",
+    "output": "a_b.pdf",
+    "bad": true
+  },
+  {
+    "input": "/tmp/a.pdf",
+    "output": "_tmp_a.pdf",
+    "bad": true
+  },
+  {
+    "input": "C:a.pdf",
+    "output": "C_a.pdf",
+    "bad": true
+  },
+  {
+    "input": ".hidden.pdf",
+    "output": "hidden.pdf",
+    "bad": true
+  },
+  {
+    "input": " a.pdf",
+    "output": "a.pdf",
+    "bad": true
+  },
+  {
+    "input": "a\nb.pdf",
+    "output": "a_b.pdf",
+    "bad": true
+  },
+  {
+    "input": "a\u0000.pdf",
+    "output": "a_.pdf",
+    "bad": true
+  },
+  {
+    "input": "a\u001f.pdf",
+    "output": "a_.pdf",
+    "bad": true
+  },
+  {
+    "input": "a.pdf",
+    "output": "a_.pdf",
+    "bad": true
+  },
+  {
+    "input": "a.pdf",
+    "output": "a_.pdf",
+    "bad": true
+  },
+  {
+    "input": "a.pdf",
+    "output": "a_.pdf",
+    "bad": true
+  },
+  {
+    "input": "a.pdf",
+    "output": "a_.pdf",
+    "bad": true
+  },
+  {
+    "input": "a.PDF",
+    "output": "a.pdf",
+    "bad": true
+  },
+  {
+    "input": "notes.json",
+    "output": "notes.json.pdf",
+    "bad": true
+  },
+  {
+    "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.pdf",
+    "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.pdf",
+    "bad": true
+  },
+  {
+    "input": "講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講.pdf",
+    "output": "講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講講.pdf",
+    "bad": true
+  },
+  {
+    "input": "deck-notes.pdf",
+    "output": "deck-notes.pdf"
+  },
+  {
+    "input": "My deck (1).pdf",
+    "output": "My deck (1).pdf"
+  },
+  {
+    "input": "講義.pdf",
+    "output": "講義.pdf"
+  },
+  {
+    "input": "a..b.pdf",
+    "output": "a..b.pdf"
+  },
+  {
+    "input": "a b.pdf",
+    "output": "a b.pdf"
+  },
+  {
+    "input": "a b.pdf",
+    "output": "a b.pdf"
+  },
+  {
+    "input": "😀.pdf",
+    "output": "😀.pdf"
+  }
+]

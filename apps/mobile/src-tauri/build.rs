@@ -1,6 +1,14 @@
 // The app's own commands (src/lib.rs) get an `allow-<command>` permission
 // each; a window may call one only if a capability grants it.
-const COMMANDS: &[&str] = &["write_notes", "save_pdf", "write_share_file", "remove_share_file"];
+const COMMANDS: &[&str] = &[
+    "pick_file",
+    "read_picked",
+    "read_notes",
+    "write_notes",
+    "save_pdf",
+    "write_share_file",
+    "remove_share_file",
+];
 
 fn main() {
     tauri_build::try_build(
