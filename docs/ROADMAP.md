@@ -11,7 +11,7 @@ desktop app uses Electron.
 | Viewer: fit to window or width, page turns, overview | Done |
 | Ink: pen, highlighter, erasers, selector, laser, undo/redo | Done |
 | Pages: blank pages with plain, lined or grid paper | Done |
-| Notes: sidecar file, autosave, backup on the desktop | Done |
+| Notes: sidecar file, autosave, backup on the desktop and in the browser | Done |
 | Export to an annotated PDF, print | Done |
 | Desktop on Linux (AppImage) | Done |
 | Web app and PWA (installable, offline) | Done |
@@ -32,8 +32,10 @@ desktop app uses Electron.
   print through a real printer dialog on Linux, Windows and macOS.
 - **Stroke look:** choose between perfect-freehand and the classic Marp Notes outline and tune
   `FREEHAND_OPTIONS`.
-- **Backups beyond the desktop:** the browser, PWA and Tauri apps keep no notes backup; revisit
-  for Tauri after the device tests.
+- **Backup in the Tauri apps:** the browser and PWA keep a notes backup like the desktop
+  (OPFS); the iPad and Android apps still keep none. Revisit after the device tests (the
+  backup could sit next to the notes in the app data directory, with a toolbar button as in
+  the browser).
 - **Later:** a presenter mode that mirrors page, ink and laser on a second window; opening Marp
   HTML decks directly.
 

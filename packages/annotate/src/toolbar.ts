@@ -4,7 +4,7 @@
  * The bar is built from groups in GROUP_ORDER. Each group builder is
  * registered with registerGroup(id, builder) and returns { id, label, items }
  * where an item is { id, title, icon | swatch | dot | text, onClick, active(),
- * disabled() }. The app registers its own builders for 'pages' (pages.ts
+ * disabled(), hidden() }. The app registers its own builders for 'pages' (pages.ts
  * pagesGroup) and 'file'; otherwise the disabled placeholders below are used.
  */
 import type { NotesDoc } from './model';

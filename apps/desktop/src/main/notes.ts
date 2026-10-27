@@ -18,7 +18,7 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { BACKUP_SUFFIX, notesPathFor, parseNotes, type NotesBackup } from '@inkslide/annotate/io';
+import { BACKUP_MIN_AGE_MS, BACKUP_SUFFIX, isUsableNotes, notesPathFor, OLD_COPIES_MAX_AGE_DAYS, type NotesBackup } from '@inkslide/annotate/io';
 import { canWriteIn, ensureDir, readTextIfExists, writeFileAtomic } from './fsutil';
 import { fallbackBackupPath, fallbackNotesPath, isSha256, isStorageName, NOTES_DIR, sidecarStatePath, UNREADABLE_SUFFIX, unreadableNotesPath } from './paths';
 
@@ -186,17 +186,8 @@ export async function writeNotesFor(t: NotesTarget, text: string, userData: stri
 
 // ── Backup ─────────────────────────────────────────────────────
 
-/** The backup is refreshed by a save only when it is at least this old. */
-export const BACKUP_MIN_AGE_MS = 2 * 60_000;
-
-/** Whether `text` is a notes file that loads and has something in it (strokes or blank pages). */
-export function isUsableNotes(text: string): boolean {
-  try {
-    return parseNotes(text).pages.some(p => !!p && (p.kind === 'blank' || (Array.isArray(p.strokes) && p.strokes.length > 0)));
-  } catch (_) {
-    return false;
-  }
-}
+// Shared with the browser's backup (@inkslide/annotate/io).
+export { BACKUP_MIN_AGE_MS, isUsableNotes, OLD_COPIES_MAX_AGE_DAYS };
 
 /** The backup file of the PDF in app storage; null if its hash cannot be known. */
 async function backupPath(t: NotesTarget, userData: string): Promise<string | null> {
@@ -278,9 +269,6 @@ export async function keepUnreadableFor(t: NotesTarget, userData: string): Promi
   }
   return null;
 }
-
-/** Backups and kept unreadable copies older than this are deleted at startup. */
-export const OLD_COPIES_MAX_AGE_DAYS = 90;
 
 /** Delete the files "<sha256><suffix>" in userData/notes (with `olderThan`: only those last changed before it). */
 async function removeMatching(userData: string, suffix: string, olderThan = Infinity): Promise<string[]> {

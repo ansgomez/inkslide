@@ -8,8 +8,11 @@
  *   v1 (Marp HTML decks): deck { title, slides, size }, pages s<n> / blank.
  *   v2 (PDF): deck { source: "pdf", title, slides, size, pageSizes, sha256 },
  *      pages p<n> / blank. Sidecar "<name>.pdf.notes.json".
- * Backup (same format, desktop only): app storage "<sha256>.notes.backup.json",
- * the saved notes as they were before a save (apps/desktop/src/main/notes.ts).
+ * Backup (same format): the saved notes as they were before a save, in app
+ * storage: desktop "<sha256>.notes.backup.json" (apps/desktop/src/main/notes.ts),
+ * browser OPFS "notes/inkslide-notes_<sha256>.notes.backup.json"
+ * (apps/web/src/platform/web.ts). A notes file that could not be read is kept
+ * the same way as "….notes.unreadable.json" before it is replaced.
  * v1 files load into a PDF document; their strokes are scaled from the slide
  * size to the PDF page size when both have the same aspect ratio (Marp
  * exports 1280×720 px slides as 960×540 pt pages).
@@ -22,8 +25,17 @@ export const NOTES_SUFFIX = '.notes.json';
 /** Sidecar path of a PDF: "<name>.pdf.notes.json". */
 export const notesPathFor = (pdfPath: string): string => `${pdfPath}${NOTES_SUFFIX}`;
 
-/** Appended to the PDF's SHA-256 for the desktop's notes backup in app storage. */
+/** Appended to the PDF's SHA-256 (browser: its notes key) for the notes backup in app storage. */
 export const BACKUP_SUFFIX = '.notes.backup.json';
+
+/** The backup is refreshed by a save only when it is at least this old. */
+export const BACKUP_MIN_AGE_MS = 2 * 60_000;
+
+/** Appended like BACKUP_SUFFIX for the kept copy of a notes file that could not be read. */
+export const UNREADABLE_SUFFIX = '.notes.unreadable.json';
+
+/** Backups and kept unreadable copies older than this are deleted at startup. */
+export const OLD_COPIES_MAX_AGE_DAYS = 90;
 
 /** File-name friendly form of a title ("Signals – Übung 1" -> "signals-ubung-1"). */
 export function slug(title: string | null | undefined): string {
@@ -150,6 +162,18 @@ export function loadNotes(doc: NotesDoc, data: NotesJSON): LoadResult {
   return { warnings, notices, scaled: scale };
 }
 
+/**
+ * Whether `text` is a notes file that loads and has something in it (strokes
+ * or blank pages): only such notes are copied to the backup or reverted to.
+ */
+export function isUsableNotes(text: string): boolean {
+  try {
+    return parseNotes(text).pages.some(p => !!p && (p.kind === 'blank' || (Array.isArray(p.strokes) && p.strokes.length > 0)));
+  } catch (_) {
+    return false;
+  }
+}
+
 /** parseNotes + loadNotes. */
 export function loadNotesText(doc: NotesDoc, text: string): LoadResult {
   return loadNotes(doc, parseNotes(text));
@@ -190,8 +214,8 @@ export interface PlatformAdapter {
   /** Files the OS asks the app to open while it runs (second instance, file association). */
   onOpenRequest?(handler: (path: string) => void): () => void;
   /**
-   * The notes backup (desktop only): the saved notes as they were before a
-   * save, at most once every 2 minutes, made by writeNotes. Its text and time;
+   * The notes backup (desktop, browser): the saved notes as they were before
+   * a save, at most once every 2 minutes, made by writeNotes. Its text and time;
    * null if there is none or backups are off.
    */
   readBackup?(pdf: PdfFile, sha256?: string): Promise<NotesBackup | null>;
