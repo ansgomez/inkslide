@@ -49,6 +49,12 @@ jobs:
           # Unsigned builds: no code signing certificate is used.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: node apps/desktop/scripts/dist.mjs ${{ matrix.args }} --publish never
+      # The fuses are flipped after Electron's ad-hoc signature; an arm64 app
+      # with a broken signature does not launch.
+      - name: Verify the macOS signatures
+        if: runner.os == 'macOS'
+        shell: bash
+        run: for app in apps/desktop/dist/mac*/Inkslide.app; do codesign --verify --deep --strict --verbose=2 "$app"; done
       - uses: actions/upload-artifact@v7
         with:
           name: inkslide-${{ runner.os }}

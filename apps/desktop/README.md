@@ -53,7 +53,9 @@ executable such as the AppImage). Packaged builds ignore `INKSLIDE_PAGE`, `INKSL
 `electron-builder.yml` holds the configuration, including the Electron fuses flipped in the
 packaged binary: no `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` or `--inspect`, no extra privileges
 for `file://` pages, the app code only from `app.asar`, checked against its hash on macOS and
-Windows. Check them with `npx @electron/fuses read --app <executable>`. `dist` builds the web front end,
+Windows; the macOS app is then signed ad hoc again (`resetAdHocDarwinSignature`), since the
+flip breaks Electron's signature. Check them with `npx @electron/fuses read --app <executable>`,
+and the macOS signature with `codesign --verify --deep --strict Inkslide.app`. `dist` builds the web front end,
 then `scripts/dist.mjs` checks that the icons are current, bundles main/preload and runs
 electron-builder with its arguments. Output goes to `apps/desktop/dist/`.
 

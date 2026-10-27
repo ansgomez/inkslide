@@ -122,6 +122,8 @@ describe('electron fuses', () => {
     const block = /^electronFuses:\n((?: {2}\w+: \w+\n)+)/m.exec(yml)?.[1] ?? '';
     const fuses = Object.fromEntries(block.trim().split('\n').map(l => l.trim().split(/:\s*/)));
     expect(fuses).toEqual({
+      // Signs the macOS app ad hoc again after the flip (no signing identity in CI).
+      resetAdHocDarwinSignature: 'true',
       runAsNode: 'false',
       enableNodeOptionsEnvironmentVariable: 'false',
       enableNodeCliInspectArguments: 'false',

@@ -27,7 +27,11 @@ asar: true
 # only and, on macOS and Windows, checked against its hash. file:// pages get
 # no extra privileges (the front end is served from app://inkslide/; resources/web
 # is outside app.asar, which onlyLoadAppFromAsar does not concern).
+# Flipping fuses breaks the macOS ad-hoc signature, and without a signing
+# identity electron-builder does not sign again: resetAdHocDarwinSignature
+# signs the .app ad hoc after the flip, or the arm64 build would not launch.
 electronFuses:
+  resetAdHocDarwinSignature: true
   runAsNode: false
   enableNodeOptionsEnvironmentVariable: false
   enableNodeCliInspectArguments: false
