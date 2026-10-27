@@ -288,6 +288,28 @@ describe('exportAnnotatedPdf', () => {
     }
   });
 
+  it('reads a /Rotate that is no number as 0, as PDF.js does', async () => {
+    const pdf = await PDFDocument.create();
+    pdf.addPage([600, 400]).node.set(PDFName.of('Rotate'), PDFName.of('Ninety'));
+    pdf.addPage([600, 400]).node.set(PDFName.of('Rotate'), pdf.context.obj('90'));
+    const src = await pdf.save();
+    const js = await openPdfJs(src);
+    const vps = await Promise.all([1, 2].map(async n => (await js.doc.getPage(n)).getViewport({ scale: 1 })));
+    await js.destroy();
+    for (const vp of vps) expect([vp.width, vp.height, vp.rotation]).toEqual([600, 400, 0]);
+    const notes = notesFile([
+      { id: 'p1', kind: 'slide', slide: 1, strokes: [pen('d', [[100, 50]], '#000', 10)] },
+      { id: 'p2', kind: 'slide', slide: 2, strokes: [pen('d2', [[100, 50]], '#000', 10)] },
+    ], 2);
+    const res = await exportAnnotatedPdfWithReport(src, notes);
+    expect(res.warnings).toEqual([]);
+    const out = await PDFDocument.load(res.bytes);
+    for (const i of [0, 1]) {
+      const cm = /(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) cm/.exec(lastStream(out.getPage(i)));
+      expect(cm!.slice(1).map(Number)).toEqual([1, 0, 0, -1, 0, 400]);
+    }
+  });
+
   it('leaves pages without notes untouched and handles empty notes', async () => {
     const src = await fixturePdf();
     const orig = await PDFDocument.load(src);

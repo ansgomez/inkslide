@@ -112,9 +112,18 @@ function userUnit(page: PDFPage): number {
   return u instanceof PDFNumber && u.asNumber() > 0 ? u.asNumber() : 1;
 }
 
+/** The page's /Rotate (inherited); 0 if it is no number, as in PDF.js (pdf-lib throws then). */
+function rotationOf(page: PDFPage): number {
+  try {
+    return page.getRotation().angle;
+  } catch {
+    return 0;
+  }
+}
+
 function frameOf(page: PDFPage): Frame {
   const box = visibleBox(page);
-  const rotation = page.getRotation().angle;
+  const rotation = rotationOf(page);
   const unit = userUnit(page);
   const [w, h] = displaySize(box, rotation);
   return { box, rotation, unit, size: [w * unit, h * unit] };
