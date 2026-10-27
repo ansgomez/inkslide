@@ -1,7 +1,9 @@
 /* Inkslide web - rendered pages of the open PDF
  *
  * An LRU of ImageBitmaps (bitmap-cache.ts) keyed by page and render scale,
- * plus the renders in flight, so callers asking for the same bitmap at once
+ * bounded by count and by bytes (width × height × 4); once the bitmap a page
+ * was last asked for arrives, its other scales (stand-ins, the scale before
+ * a zoom) are evicted. Plus the renders in flight, so callers asking for the same bitmap at once
  * share one render. Bitmaps of a document that was closed meanwhile are
  * closed, never cached.
  *
@@ -49,9 +51,14 @@ function warm(bmp: ImageBitmap): void {
   } catch (_) { /* closed */ }
 }
 
-/** Page bitmaps, at most `limit` kept. */
-export function createPageBitmaps(limit: number): PageBitmaps {
-  const cache = new BitmapCache<ImageBitmap>(limit, b => b.close());
+/** Bytes of a bitmap's pixels. */
+const bitmapBytes = (b: ImageBitmap): number => b.width * b.height * 4;
+
+/** Page bitmaps, at most `limit` and `maxBytes` kept. */
+export function createPageBitmaps(limit: number, maxBytes = Infinity): PageBitmaps {
+  const cache = new BitmapCache<ImageBitmap>(limit, b => b.close(), bitmapBytes, maxBytes);
+  /** Key of the bitmap last asked for, per page. */
+  const latest = new Map<number, string>();
   const pending = new Map<string, { n: number; priority: number; job: RenderJob<ImageBitmap>; promise: Promise<ImageBitmap> }>();
   let doc: PdfDoc | null = null;
 
@@ -77,6 +84,7 @@ export function createPageBitmaps(limit: number): PageBitmaps {
   const api: PageBitmaps = {
     get(n, scale, priority) {
       const key = bitmapKey(n, scale);
+      latest.set(n, key);
       if (priority === PRIORITY.current) onScreen(key, n);
       const hit = cache.get(key);
       if (hit) return Promise.resolve(hit);
@@ -97,6 +105,9 @@ export function createPageBitmaps(limit: number): PageBitmaps {
         done();
         if (doc === pdf) {
           cache.set(key, bmp);
+          if (latest.get(n) === key) {
+            for (const k of cache.keys()) if (k !== key && k.startsWith(`${n}@`)) cache.delete(k);
+          }
           if (entry.priority !== PRIORITY.current) warm(bmp);
         } else bmp.close();
         return bmp;
@@ -119,6 +130,7 @@ export function createPageBitmaps(limit: number): PageBitmaps {
       doc = pdf;
       cache.clear();
       pending.clear();
+      latest.clear();
     },
   };
   return api;

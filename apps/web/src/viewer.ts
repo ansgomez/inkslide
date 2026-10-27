@@ -16,7 +16,7 @@
  * One document session per opened PDF: a NotesDoc (deckFromPdf), an
  * Annotator (tools, input, toolbar, keys), surfaces created on demand per
  * page and kept, the overview, and the save target. Rendered pages are kept
- * as ImageBitmaps (LRU, at most 6): the page shown plus the pages before and
+ * as ImageBitmaps (LRU, at most 6 and 160 MB): the page shown plus the pages before and
  * after it, pre-rendered at their fit size, so a page turn only draws a
  * bitmap.
  */
@@ -46,6 +46,8 @@ import { printPageImages } from './print';
 /** Gap around the fitted page, CSS px. */
 const PAGE_MARGIN = 6;
 const CACHE_LIMIT = 6;
+/** Bytes of rendered pages kept (a page at the render cap is 64 MB). */
+const CACHE_BYTES = 160 * 2 ** 20;
 const FIT_KEY = 'inkslide-fit-mode';
 /** Keys of navKey that scroll or turn the page. */
 const PAGE_KEYS = new Set(['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'PageDown', 'PageUp', ' ', 'Home', 'End']);
@@ -136,7 +138,7 @@ export interface Viewer {
 export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
   const { stage, page: pageEl, pdfCanvas, liveCanvas } = els;
   const pdfCtx = pdfCanvas.getContext('2d', { alpha: false })!;
-  const bitmaps = createPageBitmaps(CACHE_LIMIT);
+  const bitmaps = createPageBitmaps(CACHE_LIMIT, CACHE_BYTES);
   const liveInk = createLiveInk(liveCanvas, pageEl);
   let s: Session | null = null;
   let fit: FitRect | null = null;
