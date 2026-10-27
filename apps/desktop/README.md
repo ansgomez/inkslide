@@ -26,7 +26,7 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 | `src/main/access.ts` | `PathGrants`: the renderer may only read PDFs the user chose. |
 | `src/main/openRequests.ts` | PDFs to open before the page has loaded: the first through `initialPath()`, the others sent once it has. |
 | `src/main/paths.ts` | Front end location (dev, packaged, override), the PDF in a command line, the app-storage notes path. |
-| `src/main/recent.ts`, `windowState.ts`, `preferences.ts`, `jsonStore.ts` | Recent files, window state and preferences (backups on or off) in `userData`. |
+| `src/main/recent.ts`, `windowState.ts`, `preferences.ts`, `jsonStore.ts` | Recent files (with the hash and page count, for the start screen list), window state and preferences (backups on or off) in `userData`. |
 | `src/main/print.ts` | Printing: the exported PDF in a hidden window, Chromium's PDF viewer, the system print dialog. |
 | `src/main/harden.ts` | Window lockdown shared by both windows: webPreferences, no navigation, permissions (fullscreen only). |
 | `src/main/menu.ts` | File and View menus (Revert to Backup…, Keep a Backup of the Notes; Reload only in development builds). |

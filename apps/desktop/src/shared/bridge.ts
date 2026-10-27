@@ -14,11 +14,36 @@ import type { PdfFile, PlatformAdapter } from '@inkslide/annotate/io';
 /** Commands from the native menu that the front end carries out. */
 export type MenuCommand = 'export' | 'import-notes' | 'print' | 'revert-backup';
 
+/** A recent file as the start screen lists it. */
+export interface RecentFileInfo {
+  /** Absolute path; also the id of the entry. */
+  path: string;
+  name: string;
+  /** File size in bytes. */
+  size: number;
+  /** Last opened, ms since the epoch (0 if unknown). */
+  openedAt: number;
+  /** Page count (PDF pages, without blank pages), if known. */
+  pages?: number;
+  /** PDF pages with ink in the saved notes. */
+  annotatedPages: number;
+  /** Blank pages with ink in the saved notes. */
+  annotatedBlankPages: number;
+}
+
 /** `window.inkslide`: the PlatformAdapter of the desktop app plus its extras. */
 export interface InkslideBridge extends Required<PlatformAdapter> {
   readonly platform: 'electron';
   /** The front end opened `pdf` (its notes are loaded): main tracks it for File → Revert to Backup…. */
   opened(pdf: PdfFile, info: { sha256: string; pages: number }): Promise<void>;
+  /** The recent files that still exist, newest first (start screen). */
+  recentFiles(): Promise<RecentFileInfo[]>;
+  /** Drop `path` from the recent files (start screen ×). */
+  removeRecent(path: string): Promise<void>;
+  /** Read a recent file (start screen click); null if it is gone or no longer in the recent files (then it is dropped). */
+  openRecent(path: string): Promise<PdfFile | null>;
+  /** The recent files changed (opened, removed, cleared). Returns unsubscribe. */
+  onRecentChanged(handler: () => void): () => void;
   /** PDF given on the command line (or by the OS before the window loaded); null if none. Returned once. */
   initialPath(): Promise<string | null>;
   /**
@@ -59,6 +84,11 @@ export const IPC = {
   confirm: 'inkslide:confirm',
   initialPath: 'inkslide:initial-path',
   grantPath: 'inkslide:grant-path',
+  recentFiles: 'inkslide:recent-files',
+  removeRecent: 'inkslide:remove-recent',
+  openRecent: 'inkslide:open-recent',
+  /** main -> renderer: the recent files changed. */
+  recentChanged: 'inkslide:recent-changed',
   /** main -> renderer: a file to open (second instance, open-file, recent). */
   openRequest: 'inkslide:open-request',
   /** main -> renderer: a menu command. */

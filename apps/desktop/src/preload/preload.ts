@@ -28,6 +28,11 @@ ipcRenderer.on(IPC.menuCommand, (_e: IpcRendererEvent, command: MenuCommand) => 
   menuHandlers.forEach(h => h(command));
 });
 
+const recentHandlers = new Set<() => void>();
+ipcRenderer.on(IPC.recentChanged, () => {
+  recentHandlers.forEach(h => h());
+});
+
 /** Before the window closes, the front end writes its notes; ok = false keeps it open. */
 let closeHandler: (() => Promise<boolean>) | null = null;
 ipcRenderer.on(IPC.closeRequest, () => {
@@ -43,7 +48,7 @@ const bridge: InkslideBridge = {
   readNotes: (pdf, sha256) => ipcRenderer.invoke(IPC.readNotes, refOf(pdf, sha256), sha256),
   writeNotes: (pdf, text, sha256) => ipcRenderer.invoke(IPC.writeNotes, refOf(pdf, sha256), text, sha256),
   readBackup: (pdf, sha256) => ipcRenderer.invoke(IPC.readBackup, refOf(pdf, sha256), sha256),
-  opened: (pdf, info) => ipcRenderer.invoke(IPC.opened, refOf(pdf, info?.sha256), info?.sha256),
+  opened: (pdf, info) => ipcRenderer.invoke(IPC.opened, refOf(pdf, info?.sha256), info?.sha256, info?.pages),
   keepUnreadableNotes: (pdf, sha256) => ipcRenderer.invoke(IPC.keepUnreadableNotes, refOf(pdf, sha256), sha256),
   revertToBackup: (pdf, sha256) => ipcRenderer.invoke(IPC.revertToBackup, refOf(pdf, sha256), sha256),
   exportPdf: (bytes, suggestedName) => ipcRenderer.invoke(IPC.exportPdf, bytes, suggestedName),
@@ -51,6 +56,13 @@ const bridge: InkslideBridge = {
   importNotes: () => ipcRenderer.invoke(IPC.importNotes),
   confirm: message => ipcRenderer.invoke(IPC.confirm, message),
   initialPath: () => ipcRenderer.invoke(IPC.initialPath),
+  recentFiles: () => ipcRenderer.invoke(IPC.recentFiles),
+  removeRecent: path => ipcRenderer.invoke(IPC.removeRecent, path),
+  openRecent: path => ipcRenderer.invoke(IPC.openRecent, path),
+  onRecentChanged(handler) {
+    recentHandlers.add(handler);
+    return () => { recentHandlers.delete(handler); };
+  },
   onOpenRequest(handler) {
     openHandlers.add(handler);
     pendingOpens.splice(0).forEach(p => handler(p));

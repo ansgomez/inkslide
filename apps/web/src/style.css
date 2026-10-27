@@ -99,7 +99,7 @@ html, body {
 .ink-open:hover { filter: brightness(1.1); }
 .ink-open:focus-visible { outline: 2px solid #8ab4ff; outline-offset: 2px; }
 
-/* Recent files (recent-list.ts, browser build). */
+/* Recent files on the start screen (recent-list.ts). */
 .ink-recent {
   width: min(480px, 100%);
   margin-top: 28px;

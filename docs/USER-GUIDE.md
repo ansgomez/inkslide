@@ -6,7 +6,9 @@ pen. Your ink is saved automatically in a separate notes file; the PDF is never 
 ## Opening a PDF
 
 - **Desktop:** File → Open… (Ctrl/Cmd+O), File → Open Recent, drop a PDF on the window, open it
-  with Inkslide from the file manager ("Open With"), or start `inkslide lecture.pdf`. Opening
+  with Inkslide from the file manager ("Open With"), or start `inkslide lecture.pdf`. The
+  start page lists the recently opened PDFs that still exist, with the pages that have notes:
+  click one to open it with its notes, × removes it from the list. Opening
   a second PDF while Inkslide runs uses the same window. Inkslide opens local files only: a PDF
   on a network location (sftp://, smb://) has to be copied to the computer first.
 - **Browser:** the **Open PDF…** button (Ctrl/Cmd+O) or drop a PDF on the page. A link

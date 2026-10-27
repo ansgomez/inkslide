@@ -33,7 +33,7 @@ import { OpenRequests } from './openRequests';
 import { isSha256, pdfFromArgv, resolveWebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
 import { printPdf } from './print';
-import { RecentFiles } from './recent';
+import { RECENT_MAX, recentInfo, RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
 
 const MAX_PDF_BYTES = 2 ** 31 - 1;
@@ -62,7 +62,7 @@ if (!app.requestSingleInstanceLock()) {
 function start(): void {
   const userData = app.getPath('userData');
   const stateFile = join(userData, 'window-state.json');
-  const recent = new RecentFiles(join(userData, 'recent-files.json'));
+  const recent = new RecentFiles(join(userData, 'recent-files.v2.json'), RECENT_MAX, join(userData, 'recent-files.json'));
   const prefsFile = join(userData, 'preferences.json');
   const prefs = loadPreferences(prefsFile);
   /** The PDF the front end has open (opened()), and whether it has a backup (File → Revert to Backup…). */
@@ -108,6 +108,12 @@ function start(): void {
     else opens.add(p);
   }
 
+  /** The recent files changed: rebuild the menu and tell the start screen. */
+  function recentChanged(): void {
+    refreshMenu();
+    if (win && loaded) win.webContents.send(IPC.recentChanged);
+  }
+
   function refreshMenu(): void {
     Menu.setApplicationMenu(buildMenu({
       open: () => { void showOpenDialog().then(p => p && requestOpen(p)); },
@@ -115,14 +121,14 @@ function start(): void {
         if (existsSync(p)) requestOpen(p);
         else {
           recent.remove(p);
-          refreshMenu();
+          recentChanged();
           void dialog.showMessageBox({ type: 'warning', message: `${basename(p)} no longer exists.`, detail: p });
         }
       },
       clearRecent: () => {
         recent.clear();
         app.clearRecentDocuments();
-        refreshMenu();
+        recentChanged();
       },
       command: (c: MenuCommand) => win?.webContents.send(IPC.menuCommand, c),
       toggleMenuBar: () => {
@@ -324,7 +330,23 @@ function start(): void {
       p = resolve(checkPath(path));
       if (!grants.allows(p)) throw new Error('Inkslide only opens files chosen by the user');
     }
-    if (!p) return null;
+    return p ? readPdf(p) : null;
+  });
+
+  /** Start screen: a recent file, or null (and dropped from the list) if it is gone or no longer listed. */
+  handle(IPC.openRecent, async (path: unknown): Promise<PdfFile | null> => {
+    const p = resolve(checkPath(path));
+    const st = recent.has(p) ? await stat(p).catch(() => null) : null;
+    if (!st?.isFile()) {
+      if (recent.has(p)) recent.remove(p);
+      recentChanged();
+      return null;
+    }
+    return readPdf(p);
+  });
+
+  /** Read a granted PDF and make it the current and most recent file. */
+  async function readPdf(p: string): Promise<PdfFile> {
     const st = await stat(p);
     if (!st.isFile()) throw new Error(`${basename(p)} is not a file`);
     if (st.size > MAX_PDF_BYTES) throw new Error(`${basename(p)} is too large`);
@@ -332,11 +354,11 @@ function start(): void {
     grants.grant(p); // also a recent file: its notes stay writable after Clear Recent
     void removeLegacyBackup(p);
     current = p;
-    recent.add(p);
+    recent.add(p, { size: st.size, mtimeMs: st.mtimeMs });
     app.addRecentDocument(p);
-    refreshMenu();
+    recentChanged();
     return { path: p, name: basename(p), bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) };
-  });
+  }
 
   handle(IPC.readNotes, (ref: unknown, sha256?: unknown) =>
     readNotesFor(checkTarget(ref, sha256), userData));
@@ -344,8 +366,9 @@ function start(): void {
   handle(IPC.keepUnreadableNotes, (ref: unknown, sha256?: unknown): Promise<string | null> =>
     tracked(keepUnreadableFor(checkTarget(ref, sha256), userData)));
 
-  handle(IPC.opened, (ref: unknown, sha256: unknown): void => {
+  handle(IPC.opened, (ref: unknown, sha256: unknown, pages?: unknown): void => {
     notesTarget = checkTarget(ref, sha256);
+    if (notesTarget.path) recent.describe(notesTarget.path, { sha256: notesTarget.sha256, pages: typeof pages === 'number' ? pages : undefined });
     void updateRevert();
   });
 
@@ -423,6 +446,13 @@ function start(): void {
   });
 
   handle(IPC.initialPath, (): string | null => opens.takeInitial());
+
+  handle(IPC.recentFiles, () => recentInfo(recent.records(), userData));
+
+  handle(IPC.removeRecent, (path: unknown): void => {
+    recent.remove(checkPath(path));
+    recentChanged();
+  });
 
   // Synchronous: preload's pathForFile grants a dropped PDF before openPdf.
   ipcMain.on(IPC.grantPath, (e, path: unknown) => {

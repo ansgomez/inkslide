@@ -81,7 +81,8 @@ The front end never touches files itself. It talks to a `PlatformAdapter`
 | `print(bytes, name)` | the PDF itself in a hidden window, system dialog | – (page images, `window.print()`) | share sheet |
 | `importNotes()`, `confirm()` | native dialogs | file input, `window.confirm` | native dialogs |
 | `onOpenRequest(fn)` | second instance, macOS `open-file`, recent files | – | – |
-| `opened(pdf, info)` | tracks the open PDF (Revert to Backup) | recent files | – |
+| `opened(pdf, info)` | tracks the open PDF (Revert to Backup); hash and page count for the recent files | recent files | – |
+| `recentFiles()`, `removeRecent(path)` | recent files on the start screen (existing files, size, pages with notes) | – (`recent` in the web adapter) | – |
 | `readBackup`, `revertToBackup`, `keepUnreadableNotes` | backup in app storage, made by `writeNotes`; copy of an unreadable notes file; off in the File menu | – | – |
 
 `apps/web/src/platform/index.ts` picks the adapter: `window.inkslide` if the preload put it
