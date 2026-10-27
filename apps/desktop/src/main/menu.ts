@@ -20,6 +20,8 @@ export interface MenuActions {
   togglePresenter(): void;
   /** The audience window is open. */
   presenting(): boolean;
+  /** There is an app window to present (macOS keeps running without one). */
+  canPresent(): boolean;
 }
 
 /** Where the menu runs. */
@@ -87,7 +89,7 @@ export function menuTemplate(a: MenuActions, { isMac, dev }: MenuOptions): MenuI
         { role: 'togglefullscreen' },
         {
           // F5 starts a presentation in most slide apps, and presenter remotes send it.
-          label: '&Presenter Mode', type: 'checkbox', checked: a.presenting(), accelerator: 'F5',
+          label: '&Presenter Mode', type: 'checkbox', checked: a.presenting(), enabled: a.canPresent(), accelerator: 'F5',
           toolTip: 'Mirror the page, the ink and the laser in a second window, full screen on the other display',
           click: () => a.togglePresenter(),
         },

@@ -5,7 +5,7 @@ import { menuTemplate, type MenuActions } from '../src/main/menu';
 const actions: MenuActions = {
   open() {}, openRecent() {}, clearRecent() {}, command() {}, toggleMenuBar() {}, toggleBackups() {},
   recent: () => ['/x/a&b.pdf'], menuHidden: () => false, backups: () => true, canRevert: () => false,
-  togglePresenter() {}, presenting: () => false,
+  togglePresenter() {}, presenting: () => false, canPresent: () => true,
 };
 const roles = (items: MenuItemConstructorOptions[]): string[] =>
   items.flatMap(i => [...(i.role ? [i.role] : []), ...roles(Array.isArray(i.submenu) ? i.submenu : [])]);
@@ -52,8 +52,14 @@ describe('menuTemplate', () => {
     }
     on = true;
     expect(item(false).checked).toBe(true);
+    expect(item(false).enabled).toBe(true);
     (item(false).click as () => void)();
     expect(toggled).toBe(1);
+  });
+  it('disables Presenter Mode when there is no app window (macOS)', () => {
+    const view = menuTemplate({ ...actions, canPresent: () => false }, { isMac: true, dev: false })
+      .find(m => m.label === '&View')!.submenu as MenuItemConstructorOptions[];
+    expect(view.find(i => i.label === '&Presenter Mode')!.enabled).toBe(false);
   });
   it('uses no accelerator twice', () => {
     const accels = (items: MenuItemConstructorOptions[]): string[] =>

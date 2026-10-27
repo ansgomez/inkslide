@@ -141,6 +141,7 @@ function start(): void {
       canRevert: () => canRevert,
       togglePresenter: () => togglePresenter(),
       presenting: () => !!audience,
+      canPresent: () => !!win,
     }, !app.isPackaged));
   }
 
@@ -212,6 +213,7 @@ function start(): void {
       webPreferences: { ...SAFE_WEB_PREFERENCES, preload: join(__dirname, 'preload.js') },
     });
     applyMenuBar();
+    refreshMenu(); // Presenter Mode is enabled with a window
     const w = win;
     const wc = w.webContents;
     closeAsked = closeOk = false;
@@ -246,6 +248,7 @@ function start(): void {
       win = null;
       loaded = false;
       opens.newPage();
+      refreshMenu(); // Presenter Mode needs a window
     });
 
     // The page never navigates or opens windows; links go to the browser.
@@ -303,7 +306,10 @@ function start(): void {
 
   /** Open the audience window: full screen on another display if there is one; the app window keeps the focus. */
   function openAudience(): void {
-    if (!win || audience) return;
+    if (!win || audience) {
+      refreshMenu(); // the checkbox has toggled itself
+      return;
+    }
     const appWin = win;
     // Wayland: no window positions, so no full screen that could land on the app window's display.
     const place = audiencePlacement(screen.getAllDisplays(), screen.getDisplayMatching(appWin.getBounds()).id, !onWayland);
