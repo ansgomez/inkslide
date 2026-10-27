@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { canWriteIn, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
+import { canWriteIn, readFileChecked, RefusedLinkError, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
 import {
   backupBeforeSave, BACKUP_MIN_AGE_MS, hasBackup, isUsableNotes, notesWritePath, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup,
   cleanupNotesStore, keepUnreadableFor, OLD_COPIES_MAX_AGE_DAYS,
@@ -101,6 +101,35 @@ describe('renameRetrying', () => {
     const r = failing(['EPERM']);
     await expect(renameRetrying('a', 'b', 'linux', r.rename)).rejects.toThrow('EPERM');
     expect(r.tries).toHaveLength(1);
+  });
+});
+
+describe('readFileChecked', () => {
+  it('reads files and allowed links, null when missing, refuses other links', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'a.json'), 'A');
+    expect((await readFileChecked(join(dir, 'a.json')))?.toString()).toBe('A');
+    expect(await readFileChecked(join(dir, 'none.json'))).toBeNull();
+    if (process.platform === 'win32') return;
+    symlinkSync('a.json', join(dir, 'link.json'));
+    expect((await readFileChecked(join(dir, 'link.json'), () => true))?.toString()).toBe('A');
+    await expect(readFileChecked(join(dir, 'link.json'), () => false)).rejects.toThrow(RefusedLinkError);
+    symlinkSync('gone.json', join(dir, 'dangling.json'));
+    expect(await readFileChecked(join(dir, 'dangling.json'), () => false)).toBeNull();
+  });
+  it.skipIf(process.platform === 'win32')('does not read a file swapped in after the link was checked', async () => {
+    const dir = tempDir();
+    const target = join(dir, 'deck.pdf.notes.json');
+    writeFileSync(target, 'checked');
+    symlinkSync(target, join(dir, 'side.json'));
+    // Between the check and the open: the checked file is replaced by another one.
+    const swapFile = () => { rmSync(target); writeFileSync(target, 'swapped'); return true; };
+    await expect(readFileChecked(join(dir, 'side.json'), swapFile)).rejects.toThrow(/changed while it was read/);
+    // ... or by a link to a secret: not followed (O_NOFOLLOW).
+    writeFileSync(join(dir, 'secret'), 'secret');
+    const swapLink = () => { rmSync(target); symlinkSync(join(dir, 'secret'), target); return true; };
+    const r = await readFileChecked(join(dir, 'side.json'), swapLink).then(b => b?.toString(), (e: Error) => e.message);
+    expect(r).not.toBe('secret');
   });
 });
 
@@ -270,7 +299,7 @@ describe.skipIf(process.platform === 'win32')('a sidecar that is a symlink', () 
     chmodSync(secret, 0o600);
     const { pdf, sidecar } = linkedSidecar(join(dir, 'a', 'b'), '../../.bashrc');
     const t = { path: pdf, sha256: sha };
-    await expect(readNotesFor(t, ud)).rejects.toThrow(/link to \.bashrc/);
+    await expect(readNotesFor(t, ud)).rejects.toThrow(/link to .*\.bashrc/);
     expect(await keepUnreadableFor(t, ud)).toBeNull();
     expect(await backupBeforeSave(t, ud)).toBe(false);
     expect(await notesWritePath(t, ud)).toBe(sidecar);
@@ -290,6 +319,58 @@ describe.skipIf(process.platform === 'win32')('a sidecar that is a symlink', () 
     const { pdf, sidecar } = linkedSidecar(join(dir, 'p'), target);
     expect(await writeNotesFor({ path: pdf, sha256: sha }, 'x', ud)).toBe(sidecar);
     expect(readFileSync(target, 'utf8')).toBe('keep');
+    expect(readFileSync(sidecar, 'utf8')).toBe('x');
+  });
+
+  /** Notes text recording the PDF hash `pdfSha`. */
+  const recording = (pdfSha: string, mark: string) => JSON.stringify({ format: 'marp-notes', version: 2, deck: { source: 'pdf', sha256: pdfSha }, pages: [], mark });
+
+  it('is not followed to the notes of another PDF; a save replaces the link, not those notes', async () => {
+    const dir = tempDir(), ud = tempDir();
+    mkdirSync(join(dir, 'thesis'));
+    const thesis = join(dir, 'thesis', 'thesis.pdf.notes.json');
+    const otherSha = 'f'.repeat(64);
+    writeFileSync(thesis, recording(otherSha, 'thesis'));
+    // Another name, as in the review: "deck.pdf.notes.json -> ../../thesis/thesis.pdf.notes.json".
+    const a = linkedSidecar(join(dir, 'a', 'b'), '../../thesis/thesis.pdf.notes.json');
+    const t = { path: a.pdf, sha256: sha };
+    await expect(readNotesFor(t, ud)).rejects.toThrow(RefusedLinkError);
+    await writeNotesFor(t, '{"a":1}', ud, true);
+    expect(lstatSync(a.sidecar).isSymbolicLink()).toBe(false);
+    expect(readFileSync(thesis, 'utf8')).toContain('"mark":"thesis"');
+    // The same name, but recorded for another PDF.
+    mkdirSync(join(dir, 'other'));
+    const same = join(dir, 'other', 'deck.pdf.notes.json');
+    writeFileSync(same, recording(otherSha, 'other deck'));
+    const b = linkedSidecar(join(dir, 'c'), '../other/deck.pdf.notes.json');
+    await expect(readNotesFor({ path: b.pdf, sha256: sha }, ud)).rejects.toThrow(RefusedLinkError);
+    expect(await keepUnreadableFor({ path: b.pdf, sha256: sha }, ud)).toBeNull();
+    await writeNotesFor({ path: b.pdf, sha256: sha }, '{"b":1}', ud);
+    expect(readFileSync(same, 'utf8')).toContain('"mark":"other deck"');
+    expect(readFileSync(b.sidecar, 'utf8')).toBe('{"b":1}');
+  });
+
+  it('is followed to a file of the same name (or its backup name) with this PDF\'s notes', async () => {
+    const dir = tempDir(), ud = tempDir();
+    mkdirSync(join(dir, 'synced'));
+    const target = join(dir, 'synced', 'deck.pdf.notes.backup.json');
+    writeFileSync(target, recording(sha, 'mine'));
+    const { pdf, sidecar } = linkedSidecar(join(dir, 'p'), '../synced/deck.pdf.notes.backup.json');
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toContain('"mark":"mine"');
+    await writeNotesFor({ path: pdf, sha256: sha }, recording(sha, 'saved'), ud);
+    expect(lstatSync(sidecar).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, 'utf8')).toContain('"mark":"saved"');
+  });
+
+  it('is never followed into userData (app storage of any PDF)', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const inStore = join(ud, 'notes', 'deck.pdf.notes.json'); // even with the right name and hash
+    mkdirSync(dirname(inStore), { recursive: true });
+    writeFileSync(inStore, recording(sha, 'store'));
+    const { pdf, sidecar } = linkedSidecar(join(dir, 'p'), inStore);
+    await expect(readNotesFor({ path: pdf, sha256: sha }, ud)).rejects.toThrow(RefusedLinkError);
+    await writeNotesFor({ path: pdf, sha256: sha }, 'x', ud);
+    expect(readFileSync(inStore, 'utf8')).toContain('"mark":"store"');
     expect(readFileSync(sidecar, 'utf8')).toBe('x');
   });
 

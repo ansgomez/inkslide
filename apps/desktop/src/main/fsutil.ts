@@ -1,7 +1,7 @@
 /* Inkslide desktop - file helpers (no Electron) */
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { access, lstat, mkdir, open, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 /** Whether a symlink to `target` (resolved) may be followed. */
@@ -105,19 +105,49 @@ export async function canWriteIn(dir: string, file?: string, follow?: FollowLink
   }
 }
 
+/** A symlink that is not followed: nothing of its target is read. */
+export class RefusedLinkError extends Error {
+  constructor(file: string, readonly target: string) {
+    super(`${basename(file)} is a link to ${target}, which is not followed`);
+  }
+}
+
+const isMissing = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === 'ENOENT';
+
 /**
- * Text of a file, or null if it does not exist. A symlink that `follow` does
- * not allow is not read: that throws, without the target's content.
+ * Bytes of `file`, or null if it does not exist (also a dangling link). A
+ * symlink is followed only if `follow` allows its target, else this throws
+ * RefusedLinkError without opening the target. The link is resolved once;
+ * the file checked is then opened without following links (O_NOFOLLOW where
+ * the OS has it) and read through that handle only if it is still the same
+ * file (device and inode), so a link swapped in meanwhile is not read.
  */
-export async function readTextIfExists(file: string, follow?: FollowLink): Promise<string | null> {
+export async function readFileChecked(file: string, follow: FollowLink = () => true): Promise<Buffer | null> {
   try {
-    const refused = await refusedLink(file, follow);
-    if (refused) throw new Error(`${basename(file)} is a link to ${basename(refused)}, which is not read`);
-    return await readFile(file, 'utf8');
+    let path = file;
+    let checked = await lstat(file, { bigint: true });
+    if (checked.isSymbolicLink()) {
+      path = await realpath(file);
+      checked = await lstat(path, { bigint: true }); // the file `follow` decides on
+      if (!follow(path)) throw new RefusedLinkError(file, path);
+    }
+    const fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = await fh.stat({ bigint: true });
+      if (opened.dev !== checked.dev || opened.ino !== checked.ino) throw new Error(`${basename(file)} changed while it was read`);
+      return await fh.readFile();
+    } finally {
+      await fh.close();
+    }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (isMissing(err)) return null;
     throw err;
   }
+}
+
+/** Text of a file, or null if it does not exist; links as readFileChecked. */
+export async function readTextIfExists(file: string, follow?: FollowLink): Promise<string | null> {
+  return (await readFileChecked(file, follow))?.toString('utf8') ?? null;
 }
 
 /**
