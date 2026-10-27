@@ -60,12 +60,13 @@ does). Readers must not depend on the layout.
 | `source` | – | `"pdf"` | Missing means a Marp deck. |
 | `title` | yes | yes | Marp: the deck title. PDF: the PDF's `Title` metadata, else the file name without `.pdf`. |
 | `slides` | yes | yes | Number of source pages (slides or PDF pages). Blank pages are not counted. |
-| `size` | yes | yes | `[width, height]` of page 1 in page units (Marp: viewBox px, usually 1280×720; PDF: points). |
+| `size` | yes | yes | `[width, height]` of page 1 in page units (Marp: viewBox px, usually 1280×720; PDF: points, see below). |
 | `pageSizes` | – | optional | `[width, height]` per PDF page, page 1 first. A page without an entry has `size`. |
 | `sha256` | – | optional | Lower-case hex SHA-256 of the PDF bytes. |
 
 Page sizes are the sizes a viewer shows: PDF.js `page.getViewport({ scale: 1 })`, so the
-CropBox (clipped to the MediaBox) with `/Rotate` applied.
+CropBox (clipped to the MediaBox) with `/Rotate` applied and multiplied by the page's
+`/UserUnit` (1 when missing; a page with `/UserUnit 2` shows at twice its box size).
 
 The deck is only used for checks. On load, Inkslide compares it with the open document and
 shows warnings, but loads the notes anyway:
@@ -248,9 +249,9 @@ another name finds its notes, because the key is the hash.
 
 No sidecars: picked files are copies (iPadOS) or content URIs (Android), next to which the app
 can rarely write. Notes are kept in the app data directory, `notes/<sha256>.notes.json`, keyed
-by the PDF's SHA-256 like the desktop's app storage. A save writes a
-temp file (`<sha256>.notes.json.<random>.tmp`), then renames it over the old file (no `fsync`: the fs plugin has
-none). Uninstalling the app deletes the notes; Import brings notes from elsewhere. No backup
+by the PDF's SHA-256 like the desktop's app storage. A save (the app's `write_notes` command)
+writes a temp file (`<sha256>.notes.json.<random>.tmp`), flushes it to disk, then renames it
+over the old file. Uninstalling the app deletes the notes; Import brings notes from elsewhere. No backup
 is kept yet (the Tauri adapter has no `readBackup`; it could live next to the notes in the app
 data directory once it can be tested on devices).
 

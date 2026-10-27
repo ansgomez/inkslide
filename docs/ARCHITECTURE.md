@@ -40,7 +40,7 @@ access.
 | `packages/export` | `@inkslide/export` | Annotated PDF export with pdf-lib. Depends only on `@inkslide/annotate` (model, io, geometry, and the paper look `PAPER_STYLE` from render). |
 | `apps/web` | `@inkslide/web` | The front end: PDF viewer, live ink, gestures, overview, autosave wiring, the web adapter. Built by Vite with `base: './'`, so Electron can load `dist/index.html` from disk. |
 | `apps/desktop` | `@inkslide/desktop` | Electron shell: main process and sandboxed preload, bundled by esbuild into `out/`. Exports only the bridge types (`@inkslide/desktop/bridge`). |
-| `apps/mobile` | `@inkslide/mobile` | Tauri 2 shell for iPad and Android (`src-tauri`): loads `apps/web/dist`, plugins dialog, fs and sharekit. No front-end code of its own. |
+| `apps/mobile` | `@inkslide/mobile` | Tauri 2 shell for iPad and Android (`src-tauri`): loads `apps/web/dist`, plugins dialog, fs and sharekit, and its own commands for every file access (the page has no fs permission). No front-end code of its own. |
 
 `packages/annotate/legacy/` holds two original Marp Notes modules for parity tests;
 `packages/annotate/PORTING.md` lists what changed in the port.
@@ -86,10 +86,10 @@ The front end never touches files itself. It talks to a `PlatformAdapter`
 
 | Method | Desktop | Web | Tauri (iPad, Android) |
 |---|---|---|---|
-| `openPdf(path?)` | open dialog, or a granted path | file input, or a same-site URL (`?pdf=`) | system picker, fs plugin |
-| `readNotes(pdf, sha256)` | sidecar or app storage, the newer one | OPFS, else `localStorage` | app data `notes/<sha256>.notes.json` |
-| `writeNotes(pdf, text, sha256)` | atomic write, sidecar or app storage | OPFS, else `localStorage` | temp file, then rename |
-| `exportPdf(bytes, name)` | save dialog, atomic write | save picker, share sheet, else download | iOS: share sheet; Android: save dialog |
+| `openPdf(path?)` | open dialog, or a granted path | file input, or a same-site URL (`?pdf=`) | system picker (`pick_file`, `read_picked` commands) |
+| `readNotes(pdf, sha256)` | sidecar or app storage, the newer one | OPFS, else `localStorage` | app data `notes/<sha256>.notes.json` (`read_notes` command) |
+| `writeNotes(pdf, text, sha256)` | atomic write, sidecar or app storage | OPFS, else `localStorage` | `write_notes` command: temp file, then rename |
+| `exportPdf(bytes, name)` | save dialog, atomic write | save picker, share sheet, else download | iOS: share sheet; Android: save dialog (`save_pdf` command) |
 | `print(bytes, name)` | the PDF itself in a hidden window, system dialog | – (page images, `window.print()`) | share sheet |
 | `importNotes()`, `confirm()` | native dialogs | file input, `window.confirm` | native dialogs |
 | `onOpenRequest(fn)` | second instance, macOS `open-file`, recent files | – | – |
@@ -100,10 +100,15 @@ The front end never touches files itself. It talks to a `PlatformAdapter`
 
 `apps/web/src/platform/index.ts` picks the adapter: `window.inkslide` if the preload put it
 there, `createTauriAdapter()` when `window.__TAURI_INTERNALS__` exists, else
-`createWebAdapter()`. The Tauri adapter imports its plugin packages on first use, so they stay
+`createWebAdapter()`. The Tauri adapter imports its Tauri packages on first use, so they stay
 out of the main bundle. On mobile there are no sidecars: picked files are security-scoped
 copies (iPadOS) or content URIs (Android), so notes live in the app data directory keyed by
-hash. Both the page's CSP and the shell's must allow Tauri's IPC (`ipc:`,
+hash. The page has no fs plugin permission (on mobile it reads and writes file and content
+URLs without a scope check): every file access is one of the shell's commands
+(`apps/mobile/src-tauri/src/lib.rs`), which take a notes key or a checked file name, never a
+free path, read only files picked through them, and write only in the app's folders or to
+the file picked in a save dialog they open themselves.
+Both the page's CSP and the shell's must allow Tauri's IPC (`ipc:`,
 `http://ipc.localhost`); the page adds them only in the Tauri build
 (`pnpm --filter @inkslide/web build:tauri`, the shell's `beforeBuildCommand`),
 so the browser and Electron builds cannot reach it; see [apps/mobile/README.md](../apps/mobile/README.md).

@@ -1,28 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: pick and read files (the dialog plugin adds each picked or saved path to the fs scope), notes in the app data directory, save exports.",
+  "description": "The main window: message (confirm) dialogs and the app's own file commands (src/lib.rs): pick a file and read it, read and write notes in the app data directory, save an export. No fs plugin permission and no open or save dialog command: those would let the page reach any file the app can.",
   "windows": ["main"],
   "platforms": ["iOS", "android", "linux", "macOS", "windows"],
   "permissions": [
     "core:default",
-    "dialog:allow-open",
-    "dialog:allow-save",
     "dialog:allow-message",
-    "fs:allow-exists",
-    "fs:allow-read-file",
-    "fs:allow-read-text-file",
-    "fs:allow-write-file",
-    "fs:allow-write-text-file",
-    "fs:allow-mkdir",
-    "fs:allow-rename",
-    "fs:allow-remove",
-    {
-      "identifier": "fs:scope",
-      "allow": [
-        { "path": "$APPDATA/notes" },
-        { "path": "$APPDATA/notes/*" }
-      ]
-    }
+    "allow-pick-file",
+    "allow-read-picked",
+    "allow-read-notes",
+    "allow-write-notes",
+    "allow-save-pdf"
   ]
 }

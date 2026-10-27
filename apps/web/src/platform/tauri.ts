@@ -1,15 +1,23 @@
 /* Inkslide web - Tauri platform adapter (apps/mobile: iPad and Android)
  *
  * Selected when the page runs in a Tauri web view (window.__TAURI_INTERNALS__).
- * The plugin packages are imported on first use, so the browser and Electron
+ * The Tauri packages are imported on first use, so the browser and Electron
  * builds only carry this small module.
  *
- * PDFs come from the system picker (dialog plugin) and are read with the fs
- * plugin: iOS hands over a copy in the app's inbox (or a security-scoped URL),
- * Android a content:// URI. Next to such a file the app can rarely write, so
- * there are no sidecars: notes live in the app data directory, keyed by the
- * PDF's SHA-256 (`notes/<sha256>.notes.json`, written to a temp file, then renamed).
- * Import and export move notes and annotated PDFs in and out.
+ * The page has no fs plugin permission and no file dialog of its own: every
+ * file access is one of the app's commands (apps/mobile/src-tauri/src/lib.rs),
+ * which take a notes key or a checked file name, never a free path.
+ * pick_file opens the system picker (iOS hands over a copy in the app's inbox
+ * or a security-scoped URL, Android a content:// URI) and read_picked reads
+ * only files picked that way. Next to such a file the app can rarely write,
+ * so there are no sidecars: notes live in the app data directory, keyed by
+ * the PDF's SHA-256 (`notes/<sha256>.notes.json`; read_notes, write_notes).
+ * write_share_file and remove_share_file use the share folder; save_pdf opens
+ * the save dialog itself and writes to the file picked there.
+ *
+ * File bytes go to the app as a raw request body with the name in a header,
+ * except on Android, whose IPC has no raw bodies: there they go as JSON
+ * { name, data } with data in base64.
  *
  * Export: the share sheet on iOS (Save to Files, AirDrop, Mail, Print; as the
  * PWA on the iPad), the system save dialog elsewhere (Android: Storage Access
@@ -56,14 +64,14 @@ export const fileUrl = (path: string): string => `file://${path.split('/').map(e
 const SHARE_NAME_BYTES = 200;
 
 /**
- * File name for a shared PDF: path separators, ':', control characters and
- * lone surrogates become '_', no leading dots or spaces, at most 200 UTF-8
- * bytes (whole characters), always ending in .pdf (the share scope allows
- * only PDFs).
+ * File name for a shared PDF: path separators, ':', control characters (C0,
+ * DEL and C1, as Rust's char::is_control) and lone surrogates become '_', no
+ * leading dots or spaces, at most 200 UTF-8 bytes (whole characters), always
+ * ending in .pdf (write_share_file accepts only such names).
  */
 export function shareName(name: string): string {
   const clean = name
-    .replace(/[/\\:\0-\x1f\x7f]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '_')
+    .replace(/[/\\:\0-\x1f\x7f-\x9f]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '_')
     .replace(/^[.\s]+/, '').replace(/\.pdf$/i, '').trim();
   const enc = new TextEncoder();
   let base = '', bytes = 0;
@@ -75,9 +83,35 @@ export function shareName(name: string): string {
   return `${base.trim() || 'document'}.pdf`;
 }
 
+/** Key of a PDF's notes: its SHA-256, else a safe form of its name ([A-Za-z0-9_-] only, as write_notes requires). */
+export const notesKey = (pdf: Pick<PdfFile, 'name'>, sha256?: string): string =>
+  sha256 && /^[0-9a-f]{64}$/.test(sha256) ? sha256 : safeFileName(`name-${pdf.name}`, '');
+
 /** Notes file of a PDF in the app data directory: notes/<sha256>.notes.json, as the desktop's app storage. */
 export const notesFile = (pdf: Pick<PdfFile, 'name'>, sha256?: string): string =>
-  `notes/${sha256 && /^[0-9a-f]{64}$/.test(sha256) ? sha256 : safeFileName(`name-${pdf.name}`, '')}${NOTES_SUFFIX}`;
+  `notes/${notesKey(pdf, sha256)}${NOTES_SUFFIX}`;
+
+/** Base64 of bytes, in chunks (String.fromCharCode takes a limited number of arguments). */
+export function base64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/**
+ * invoke() arguments sending a file's bytes and name: a raw body with the
+ * name percent-encoded in a header (headers are ASCII), or on Android, whose
+ * IPC has no raw bodies, JSON with the bytes in base64.
+ */
+export function fileArgs(os: MobileOs, bytes: Uint8Array, name: string):
+  [Uint8Array | { name: string; data: string }, { headers: Record<string, string> } | undefined] {
+  return os === 'android'
+    ? [{ name, data: base64(bytes) }, undefined]
+    : [bytes, { headers: { name: encodeURIComponent(name) } }];
+}
+
+/** Bytes of a raw IPC response (an ArrayBuffer, or a number array where the IPC has no raw responses). */
+const responseBytes = (r: ArrayBuffer | number[]): Uint8Array => (r instanceof ArrayBuffer ? new Uint8Array(r) : Uint8Array.from(r));
 
 /** The user dismissed a picker (Android's dialog plugin) or the share sheet (sharekit). */
 const isCancel = (e: unknown): boolean =>
@@ -90,12 +124,9 @@ const orCancel = <T, C>(p: Promise<T>, cancelled: C): Promise<T | C> =>
     throw e;
   });
 
-const PDF_FILTER = { name: 'PDF', extensions: ['pdf'] };
-
 const loadPlugins = () => Promise.all([
   import('@tauri-apps/plugin-dialog'),
-  import('@tauri-apps/plugin-fs'),
-  import('@tauri-apps/api/path'),
+  import('@tauri-apps/api/core'),
   import('@choochmeque/tauri-plugin-sharekit-api'),
 ]);
 
@@ -105,51 +136,45 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
     plugins = null; // a failed chunk load is tried again on the next call
     throw e;
   }));
-  let notesDir: Promise<void> | null = null;
-  /** iOS: the last shared file, removed at the next share (see share()). */
-  let lastShared: { file: string; baseDir: number } | null = null;
+  /** iOS: the name of the last shared file, removed at the next share (see share()). */
+  let lastShared: string | null = null;
 
-  /** Pick one file; its path or URI, null if cancelled. */
-  async function pick(filter: { name: string; extensions: string[] }): Promise<string | null> {
-    const [dialog] = await use();
-    return orCancel(dialog.open({ filters: [filter], multiple: false, directory: false }), null);
+  /** Pick one file (pick_file); its path or URI, null if cancelled. */
+  async function pick(kind: 'pdf' | 'notes'): Promise<string | null> {
+    const [, { invoke }] = await use();
+    return orCancel(invoke<string | null>('pick_file', { kind }), null);
+  }
+
+  /** Bytes of a file picked in this session (read_picked refuses any other). */
+  async function readPicked(id: string): Promise<Uint8Array> {
+    const [, { invoke }] = await use();
+    return responseBytes(await invoke<ArrayBuffer | number[]>('read_picked', { id }));
   }
 
   /**
-   * Where shared files go. iOS: tmp/, where the share plugin copies the file
-   * to (it does not replace an older copy of the same name, so the export is
-   * written there itself). Android: cache/share/, the plugin copies it into
-   * the cache root (a copy onto itself would empty it) and shares that
-   * through its FileProvider; the OS clears that copy.
-   */
-  async function shareTarget(): Promise<{ baseDir: number; sub: string; abs: string }> {
-    const [, fs, path] = await use();
-    if (os === 'ios') return { baseDir: path.BaseDirectory.Temp, sub: '', abs: await path.tempDir() };
-    const baseDir = path.BaseDirectory.AppCache;
-    await fs.mkdir('share', { baseDir, recursive: true }); // every time: Android may clear the cache meanwhile
-    return { baseDir, sub: 'share/', abs: await path.join(await path.appCacheDir(), 'share') };
-  }
-
-  /**
-   * Write the PDF to a temp file and hand it to the share sheet; false if
-   * cancelled. Android: the temp file is removed once the plugin is done (it
-   * copies it before showing the chooser). iOS: the share sheet shares that
-   * very file, and an activity (AirDrop, Print) may still read it after the
-   * sheet closed, so it is removed at the next share (or by the OS).
+   * Write the PDF to the share folder (write_share_file) and hand it to the
+   * share sheet; false if cancelled. The folder is iOS: tmp/, where the share
+   * plugin copies the file to (it does not replace an older copy of the same
+   * name, so the export is written there itself); Android: cache/share/, the
+   * plugin copies it into the cache root (a copy onto itself would empty it)
+   * and shares that through its FileProvider; the OS clears that copy.
+   * Android: the file is removed once the plugin is done (it copies it before
+   * showing the chooser). iOS: the share sheet shares that very file, and an
+   * activity (AirDrop, Print) may still read it after the sheet closed, so it
+   * is removed at the next share (or by the OS).
    */
   async function share(bytes: Uint8Array, name: string): Promise<boolean> {
-    const [, fs, , { shareFile }] = await use();
-    const { baseDir, sub, abs } = await shareTarget();
-    const file = sub + shareName(name);
-    const remove = (f: { file: string; baseDir: number }) => fs.remove(f.file, { baseDir: f.baseDir }).catch(() => { /* the OS clears it */ });
-    if (lastShared && lastShared.file !== file) await remove(lastShared);
+    const [, { invoke }, { shareFile }] = await use();
+    const file = shareName(name);
+    const remove = (f: string) => invoke('remove_share_file', { name: f }).catch(() => { /* the OS clears it */ });
+    if (lastShared && lastShared !== file) await remove(lastShared);
     lastShared = null;
-    await fs.writeFile(file, bytes, { baseDir });
+    const abs = await invoke<string>('write_share_file', ...fileArgs(os, bytes, file));
     try {
-      return await orCancel(shareFile(fileUrl(`${abs.replace(/\/$/, '')}/${file.slice(sub.length)}`), { mimeType: 'application/pdf', title: name }).then(() => true), false);
+      return await orCancel(shareFile(fileUrl(abs), { mimeType: 'application/pdf', title: name }).then(() => true), false);
     } finally {
-      if (os === 'ios') lastShared = { file, baseDir };
-      else await remove({ file, baseDir });
+      if (os === 'ios') lastShared = file;
+      else await remove(file);
     }
   }
 
@@ -157,54 +182,34 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
     platform: 'tauri',
 
     async openPdf(given) {
-      const path = given || (await pick(PDF_FILTER));
+      // `given`: only a file picked in this session can be read again.
+      const path = given || (await pick('pdf'));
       if (!path) return null;
-      const [, fs] = await use();
-      return { path: null, name: nameFromPath(path, 'document.pdf'), bytes: await fs.readFile(path) };
+      return { path: null, name: nameFromPath(path, 'document.pdf'), bytes: await readPicked(path) };
     },
 
     async readNotes(pdf, sha256) {
-      const [, fs, { BaseDirectory }] = await use();
-      const file = notesFile(pdf, sha256);
-      const baseDir = BaseDirectory.AppData;
-      if (!(await fs.exists(file, { baseDir }))) return null;
-      return (await fs.readTextFile(file, { baseDir })) || null;
+      const [, { invoke }] = await use();
+      return (await invoke<string | null>('read_notes', { key: notesKey(pdf, sha256) })) || null;
     },
 
     async writeNotes(pdf, text, sha256) {
-      const [, fs, { BaseDirectory }] = await use();
-      const file = notesFile(pdf, sha256);
-      const baseDir = BaseDirectory.AppData;
-      notesDir ??= fs.mkdir('notes', { baseDir, recursive: true }).catch(e => {
-        notesDir = null; // try again on the next write
-        throw e;
-      });
-      await notesDir;
-      // A temp name of its own: an older write of the same notes may still be under way.
-      const tmp = `${file}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`;
-      try {
-        await fs.writeTextFile(tmp, text, { baseDir });
-        await fs.rename(tmp, file, { oldPathBaseDir: baseDir, newPathBaseDir: baseDir });
-      } catch (e) {
-        await fs.remove(tmp, { baseDir }).catch(() => { /* not written */ });
-        throw e;
-      }
+      // notes/<key>.notes.json in the app data directory, through a temp file of its own.
+      const [, { invoke }] = await use();
+      await invoke('write_notes', { key: notesKey(pdf, sha256), text });
     },
 
     async exportPdf(bytes, suggestedName) {
       if (os === 'ios') return share(bytes, suggestedName);
-      const [dialog, fs] = await use();
-      const target = await orCancel(dialog.save({ defaultPath: suggestedName, filters: [PDF_FILTER] }), null);
-      if (!target) return false;
-      await fs.writeFile(target, bytes);
-      return true;
+      // The command opens the save dialog and writes to the picked file; false if cancelled.
+      const [, { invoke }] = await use();
+      return orCancel(invoke<boolean>('save_pdf', ...fileArgs(os, bytes, suggestedName)), false);
     },
 
     async importNotes() {
-      const path = await pick({ name: 'Notes', extensions: ['json'] });
+      const path = await pick('notes');
       if (!path) return null;
-      const [, fs] = await use();
-      return { name: nameFromPath(path, 'notes.json'), text: await fs.readTextFile(path) };
+      return { name: nameFromPath(path, 'notes.json'), text: new TextDecoder().decode(await readPicked(path)) };
     },
 
     async confirm(message) {

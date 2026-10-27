@@ -1,9 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, decodePDFRawStream, type PDFPage } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, decodePDFRawStream, degrees, type PDFPage } from 'pdf-lib';
 import { ENCRYPTED_PDF_MESSAGE, exportAnnotatedPdf, exportAnnotatedPdfWithReport, paperOperators } from '../src/export';
 import { displayMatrix, displaySize, normalizeRotation, parseColor, svgPathOperators } from '../src/ops';
 import { SIZE, crossStrokes, fixturePdf, hl, notesFile, openPdfJs, pageTexts, pen } from './helpers';
+import type { NotesJSON } from '@inkslide/annotate/model';
 
 const contentsCount = (page: PDFPage): number => {
   const c = page.node.Contents();
@@ -40,6 +41,8 @@ const fullNotes = () => notesFile([
 describe('page frames', () => {
   it('normalizes rotation', () => {
     expect([0, 90, 180, 270, 360, -90, 450].map(normalizeRotation)).toEqual([0, 90, 180, 270, 0, 270, 90]);
+    // PDF.js shows a /Rotate that is no multiple of 90 unrotated, so the export does too.
+    expect([45, 89, 135, -45, 90.5, NaN, Infinity].map(normalizeRotation)).toEqual([0, 0, 0, 0, 0, 0, 0]);
     expect(displaySize({ x: 0, y: 0, width: 400, height: 600 }, 90)).toEqual([600, 400]);
   });
 
@@ -51,12 +54,14 @@ describe('page frames', () => {
       { media: [0, 0, 800, 600], crop: [100, 50, 600, 400], rot: 0 },
       { media: [0, 0, 800, 600], crop: [100, 50, 400, 500], rot: 90 },
       { media: [-50, -20, 600, 400], rot: 270 },
+      { media: [0, 0, 600, 400], rot: 45 }, { media: [0, 0, 400, 600], rot: -450 },
     ];
     for (const b of boxes) {
       const p = pdf.addPage();
       p.setMediaBox(b.media[0], b.media[1], b.media[2], b.media[3]);
       if (b.crop) p.setCropBox(b.crop[0], b.crop[1], b.crop[2], b.crop[3]);
-      p.setRotation({ type: 'degrees', angle: b.rot } as never);
+      // pdf-lib refuses angles that are no multiple of 90; set /Rotate directly.
+      p.node.set(PDFName.of('Rotate'), PDFNumber.of(b.rot));
     }
     const bytes = await pdf.save();
     const loaded = await PDFDocument.load(bytes);
@@ -215,6 +220,94 @@ describe('exportAnnotatedPdf', () => {
     expect(out.getPage(1).getSize()).toEqual({ width: 600, height: 400 });
     const cm = /(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) cm/.exec(lastStream(out.getPage(0)));
     expect(cm!.slice(1).map(Number)).toEqual([1, 0, 0, -1, 0, 400]);
+  });
+
+  it('scales by /UserUnit as PDF.js does', async () => {
+    // MediaBox 300×200 with /UserUnit 2 shows as 600×400; a bad /UserUnit counts as 1.
+    const pdf = await PDFDocument.create();
+    pdf.addPage([300, 200]).node.set(PDFName.of('UserUnit'), PDFNumber.of(2));
+    const p2 = pdf.addPage([200, 300]);
+    p2.node.set(PDFName.of('UserUnit'), PDFNumber.of(2));
+    p2.setRotation(degrees(90));
+    pdf.addPage([600, 400]).node.set(PDFName.of('UserUnit'), PDFNumber.of(-1));
+    const src = await pdf.save();
+    const js = await openPdfJs(src);
+    const vps = await Promise.all([1, 2, 3].map(async n => (await js.doc.getPage(n)).getViewport({ scale: 1 })));
+    for (const vp of vps) expect([vp.width, vp.height]).toEqual([600, 400]);
+    const notes = notesFile([
+      { id: 'p1', kind: 'slide', slide: 1, strokes: [pen('d', [[100, 50]], '#000', 10)] },
+      { id: 'b-1', kind: 'blank', after: 1, paper: 'plain', strokes: [] },
+      { id: 'p2', kind: 'slide', slide: 2, strokes: [pen('d2', [[100, 50]], '#000', 10)] },
+      { id: 'p3', kind: 'slide', slide: 3, strokes: [pen('d3', [[100, 50]], '#000', 10)] },
+    ]);
+    const res = await exportAnnotatedPdfWithReport(src, notes);
+    expect(res.warnings).toEqual([]);
+    const out = await PDFDocument.load(res.bytes);
+    expect(out.getPage(1).getSize()).toEqual({ width: 600, height: 400 }); // blank page, no /UserUnit
+    for (const [i, n] of [[0, 1], [2, 2], [3, 3]]) {
+      const cm = /(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) cm/.exec(lastStream(out.getPage(i)));
+      const m = cm!.slice(1).map(Number);
+      const vp = vps[n - 1];
+      for (const [u, v] of [[0, 0], [100, 50], [600, 400]]) {
+        const [x, y] = vp.convertToPdfPoint(u, v);
+        const got = apply(m, u, v);
+        expect(got[0]).toBeCloseTo(x, 6);
+        expect(got[1]).toBeCloseTo(y, 6);
+      }
+    }
+    await js.destroy();
+  });
+
+  it('gives a page without a usable MediaBox Letter size, as PDF.js does', async () => {
+    const pdf = await PDFDocument.create();
+    pdf.addPage([600, 400]).node.delete(PDFName.of('MediaBox'));
+    pdf.addPage([600, 400]).node.set(PDFName.of('MediaBox'), pdf.context.obj([0, 0, 0, 0]));
+    pdf.addPage([600, 400]).node.set(PDFName.of('MediaBox'), pdf.context.obj(['a', 'b']));
+    const src = await pdf.save();
+    const js = await openPdfJs(src);
+    const vps = await Promise.all([1, 2, 3].map(async n => (await js.doc.getPage(n)).getViewport({ scale: 1 })));
+    await js.destroy();
+    for (const vp of vps) expect([vp.width, vp.height]).toEqual([612, 792]);
+    const notes: NotesJSON = {
+      format: 'marp-notes', version: 2,
+      deck: { source: 'pdf', title: 'fixture.pdf', slides: 3, size: [612, 792] },
+      pages: [
+        { id: 'p1', kind: 'slide', slide: 1, strokes: [pen('d', [[100, 50]], '#000', 10)] },
+        { id: 'p3', kind: 'slide', slide: 3, strokes: [pen('d3', [[100, 50]], '#000', 10)] },
+        { id: 'b-3', kind: 'blank', after: 3, paper: 'lined', strokes: [] },
+      ],
+    };
+    const res = await exportAnnotatedPdfWithReport(src, notes);
+    expect(res.warnings).toEqual([]);
+    const out = await PDFDocument.load(res.bytes);
+    expect(out.getPageCount()).toBe(4);
+    for (const i of [0, 1, 2, 3]) expect(out.getPage(i).getMediaBox()).toEqual({ x: 0, y: 0, width: 612, height: 792 });
+    for (const i of [0, 2]) {
+      const cm = /(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) cm/.exec(lastStream(out.getPage(i)));
+      expect(cm!.slice(1).map(Number)).toEqual([1, 0, 0, -1, 0, 792]);
+    }
+  });
+
+  it('reads a /Rotate that is no number as 0, as PDF.js does', async () => {
+    const pdf = await PDFDocument.create();
+    pdf.addPage([600, 400]).node.set(PDFName.of('Rotate'), PDFName.of('Ninety'));
+    pdf.addPage([600, 400]).node.set(PDFName.of('Rotate'), pdf.context.obj('90'));
+    const src = await pdf.save();
+    const js = await openPdfJs(src);
+    const vps = await Promise.all([1, 2].map(async n => (await js.doc.getPage(n)).getViewport({ scale: 1 })));
+    await js.destroy();
+    for (const vp of vps) expect([vp.width, vp.height, vp.rotation]).toEqual([600, 400, 0]);
+    const notes = notesFile([
+      { id: 'p1', kind: 'slide', slide: 1, strokes: [pen('d', [[100, 50]], '#000', 10)] },
+      { id: 'p2', kind: 'slide', slide: 2, strokes: [pen('d2', [[100, 50]], '#000', 10)] },
+    ], 2);
+    const res = await exportAnnotatedPdfWithReport(src, notes);
+    expect(res.warnings).toEqual([]);
+    const out = await PDFDocument.load(res.bytes);
+    for (const i of [0, 1]) {
+      const cm = /(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) cm/.exec(lastStream(out.getPage(i)));
+      expect(cm!.slice(1).map(Number)).toEqual([1, 0, 0, -1, 0, 400]);
+    }
   });
 
   it('leaves pages without notes untouched and handles empty notes', async () => {

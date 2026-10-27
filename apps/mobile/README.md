@@ -8,29 +8,31 @@ smoke test.
 | Path | Role |
 |---|---|
 | `src-tauri/tauri.conf.json` | App id `io.github.ansgomez.inkslide`, frontend `../../web/dist` (dev: `http://localhost:5173`), CSP, icons, iOS 17+ / Android 8+ (API 26); Tauri's own file drop is off, so drops reach the page as in the browser. |
-| `src-tauri/capabilities/default.json` | All platforms: open, save and message (confirm) dialogs; fs read, write, exists, mkdir, rename and remove, scoped to `$APPDATA/notes` (the dialog plugin adds each picked or saved file to the scope). |
-| `src-tauri/capabilities/share-ios.json`, `share-android.json` | Share a file, and the fs scope of the PDF handed to it: iOS `$TEMP/*.pdf`, Android `$APPCACHE/share/*.pdf`. |
-| `src-tauri/src/lib.rs` | The app: plugins dialog, fs, sharekit. `main.rs` runs it on the desktop. |
+| `src-tauri/capabilities/default.json` | All platforms: message (confirm) dialogs and the app commands `pick_file`, `read_picked`, `read_notes`, `write_notes` and `save_pdf`. No fs plugin permission and no open or save dialog command (see *File access* below). |
+| `src-tauri/capabilities/share-ios.json`, `share-android.json` | Share a file, and the app commands `write_share_file` and `remove_share_file`. |
+| `src-tauri/src/lib.rs` | The app: plugins dialog, fs, sharekit (dialog and fs used from Rust only), and the commands that do every file access (see *File access* below). `main.rs` runs it on the desktop. |
+| `src-tauri/build.rs` | Lists the app commands, so each gets an `allow-<command>` permission that a capability must grant. |
 | `../web/src/platform/tauri.ts` | The front end's `PlatformAdapter` for Tauri (selected when `window.__TAURI_INTERNALS__` exists). |
-| `test/config.test.mjs` | `pnpm test`: paths, dev port, icons, both CSPs agree and allow the IPC, the capabilities stay narrow. |
+| `test/config.test.mjs` | `pnpm test`: paths, dev port, icons, both CSPs agree and allow the IPC, the capabilities stay narrow (no fs plugin permission, no open or save dialog), the app commands match their permissions. |
+| `test/share-names.json` | Names for shared files: what the front end's `shareName` makes of them, checked by both the Rust and the front-end tests. |
 | `test/smoke.mjs` | `pnpm smoke` (Linux): builds the desktop variant with a test script and checks notes through the real plugins. |
 
 ## How files work on mobile
 
-- **Open:** the system picker (dialog plugin). iPadOS hands over a copy in the app's inbox,
-  Android a `content://` URI; the fs plugin reads both. Android does not always tell the file
+- **Open:** the system picker (`pick_file`). iPadOS hands over a copy in the app's inbox or a
+  security-scoped URL, Android a `content://` URI; `read_picked` reads both. Android does not always tell the file
   name; then the PDF is called `document.pdf` (its title comes from the PDF when it has one).
-- **Notes:** in the app data directory, `notes/<sha256>.notes.json` (written to a uniquely
-  named `.tmp` file, then renamed; the fs plugin has no `fsync`, so a power cut right after a
-  save can still lose it), not as a sidecar. Files from the iPad Files app are security-scoped copies or
+- **Notes:** in the app data directory, `notes/<sha256>.notes.json` (written by `write_notes`
+  to a uniquely named `.tmp` file, flushed to disk, then renamed, and the folder flushed), not
+  as a sidecar. Files from the iPad Files app are security-scoped copies or
   URLs, and Android gives content URIs: the folder next to them is usually not writable, and a
   sidecar would not travel with a copy anyway. Keyed by hash, the notes follow the PDF's
   content, whatever it is called. Import (toolbar) brings notes from elsewhere (e.g. a Marp
   deck or the desktop's `*.pdf.notes.json`).
 - **Export:** iPadOS: the share sheet (Save to Files, AirDrop, Mail, Print), as the PWA does.
-  Android: the system save dialog (Storage Access Framework).
+  Android: the system save dialog (Storage Access Framework), opened by `save_pdf`.
 - **Shared files:** the PDF goes to a temp file (iPadOS `tmp/<name>.pdf`, Android
-  `cache/share/<name>.pdf`; path separators, `:` and control characters in the name become
+  `cache/share/<name>.pdf`; path separators, `:` and control characters (C0, DEL, C1) in the name become
   `_`, and it is cut to 200 bytes). Android removes it once the share plugin has copied it;
   iPadOS shares that very file, which an activity (AirDrop, Print) may still read after the
   sheet closed, so it is removed at the next share (or when iPadOS clears `tmp/`).
@@ -38,6 +40,20 @@ smoke test.
   if one accepts PDFs, else save and print from a PDF viewer). The mobile web views have no
   `window.print()`.
 - **Confirm:** native alert.
+- **File access:** the web view has no fs plugin permission and no open or save dialog
+  command. The dialog plugin's commands add every chosen file to the fs scope, and on mobile
+  (plugin-fs 2.7) the fs plugin reads and writes file and content URLs without checking the
+  scope at all, so any fs permission would let the page read whatever the app can reach and
+  overwrite the user's PDFs. Every file access is an app command (`src-tauri/src/lib.rs`):
+  `pick_file` opens the picker from Rust and remembers the file; `read_picked` reads only
+  files picked so in this session; `read_notes` and `write_notes` take a notes key
+  (`[A-Za-z0-9_-]`, at most 200 bytes) and stay in `notes/` of the app data directory;
+  `write_share_file` and `remove_share_file` take one name ending in `.pdf` (no separators,
+  `:`, control characters or leading dot) and stay in the share folder; `save_pdf` opens the
+  save dialog itself and writes only to the file picked there, which the page never sees.
+  File bytes go as a raw request body with the name in a header; Android's IPC has no raw
+  bodies, so there they go as JSON with the bytes in base64 (a JSON number array, also
+  accepted, costs about 32 bytes per byte). Files up to 1 GiB.
 
 Share uses the community plugin [tauri-plugin-sharekit](https://github.com/Choochmeque/tauri-plugin-sharekit)
 0.3.1 (MIT; Rust crate and `@choochmeque/tauri-plugin-sharekit-api`), as Tauri has no
@@ -147,13 +163,15 @@ The `ios` subcommands exist only in the CLI on macOS, so their flags above are f
 ```sh
 pnpm --filter @inkslide/mobile test     # config checks (node:test)
 pnpm --filter @inkslide/mobile check    # cargo check of src-tauri (desktop target)
+cargo test --manifest-path apps/mobile/src-tauri/Cargo.toml   # name, payload and picked-file checks of the commands
 pnpm --filter @inkslide/web build:tauri && pnpm --filter @inkslide/mobile smoke   # Linux, WebKitGTK; a window flashes
 pnpm --filter @inkslide/web test        # includes test/tauri-adapter.test.ts (mocked IPC)
 ```
 
 The smoke test builds into `src-tauri/target/smoke` with `TAURI_CONFIG` pointing the frontend
 at a copy of `apps/web/dist` plus a test script, and a temporary `XDG_DATA_HOME`. It covers
-the fs permissions and scope, the CSP with the IPC, and the adapter's notes path. On
+the `read_notes` and `write_notes` commands and their permissions, the CSP with the IPC, and
+the adapter's notes path. On
 WebKitGTK, IPC calls made before the page's `load` event can hang; the app makes none.
 
 ## Not tested yet (needs the devices)
