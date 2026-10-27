@@ -116,7 +116,11 @@ cancels the close, asks the front end to flush its notes, and closes when the re
 If saving fails, the user is asked. `will-quit` waits for notes writes still running. Open
 requests that come before the page has loaded wait in `OpenRequests` (the first one is
 `initialPath()`); a reloaded page gets the PDF it showed. Reload is in the menu of development
-builds only, since it skips the save before closing.
+builds only, since it skips the save before closing. If the page's renderer process dies
+(crash, killed for memory), main reloads the page and it reopens the PDF; open requests that
+come meanwhile are queued. If it dies again within 30 s, the user chooses: reload, reload
+without the PDF, or close the window (`crashRecovery.ts`). During the close handshake the
+window simply closes.
 
 Both windows (the app and the hidden print window) are locked down by `harden.ts`: context
 isolation, sandbox, no Node; no navigation, no new windows (http(s) links open in the system

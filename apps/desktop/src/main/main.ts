@@ -23,6 +23,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 import { checkDroppedPdf, checkPath, PathGrants } from './access';
+import { CrashRecovery } from './crashRecovery';
 import { sameFile, writeFileAtomic } from './fsutil';
 import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
 import { buildMenu } from './menu';
@@ -251,16 +252,44 @@ function start(): void {
 
     wc.on('did-start-loading', () => { loaded = false; });
     // A new page asks initialPath() again; a reload (menu in development,
-    // DevTools) gets the PDF that was open.
+    // DevTools, after a crash) gets the PDF that was open, unless the user
+    // chose to reload without it.
     let navigated = false;
+    let reopen = true;
     wc.on('did-navigate', () => {
-      opens.newPage(navigated ? current : null);
+      opens.newPage(navigated && reopen ? current : null);
       navigated = true;
+      reopen = true;
     });
-    wc.on('render-process-gone', () => {
+    // The renderer died (crash, killed for memory): the window would stay
+    // blank, unable to save or take open requests. Reload it (it reopens the
+    // PDF; requests that come meanwhile are queued); if it dies again soon,
+    // ask. While closing, the window just closes: there is nothing left to save.
+    const crashes = new CrashRecovery();
+    wc.on('render-process-gone', (_e, details) => {
       loaded = false;
-      if (closeAsked) w.close();
+      if (closeAsked) {
+        w.close();
+        return;
+      }
+      if (smokeMode || w.isDestroyed()) return;
+      const action = crashes.next(details.reason);
+      if (action === 'reload') wc.reload();
+      else if (action === 'ask') void askAfterCrash(details.reason);
     });
+    async function askAfterCrash(reason: string): Promise<void> {
+      const r = await dialog.showMessageBox(w, {
+        type: 'error', buttons: ['Reload', 'Reload Without the PDF', 'Close Window'], defaultId: 1, cancelId: 2,
+        title: 'Inkslide', message: `The Inkslide window stopped working again (${reason}).`,
+        detail: 'Notes saved before it stopped are kept. If the open PDF makes it stop, reload without it.',
+      });
+      if (w.isDestroyed() || loaded) return;
+      if (r.response === 2) w.close();
+      else {
+        reopen = r.response === 0;
+        wc.reload();
+      }
+    }
     wc.on('did-finish-load', () => {
       loaded = true;
       opens.takeQueued().forEach(p => wc.send(IPC.openRequest, p));
