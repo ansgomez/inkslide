@@ -68,9 +68,14 @@ access.
   the documents opened in it, and written to the system clipboard as JSON text with a format
   marker (`inkslide-strokes`). Ctrl/Cmd+C, X and V are left to the browser, whose copy, cut and
   paste events carry the system clipboard without a permission prompt; where no event follows
-  (Electron on macOS has no Edit menu) the app does it with the window's clip. `placeClip`
-  gives a paste new ids, scales it to the target page, offsets it while it would cover equal
-  strokes and clamps it to the page; the app adds it with one `NotesDoc.addStrokes` command.
+  (Electron on macOS has no Edit menu, Safari fires no paste event on a page) the app does it
+  itself, reading the system clipboard with `navigator.clipboard.readText` (as does the paste
+  button) and falling back to the window's clip where reading is refused. `clipForPaste`
+  decides: a clip on the system clipboard wins; other text pastes nothing once the window's
+  clip had reached the system clipboard. `placeClip` gives a paste new ids, scales it to the
+  target page, offsets it while it would cover equal strokes (never onto one) and clamps it to
+  the page; the app adds it with one `NotesDoc.addStrokes` command. The keys are off while the
+  overview is open.
 - **Geometry** (`geometry.ts`): pure math: smoothing, pressure width, stroke outlines (classic
   Marp outline or perfect-freehand), bounding boxes, hit tests, partial erase, lasso.
 

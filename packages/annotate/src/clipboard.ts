@@ -21,6 +21,8 @@ export const CLIP_VERSION = 1;
 export const PASTE_OFFSET = 16;
 /** Most offset steps tried before a paste gives up looking for a free place. */
 const MAX_STEPS = 50;
+/** Most strokes, and points in all, of a clip read from the system clipboard. */
+export const MAX_CLIP_STROKES = 10000, MAX_CLIP_POINTS = 1000000;
 
 /** Copied strokes and the size of the page they were copied from. */
 export interface Clip {
@@ -44,11 +46,37 @@ export function makeClip(strokes: readonly Stroke[], size: Size): Clip | null {
 
 // The clip of this window: copy in one document, paste in another.
 let current: Clip | null = null;
+// Whether the clip also went to the system clipboard (see clipForPaste).
+let synced = false;
 
 /** The clip of this window; null before the first copy. */
 export const getClip = (): Clip | null => current;
-/** Replace the clip of this window. */
-export function setClip(clip: Clip | null): void { current = clip; }
+/** Replace the clip of this window (not yet on the system clipboard). */
+export function setClip(clip: Clip | null): void {
+  current = clip;
+  synced = false;
+}
+/** The current clip is on the system clipboard too. */
+export function markClipSynced(): void { synced = !!current; }
+
+/**
+ * What to paste, given the text of the system clipboard (null: unreadable).
+ * A clip there wins (it may come from another window) and becomes this
+ * window's clip. Other text means something else was copied after the
+ * clip went to the system clipboard: nothing to paste. Without readable text,
+ * or if the clip never reached the system clipboard (the platform refused),
+ * this window's clip.
+ */
+export function clipForPaste(text: string | null | undefined): Clip | null {
+  const fromSystem = parseClip(text);
+  if (fromSystem) {
+    current = fromSystem;
+    synced = true;
+    return fromSystem;
+  }
+  if (typeof text === 'string' && text.trim() && synced) return null;
+  return current;
+}
 
 /** JSON text of a clip for the system clipboard. */
 export function serializeClip(clip: Clip): string {
@@ -71,6 +99,10 @@ export function parseClip(text: unknown): Clip | null {
   const size = data.size;
   const positive = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v) && v > 0;
   if (!Array.isArray(size) || !positive(size[0]) || !positive(size[1]) || !Array.isArray(data.strokes)) return null;
+  if (data.strokes.length > MAX_CLIP_STROKES) return null;
+  let points = 0;
+  for (const s of data.strokes) points += s && Array.isArray(s.points) ? s.points.length : 0;
+  if (points > MAX_CLIP_POINTS) return null;
   const strokes: Stroke[] = [];
   for (const s of data.strokes) {
     try { strokes.push(createStroke({ ...s, id: null })); } catch (_) { /* skipped */ }
@@ -90,38 +122,70 @@ export interface PasteTarget {
  * The strokes of a paste onto a page (new ids; nothing is added to the
  * page). On a page of another size the clip is scaled by the smaller of the
  * width and height ratios, and its center keeps its relative place on the
- * page. Then it moves down and right by `step` while its first stroke would
- * sit exactly on a stroke of the page, and finally into the page.
+ * page. It is kept on the page and, while its first stroke would sit exactly
+ * on a stroke of the page, moved by `step` (see freeShift). Strokes the
+ * scaling breaks (out of range, from a crafted clip) are dropped.
  */
 export function placeClip(clip: Clip, target: PasteTarget): Stroke[] {
-  if (!clip.strokes.length) return [];
   const [w, h] = target.size;
   const sx = w / clip.size[0], sy = h / clip.size[1];
   const scale = Math.min(sx, sy);
   const same = Math.abs(scale - 1) < 1e-9 && Math.abs(sx - sy) < 1e-9;
-  const center = boxCenter(pointsBBox(clip.strokes.flatMap(s => s.points)));
-  const base = same ? clip.strokes : clip.strokes.map(s => ({
-    ...s,
-    size: s.size * scale,
-    points: s.points.map((p): Point => [
-      (p[0] - center[0]) * scale + center[0] * sx,
-      (p[1] - center[1]) * scale + center[1] * sy,
-      p[2],
-    ]),
-  }));
-  const box = unionBBox(base.map(strokeBBox))!;
-  const step = Number.isFinite(target.step) && target.step > 0 ? target.step : 0;
-  let shift: [number, number] = [0, 0];
-  for (let k = 0; k <= MAX_STEPS; k++) {
-    const next = clampShift(box, k * step, k * step, w, h);
-    if (k && next[0] === shift[0] && next[1] === shift[1]) break; // stuck in a corner of the page
-    shift = next;
-    if (!step || !target.strokes.some(s => samePlace(s, base[0], shift))) break;
+  const center = clip.strokes.length ? boxCenter(pointsBBox(clip.strokes.flatMap(s => s.points))) : [0, 0];
+  const base: Stroke[] = [];
+  for (const s of clip.strokes) {
+    const scaled = same ? s : {
+      ...s,
+      size: s.size * scale,
+      points: s.points.map((p): Point => [
+        (p[0] - center[0]) * scale + center[0] * sx,
+        (p[1] - center[1]) * scale + center[1] * sy,
+        p[2],
+      ]),
+    };
+    try { base.push(createStroke(scaled)); } catch (_) { /* dropped */ }
   }
-  return base.map(s => createStroke({
-    id: newId(), tool: s.tool, color: s.color, size: s.size,
-    points: s.points.map(p => [p[0] + shift[0], p[1] + shift[1], p[2]]),
-  }));
+  if (!base.length) return [];
+  const box = unionBBox(base.map(strokeBBox))!;
+  const shift = freeShift(base[0], box, target);
+  const out: Stroke[] = [];
+  for (const s of base) {
+    try {
+      out.push(createStroke({
+        id: newId(), tool: s.tool, color: s.color, size: s.size,
+        points: s.points.map(p => [p[0] + shift[0], p[1] + shift[1], p[2]]),
+      }));
+    } catch (_) { /* dropped */ }
+  }
+  return out;
+}
+
+/**
+ * The shift that keeps `box` on the page and puts `first` on no equal stroke
+ * of the page: none if that is free, else k steps down and right, for
+ * k = 1, 2, …; on an axis where the page ends, k steps up or left instead.
+ * Only if that finds no free place within MAX_STEPS steps, the other
+ * directions; if they find none either, the last place tried.
+ */
+function freeShift(first: Stroke, box: BBox, target: PasteTarget): [number, number] {
+  const [w, h] = target.size;
+  const taken = (d: readonly [number, number]): boolean => target.strokes.some(s => samePlace(s, first, d));
+  const start = clampShift(box, 0, 0, w, h);
+  const step = Number.isFinite(target.step) && target.step > 0 ? target.step : 0;
+  if (!step || !taken(start)) return start;
+  let last = start;
+  // Signs of x and y: the main direction first, the others only if it has no free place.
+  for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    for (let k = 1; k <= MAX_STEPS; k++) {
+      const d = k * step;
+      const fwd = clampShift(box, d, d, w, h);
+      // An axis the page stops (clamped short of d) goes the other way.
+      const dx = fwd[0] < d ? -d : d, dy = fwd[1] < d ? -d : d;
+      last = clampShift(box, sx * dx, sy * dy, w, h);
+      if (!taken(last)) return last;
+    }
+  }
+  return last;
 }
 
 const boxCenter = (b: BBox): [number, number] => [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];

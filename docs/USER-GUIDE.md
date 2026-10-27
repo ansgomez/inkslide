@@ -68,16 +68,18 @@ With strokes selected, **Ctrl/Cmd+C** copies them, **Ctrl/Cmd+X** cuts them and
 after turning the page or opening another PDF. The pasted strokes become the selection (the
 select tool is switched on), ready to drag into place. For writing with the pen alone, copy and
 cut buttons appear in the toolbar while strokes are selected, and a paste button once something
-was copied.
+was copied in this window. The keys do not work while the overview is open.
 
 Pasted strokes keep their place on the page. Where they would cover the strokes they were
 copied from (or an earlier paste), they are moved a little down and to the right, a bit further
-with every paste. On a page of another size they are scaled with the page, and they are always
+with every paste (up or to the left where the page ends). On a page of another size they are scaled with the page, and they are always
 kept on the page. A paste, a cut and a duplicate are each one undo step.
 
 Copied strokes also go on the system clipboard where the platform allows it (as text that
 other programs show as JSON), so Ctrl/Cmd+V pastes them into Inkslide in another browser
-window or tab too.
+window or tab too; some browsers (Safari, Firefox) first ask to allow the paste. If something
+else was copied after the strokes, Ctrl/Cmd+V pastes nothing. In the desktop app on macOS,
+copied strokes stay within the app window.
 
 **Undo** (Ctrl/Cmd+Z) and **redo** (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y) work per finished stroke,
 erase, move or page change. **Clear page** (trash button) removes all ink on the page and can

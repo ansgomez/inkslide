@@ -133,7 +133,8 @@ body.ann-on[data-ann-dock="right"] .ann-edge-end { margin-top: auto; }
 .ann-btn:hover:not(:disabled) { background: var(--ann-hover); }
 .ann-btn:focus-visible { outline: 2px solid #8ab4ff; outline-offset: -2px; }
 .ann-btn:disabled { opacity: 0.3; cursor: default; }
-.ann-btn[hidden], .ann-group[hidden] { display: none; }
+/* Hidden buttons (and groups) keep their place, so showing them never reflows or wraps the bar. */
+.ann-btn[hidden], .ann-group[hidden] { visibility: hidden; }
 .ann-btn.is-active { background: var(--ann-active); color: #fff; }
 
 /* Icon with a small caption underneath (the two erasers). */

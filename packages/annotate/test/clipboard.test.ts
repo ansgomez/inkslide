@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CLIP_FORMAT, getClip, makeClip, parseClip, placeClip, serializeClip, setClip, type Clip,
+  CLIP_FORMAT, MAX_CLIP_STROKES, clipForPaste, getClip, makeClip, markClipSynced, parseClip, placeClip, serializeClip, setClip,
+  type Clip,
 } from '../src/clipboard';
 import { NotesDoc, createStroke } from '../src/model';
 import { strokeBBox, unionBBox, type Point, type Stroke } from '../src/geometry';
@@ -85,6 +86,22 @@ describe('placeClip', () => {
     expect(strokeBBox(out[0]).maxX).toBeLessThanOrEqual(1280 + 1e-9);
   });
 
+  it('repeated pastes in a corner of the page never stack on each other', () => {
+    const corner = line('c', 1270, 710, 1275, 715);
+    const clip2 = makeClip([corner], [1280, 720])!;
+    const page: Stroke[] = [corner];
+    for (let i = 0; i < 3; i++) page.push(...placeClip(clip2, { size: [1280, 720], strokes: page, step: 12 }));
+    const starts = page.map(s => s.points[0].slice(0, 2).join(','));
+    expect(new Set(starts).size).toBe(4);
+    for (const s of page) expect(strokeBBox(s).maxX).toBeLessThanOrEqual(1280 + 1e-9);
+  });
+
+  it('drops strokes the scaling breaks instead of throwing', () => {
+    const crafted: Clip = { size: [1e-6, 1e-6], strokes: [line('a', 1, 1, 2, 2)] };
+    expect(placeClip(crafted, { size: [960, 540], strokes: [], step: 12 })).toEqual([]);
+    expect(placeClip({ size: [10, 10], strokes: [] }, { size: [960, 540], strokes: [], step: 12 })).toEqual([]);
+  });
+
   it('puts a clip larger than the page at its top-left corner', () => {
     const wide = makeClip([line('w', 100, 100, 2000, 200)], [1280, 720])!;
     const b4 = strokeBBox(placeClip(wide, { size: [1280, 720], strokes: [], step: 12 })[0]);
@@ -113,6 +130,28 @@ describe('clip text', () => {
     const good = { id: 'y', tool: 'pen', color: '#000', size: 1, points: [[0, 0]] };
     const mixed = parseClip(JSON.stringify({ format: CLIP_FORMAT, version: 1, size: [10, 10], strokes: [bad, good] }))!;
     expect(mixed.strokes.length).toBe(1);
+  });
+
+  it('rejects clips with too many strokes or points', () => {
+    const one = { id: 'y', tool: 'pen', color: '#000', size: 1, points: [[0, 0]] };
+    const many = Array.from({ length: MAX_CLIP_STROKES + 1 }, () => one);
+    expect(parseClip(JSON.stringify({ format: CLIP_FORMAT, version: 1, size: [10, 10], strokes: many }))).toBeNull();
+    const long = { ...one, points: Array.from({ length: 1000001 }, () => [0, 0]) };
+    expect(parseClip(JSON.stringify({ format: CLIP_FORMAT, version: 1, size: [10, 10], strokes: [long] }))).toBeNull();
+  });
+
+  it('clipForPaste: a system clip wins; other text pastes nothing once the clip was on the system clipboard', () => {
+    const mine = makeClip([line('a', 1, 2, 3, 4)], [10, 10])!;
+    setClip(mine);
+    expect(clipForPaste('other text')).toBe(mine); // never reached the system clipboard
+    markClipSynced();
+    expect(clipForPaste('other text')).toBeNull(); // copied over since
+    expect(clipForPaste('')).toBe(mine);
+    expect(clipForPaste(null)).toBe(mine);
+    const theirs = clipForPaste(serializeClip(makeClip([line('b', 5, 5, 6, 6)], [10, 10])!))!;
+    expect(xy(theirs.strokes[0])).toEqual([[5, 5], [6, 6]]);
+    expect(getClip()).toBe(theirs);
+    setClip(null);
   });
 
   it('keeps one clip per window', () => {

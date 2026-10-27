@@ -76,7 +76,7 @@ export interface ToolbarItem {
   onClick?: () => void;
   active?: () => boolean;
   disabled?: () => boolean;
-  /** Hide the button (a group whose buttons are all hidden is hidden too). */
+  /** Hide the button, keeping its place (a group whose buttons are all hidden is hidden too). */
   hidden?: () => boolean;
 }
 
@@ -94,7 +94,7 @@ export interface ToolbarHost {
   tool: ToolId;
   doc: NotesDoc;
   selection: unknown;
-  overview?: { open(): void } | null;
+  overview?: { open(): void; isOpen?(): boolean } | null;
   toggle(on?: boolean): void;
   refresh(): void;
   setTool(id: ToolId): void;
@@ -110,7 +110,7 @@ export interface ToolbarHost {
   select(sel: null): void;
   copySelection(): void;
   cutSelection(): void;
-  paste(): void;
+  paste(): unknown;
   duplicateSelection(): void;
   /** Whether this window has strokes to paste. */
   canPaste(): boolean;
@@ -213,7 +213,7 @@ registerGroup('edit', app => ({
   items: [
     { id: 'copy', title: 'Copy (Ctrl/Cmd+C)', icon: 'copy', onClick: () => app.copySelection(), hidden: () => !app.selection },
     { id: 'cut', title: 'Cut (Ctrl/Cmd+X)', icon: 'cut', onClick: () => app.cutSelection(), hidden: () => !app.selection },
-    { id: 'paste', title: 'Paste (Ctrl/Cmd+V)', icon: 'paste', onClick: () => app.paste(), hidden: () => !app.canPaste() },
+    { id: 'paste', title: 'Paste (Ctrl/Cmd+V)', icon: 'paste', onClick: () => void app.paste(), hidden: () => !app.canPaste() },
   ],
 }));
 
@@ -363,7 +363,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
       btn.classList.toggle('is-active', on);
       if (item.active) btn.setAttribute('aria-pressed', String(on));
       (btn as HTMLButtonElement).disabled = item.disabled ? !!item.disabled() : false;
-      if (item.hidden) btn.hidden = !!item.hidden();
+      if (item.hidden) btn.hidden = !!item.hidden(); // keeps its place (toolbar.css): the bar does not reflow
     }
     for (const g of hiding) g.hidden = [...g.children].every(b => (b as HTMLElement).hidden);
     setOffset();
@@ -400,6 +400,9 @@ const labelOrCode = (e: KeyboardEvent, k: string): boolean =>
 /** Shortcuts of annotate mode: tools, sizes 1–4, undo/redo, copy/cut/paste/duplicate, delete or drop the selection. */
 export function defaultKeymap(app: ToolbarHost): Shortcut[] {
   const mod = (e: KeyboardEvent): boolean => (e.ctrlKey || e.metaKey) && !e.altKey;
+  // Copy, cut, paste and duplicate act on the shown page: not while the overview covers it.
+  const edit = (e: KeyboardEvent, k: string): boolean => mod(e) && labelOrCode(e, k) && !e.shiftKey &&
+    !(app.overview && app.overview.isOpen && app.overview.isOpen());
   const tool = (k: string, id: ToolId, shift = false): Shortcut => ({
     test: e => letter(e, k) && noMods(e) && e.shiftKey === shift,
     run: () => app.setTool(id),
@@ -407,10 +410,10 @@ export function defaultKeymap(app: ToolbarHost): Shortcut[] {
   return [
     { test: e => mod(e) && labelOrCode(e, 'z') && !e.shiftKey, run: () => app.undo() },
     { test: e => mod(e) && ((labelOrCode(e, 'z') && e.shiftKey) || labelOrCode(e, 'y')), run: () => app.redo() },
-    { test: e => mod(e) && labelOrCode(e, 'c') && !e.shiftKey && !!app.selection, run: () => app.clipboardKey('copy') },
-    { test: e => mod(e) && labelOrCode(e, 'x') && !e.shiftKey && !!app.selection, run: () => app.clipboardKey('cut') },
-    { test: e => mod(e) && labelOrCode(e, 'v') && !e.shiftKey, run: () => app.clipboardKey('paste') },
-    { test: e => mod(e) && labelOrCode(e, 'd') && !e.shiftKey && !!app.selection, run: () => app.duplicateSelection() },
+    { test: e => edit(e, 'c') && !!app.selection, run: () => app.clipboardKey('copy') },
+    { test: e => edit(e, 'x') && !!app.selection, run: () => app.clipboardKey('cut') },
+    { test: e => edit(e, 'v'), run: () => app.clipboardKey('paste') },
+    { test: e => edit(e, 'd') && !!app.selection, run: () => app.duplicateSelection() },
     tool('p', 'pen'), tool('h', 'highlighter'), tool('s', 'selector'),
     tool('l', 'laser'), tool('e', 'eraser'), tool('e', 'partial', true),
     ...[0, 1, 2, 3].map((i): Shortcut => ({

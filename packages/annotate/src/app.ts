@@ -12,7 +12,7 @@
  *   app.keymap.push(...);                                          // optional
  *   app.mount();                                                   // keys + toolbar
  */
-import { getClip, makeClip, parseClip, placeClip, serializeClip, setClip, PASTE_OFFSET, type Clip } from './clipboard';
+import { clipForPaste, getClip, makeClip, markClipSynced, placeClip, serializeClip, setClip, PASTE_OFFSET, type Clip } from './clipboard';
 import { strokeBBox, unionBBox, type Stroke } from './geometry';
 import type { NotesDoc } from './model';
 import { attachInput, type InputController } from './input';
@@ -59,12 +59,26 @@ function savePrefs(storage: Pick<Storage, 'setItem'> | null, app: StoredPrefs): 
   } catch (_) { /* storage blocked: prefs are a convenience only */ }
 }
 
-/** Put text on the system clipboard if the platform allows it; a refusal is ignored (the window's clip still works). */
-function writeSystemClipboard(text: string): void {
+const systemClipboard = (): Clipboard | undefined => {
+  try { return typeof navigator !== 'undefined' ? navigator.clipboard : undefined; } catch (_) { return undefined; }
+};
+
+/** Put text on the system clipboard if the platform allows it; resolves to whether it did. */
+async function writeSystemClipboard(text: string): Promise<boolean> {
   try {
-    const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
-    if (clipboard && clipboard.writeText) clipboard.writeText(text).catch(() => { /* not allowed */ });
-  } catch (_) { /* not allowed */ }
+    const clipboard = systemClipboard();
+    if (!clipboard || !clipboard.writeText) return false;
+    await clipboard.writeText(text);
+    return true;
+  } catch (_) { return false; } // not allowed: the window's clip still works
+}
+
+/** Text of the system clipboard; null where the platform does not allow reading it (or the user declined). */
+async function readSystemClipboard(): Promise<string | null> {
+  try {
+    const clipboard = systemClipboard();
+    return clipboard && clipboard.readText ? await clipboard.readText() : null;
+  } catch (_) { return null; }
 }
 
 function safeStorage(): Storage | null {
@@ -98,7 +112,7 @@ export interface Annotator {
   toolbar: Toolbar | null;
   keymap: Shortcut[];
   pages: PagesController | null;
-  overview: { open(): void; prompt?(): string | null; refresh?(): void } | null;
+  overview: { open(): void; isOpen?(): boolean; prompt?(): string | null; refresh?(): void } | null;
   /** Called after model page changes (insert/delete/paper/undo/load). */
   onPagesChanged: ((pageId: string | null) => void) | null;
   /** Called on every refresh (after the toolbar update). */
@@ -124,10 +138,12 @@ export interface Annotator {
   /** Copy the selection, then remove it (one undo step). */
   cutSelection(): void;
   /**
-   * Paste a clip (default: this window's) onto the shown page in one undo step; the pasted
-   * strokes become the selection (with the select tool).
+   * Paste onto the shown page: a clip on the system clipboard if it can be read (it may come
+   * from another window), else this window's clip (see clipboard.clipForPaste).
    */
-  paste(clip?: Clip | null): void;
+  paste(): Promise<void>;
+  /** Paste `clip` onto the shown page in one undo step; the pasted strokes become the selection (with the select tool). */
+  pasteClip(clip: Clip): void;
   /** Paste a copy of the selection onto its page, offset, without touching the clip. */
   duplicateSelection(): void;
   canPaste(): boolean;
@@ -185,15 +201,17 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     e.preventDefault();
     const data = e.clipboardData;
     if (e.type === 'paste') {
-      const clip = parseClip(data && data.getData('text/plain'));
-      if (clip) setClip(clip); // copied in another window
-      app.paste();
+      const clip = clipForPaste(data ? data.getData('text/plain') : null);
+      if (clip) app.pasteClip(clip);
       return;
     }
     const clip = selectionClip();
     if (!clip) return;
     setClip(clip);
-    if (data) data.setData('text/plain', serializeClip(clip));
+    if (data) {
+      data.setData('text/plain', serializeClip(clip));
+      markClipSynced();
+    }
     if (e.type === 'cut') app.deleteSelection('cut');
     app.refresh();
   };
@@ -327,7 +345,7 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       const clip = selectionClip();
       if (!clip) return;
       setClip(clip);
-      writeSystemClipboard(serializeClip(clip));
+      void writeSystemClipboard(serializeClip(clip)).then(ok => { if (ok && getClip() === clip) markClipSynced(); });
       app.refresh();
     },
     cutSelection() {
@@ -335,9 +353,13 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       app.copySelection();
       app.deleteSelection('cut');
     },
-    paste(clip = getClip()) {
+    async paste() {
+      const clip = clipForPaste(await readSystemClipboard());
+      if (clip) app.pasteClip(clip);
+    },
+    pasteClip(clip) {
       const s = app.activeSurface();
-      if (!clip || !s) return;
+      if (!s) return;
       if (app.input.busy) app.input.cancel();
       pasteOnto(s.pageId, clip, 'paste');
     },
@@ -354,7 +376,7 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
         pendingKey = null;
         if (kind === 'copy') app.copySelection();
         else if (kind === 'cut') app.cutSelection();
-        else app.paste();
+        else void app.paste();
       }, 0);
       return false;
     },
