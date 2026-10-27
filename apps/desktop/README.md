@@ -43,7 +43,9 @@ Environment variables (mostly for tests): `INKSLIDE_DEV_URL` (load a dev server;
 `INKSLIDE_SMOKE` (smoke test mode), `INKSLIDE_PRINT_TO_PDF` (smoke test mode: Print writes
 this PDF instead of showing the dialog), `INKSLIDE_DESKTOP_NAME` (development builds: desktop
 file id and window app id), `INKSLIDE_SMOKE_EXE` (smoke test only: run it against a packaged
-executable such as the AppImage).
+executable such as the AppImage). Packaged builds ignore `INKSLIDE_PAGE`, `INKSLIDE_USER_DATA`,
+`INKSLIDE_SMOKE` and `INKSLIDE_PRINT_TO_PDF` unless they were built with `INKSLIDE_TEST_BUILD=1`
+(a test build, for the smoke test against a package; never for a release).
 
 ## Packaging
 
@@ -83,7 +85,9 @@ electron-builder with its arguments. Output goes to `apps/desktop/dist/`.
 - AppImage: `chmod +x Inkslide-*.AppImage` and run it. A PDF passed on the
   command line, or a second launch while it runs, opens in the running window.
   To get a menu entry, use an integrator such as Gear Lever. To run the smoke
-  test against it: `INKSLIDE_SMOKE_EXE=dist/Inkslide-<version>-x86_64.AppImage node test/smoke.mjs`.
+  test against it, build a test package first (release packages ignore the test variables):
+  `INKSLIDE_TEST_BUILD=1 pnpm --filter @inkslide/desktop dist:linux`, then
+  `INKSLIDE_SMOKE_EXE=dist/Inkslide-<version>-x86_64.AppImage node test/smoke.mjs`.
 - RPM: `sudo dnf install ./Inkslide-<version>-x86_64.rpm`; it installs
   `/usr/share/applications/inkslide.desktop` and the hicolor icons.
 

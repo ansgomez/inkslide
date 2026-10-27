@@ -45,6 +45,34 @@ export function resolveWebEntry(o: WebEntryOptions): WebEntry {
   return { kind: 'file', file: resolve(file) };
 }
 
+/** The test-only environment variables main.ts honors (see testEnv). */
+export interface TestEnv {
+  /** INKSLIDE_PAGE: load this HTML file instead of the front end. */
+  page?: string;
+  /** INKSLIDE_USER_DATA: use this userData folder. */
+  userData?: string;
+  /** INKSLIDE_SMOKE: smoke test mode, '' when off. */
+  smoke: string;
+  /** INKSLIDE_PRINT_TO_PDF: smoke test mode, Print writes this file. */
+  printToPdf?: string;
+}
+
+/**
+ * The test-only environment variables, when `allowed`: in development, and
+ * in a packaged test build (INKSLIDE_TEST_BUILD=1 at build time, for the
+ * smoke test against a package). A release build ignores them all: they
+ * would load another page with the preload bridge, or move userData.
+ */
+export function testEnv(env: Record<string, string | undefined>, allowed: boolean): TestEnv {
+  if (!allowed) return { smoke: '' };
+  return {
+    page: env.INKSLIDE_PAGE || undefined,
+    userData: env.INKSLIDE_USER_DATA || undefined,
+    smoke: env.INKSLIDE_SMOKE || '',
+    printToPdf: env.INKSLIDE_PRINT_TO_PDF || undefined,
+  };
+}
+
 const isPdfName = (s: string): boolean => /\.pdf$/i.test(s);
 /** A URI with a scheme of two or more letters (a Windows drive letter is one). */
 const URI_RE = /^[a-z][a-z0-9+.-]+:\/\//i;

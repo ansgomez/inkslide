@@ -6,10 +6,11 @@
  *
  * Environment:
  *   INKSLIDE_DEV_URL    load this URL (Vite dev server) instead of apps/web/dist
- *   INKSLIDE_PAGE       load this HTML file instead (tests)
- *   INKSLIDE_USER_DATA  use this userData directory (tests)
  *   INKSLIDE_DESKTOP_NAME  development only: desktop file id, and so the window's app id
  *                       (the dev desktop entry sets inkslide-dev.desktop)
+ * Tests only (packaged builds ignore them unless built with INKSLIDE_TEST_BUILD=1; paths.ts testEnv):
+ *   INKSLIDE_PAGE       load this HTML file instead (tests)
+ *   INKSLIDE_USER_DATA  use this userData directory (tests)
  *   INKSLIDE_SMOKE      smoke test mode: run window.inkslideSmoke(), print, quit
  *                       (mode "close": close the window instead, the page saves on close;
  *                       mode "backupsoff": then switch backups off as the menu does)
@@ -30,18 +31,22 @@ import {
   writeNotesFor, type NotesTarget,
 } from './notes';
 import { OpenRequests } from './openRequests';
-import { isSha256, pdfFromArgv, resolveWebEntry } from './paths';
+import { isSha256, pdfFromArgv, resolveWebEntry, testEnv } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
 import { printPdf } from './print';
 import { RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
+
+/** true in a test build (scripts/build.mjs, INKSLIDE_TEST_BUILD=1): packaged, it still takes the test variables. */
+declare const INKSLIDE_TEST_BUILD: boolean;
 
 const MAX_PDF_BYTES = 2 ** 31 - 1;
 const MAX_TEXT_BYTES = 256 * 2 ** 20;
 
 // Native Wayland when available (pen pressure, tilt and eraser need it).
 app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
-if (process.env.INKSLIDE_USER_DATA) app.setPath('userData', resolve(process.env.INKSLIDE_USER_DATA));
+const testVars = testEnv(process.env, !app.isPackaged || INKSLIDE_TEST_BUILD);
+if (testVars.userData) app.setPath('userData', resolve(testVars.userData));
 // The dev build gets its own app id, so GNOME does not group it with an installed
 // Inkslide. app.setDesktopName is what Electron itself calls with package.json's
 // desktopName; it is not in the typings.
@@ -49,7 +54,7 @@ if (!app.isPackaged && process.env.INKSLIDE_DESKTOP_NAME) {
   (app as typeof app & { setDesktopName?(name: string): void }).setDesktopName?.(process.env.INKSLIDE_DESKTOP_NAME);
 }
 
-const smokeMode = process.env.INKSLIDE_SMOKE || '';
+const smokeMode = testVars.smoke;
 const onWayland = process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
 
 if (!app.requestSingleInstanceLock()) {
@@ -267,7 +272,7 @@ function start(): void {
 
     const entry = resolveWebEntry({
       devUrl: process.env.INKSLIDE_DEV_URL,
-      pageOverride: process.env.INKSLIDE_PAGE,
+      pageOverride: testVars.page,
       isPackaged: app.isPackaged,
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath,
@@ -397,7 +402,7 @@ function start(): void {
     if (!(bytes instanceof Uint8Array)) throw new Error('print bytes must be a Uint8Array');
     return printPdf(bytes, typeof name === 'string' ? name : '', {
       parent: win,
-      toPdf: smokeMode ? process.env.INKSLIDE_PRINT_TO_PDF : undefined,
+      toPdf: smokeMode ? testVars.printToPdf : undefined,
     });
   });
 

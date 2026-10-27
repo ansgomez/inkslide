@@ -1,5 +1,8 @@
 // Bundle the main process and the (sandboxed) preload into out/ with esbuild.
 // @inkslide/annotate is TypeScript source, so it is bundled in as well.
+// INKSLIDE_TEST_BUILD=1: a packaged app built from this still honors the test
+// environment variables (INKSLIDE_PAGE, INKSLIDE_SMOKE, ...; main.ts), so the
+// smoke test can run against the package. Release builds leave it unset.
 import { build } from 'esbuild';
 import { rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -11,6 +14,7 @@ rmSync(outdir, { recursive: true, force: true });
 
 const common = {
   bundle: true,
+  define: { INKSLIDE_TEST_BUILD: JSON.stringify(process.env.INKSLIDE_TEST_BUILD === '1') },
   platform: 'node',
   format: 'cjs',
   target: 'node22',

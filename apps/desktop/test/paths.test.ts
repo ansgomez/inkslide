@@ -1,6 +1,6 @@
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fallbackBackupPath, fallbackNotesPath, isSha256, pdfFromArgv, resolveWebEntry } from '../src/main/paths';
+import { fallbackBackupPath, fallbackNotesPath, isSha256, pdfFromArgv, resolveWebEntry, testEnv } from '../src/main/paths';
 
 const local = (path: string) => ({ path: resolve(path) });
 
@@ -27,6 +27,17 @@ describe('resolveWebEntry', () => {
     expect(() => resolveWebEntry({ ...base, devUrl: 'localhost:5173' })).toThrow(/http/);
     expect(() => resolveWebEntry({ ...base, devUrl: 'file:///etc/passwd' })).toThrow(/http/);
     expect(() => resolveWebEntry({ ...base, devUrl: 'not a url' })).toThrow(/not a URL/);
+  });
+});
+
+describe('testEnv', () => {
+  const env = { INKSLIDE_PAGE: '/t/page.html', INKSLIDE_USER_DATA: '/t/ud', INKSLIDE_SMOKE: 'basic', INKSLIDE_PRINT_TO_PDF: '/t/out.pdf' };
+  it('takes the test variables when allowed (development, test builds)', () => {
+    expect(testEnv(env, true)).toEqual({ page: '/t/page.html', userData: '/t/ud', smoke: 'basic', printToPdf: '/t/out.pdf' });
+    expect(testEnv({}, true)).toEqual({ smoke: '' });
+  });
+  it('ignores them all in a release build', () => {
+    expect(testEnv(env, false)).toEqual({ smoke: '' });
   });
 });
 

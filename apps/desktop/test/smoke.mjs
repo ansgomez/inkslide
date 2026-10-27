@@ -7,7 +7,9 @@
 // launch forwarding).
 // Run after `node scripts/build.mjs`; a window may flash briefly.
 // INKSLIDE_SMOKE_EXE=/path/to/Inkslide.AppImage (or another packaged
-// executable) runs the checks against that build instead of the dev one.
+// executable) runs the checks against that build instead of the dev one; it
+// must be a test build (INKSLIDE_TEST_BUILD=1 when packaging), as release
+// builds ignore INKSLIDE_PAGE, INKSLIDE_SMOKE and the other test variables.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
