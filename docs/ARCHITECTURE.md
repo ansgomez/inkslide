@@ -136,7 +136,7 @@ isolation, sandbox, no Node; no navigation, no new windows (http(s) links open i
 browser); every permission request and check is refused except fullscreen.
 
 **userData** (`~/.config/Inkslide` on Linux): `notes/` (notes that cannot go next to the PDF,
-backups, kept unreadable copies), `recent-files.json`, `window-state.json`,
+backups, kept unreadable copies), `recent-files.v2.json` (older builds: `recent-files.json`), `window-state.json`,
 `preferences.json`, and `Crashpad/`: `crashReporter.start({ uploadToServer: false })` in
 `main.ts` keeps a minidump of each native crash (main, GPU or renderer process) there; nothing
 is uploaded.
