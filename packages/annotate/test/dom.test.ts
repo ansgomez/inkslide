@@ -187,6 +187,22 @@ describe('annotator, toolbar and keys', () => {
     expect(doc.strokes('p1')).toEqual([]);
   });
 
+  it('a save (autosave) during a selection drag leaves the box where it is dragged', () => {
+    const { app, doc, surface, layer } = setup();
+    doc.addStroke('p1', stroke('a'));
+    app.setTool('selector');
+    app.select({ pageId: 'p1', ids: ['a'] });
+    const box = () => layer.ui.querySelector('.ann-selection')!.getAttribute('x');
+    const x0 = Number(box());
+    app.tools.selector.down!(surface, [5, 5, 0.5], null);
+    app.tools.selector.move!(surface, [45, 5, 0.5], null);
+    expect(Number(box())).toBe(x0 + 40);
+    doc.markSaved();
+    expect(Number(box())).toBe(x0 + 40);
+    app.tools.selector.up!(surface, [45, 5, 0.5], null);
+    expect(doc.strokes('p1')[0].points[0][0]).toBe(40);
+  });
+
   it('restyling a selection uses the page-scaled sizes', () => {
     const { app, doc, layer } = setup();
     expect(layer.unit).toBeCloseTo(0.75); // 960×540 pt

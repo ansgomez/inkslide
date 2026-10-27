@@ -308,7 +308,8 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     } else if (kind === 'strokes') {
       surfaces.forEach(s => render.syncLayer(s.layer, doc.strokes(s.pageId))); // every page (load)
     }
-    if (app.selection && (pageId === null || app.selection.pageId === pageId)) app.refreshSelection();
+    // A save changes no strokes: redrawing the box would undo a running drag's offset.
+    if (kind !== 'saved' && app.selection && (pageId === null || app.selection.pageId === pageId)) app.refreshSelection();
     app.refresh();
   });
   doc.history.onChange(() => app.refresh());
