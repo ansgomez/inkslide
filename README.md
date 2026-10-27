@@ -24,7 +24,7 @@ automatically in a separate notes file; the PDF itself is never modified.
   is seen.
 - **Tools:** pen, highlighter, selector (tap, box or lasso), laser pointer, stroke and partial
   eraser, 8 colors, 9 sizes, undo/redo.
-- **Pages:** page turns by key or two-finger swipe, pinch zoom, fit width, blank pages with
+- **Pages:** page turns by key or two-finger swipe, pinch zoom and zoom buttons, fit width, blank pages with
   plain, lined or grid paper, an overview of all pages.
 - **Notes:** autosaved next to the PDF with crash-safe writes, plus a backup on the desktop.
 - **Export and print:** an annotated PDF with vector ink; the original text stays selectable.
@@ -63,6 +63,7 @@ the file manager. It opens ready to write on.
 | ← → | Previous, next page |
 | G, a number, Enter | Go to that page (G, Enter: overview) |
 | W | Fit width |
+| Ctrl+=, Ctrl+− | Zoom in, out |
 | B | Insert a blank page |
 
 On macOS, use Cmd instead of Ctrl. The [user guide](docs/USER-GUIDE.md) explains every tool,

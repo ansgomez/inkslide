@@ -90,6 +90,7 @@ be undone.
 | → ↓ PgDn Space | Next page (blank pages included; in fit width PgDn and Space scroll first) |
 | ← ↑ PgUp Shift+Space | Previous page (in fit width PgUp and Shift+Space scroll first) |
 | W | Fit width / whole page |
+| Ctrl/Cmd+= / Ctrl/Cmd+− | Zoom in / out (also Ctrl/Cmd++) |
 | Alt+PgDn / Alt+PgUp | Next / previous PDF page, skipping blank pages |
 | Home / End | First page / last page |
 | G, a number, Enter | Jump to that PDF page (shown in the counter as "Go to 12_") |
@@ -112,6 +113,15 @@ remembered.
 
 The counter shows "3 / 37" on PDF page 3 of 37, "3 / 37 · +2 blank" when two blank pages
 follow it, and "3 / 37 · blank 1/2" on the first of them.
+
+### Zoom
+
+The **−** and **+** on both sides of the page counter (or **Ctrl/Cmd+=** and **Ctrl/Cmd+−**)
+zoom out and in around the middle of the view, in steps from the fitted page (whole page or
+width) through 125%, 150%, 200%, 300% and 400% to 600% of it. − is greyed out at the fit, +
+at 600%. Their tooltips show the zoom ("now 150% of fit page"). Pinch and Ctrl + wheel zoom
+in between; the buttons then go on to the next step. A page turn and **W** start the page at
+the fit again.
 
 ## Blank pages
 

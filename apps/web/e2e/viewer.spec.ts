@@ -169,6 +169,30 @@ test('the paper for new blank pages is remembered', async ({ page }) => {
   await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'lined');
 });
 
+test('− and + next to the counter zoom around the middle; Ctrl+= and Ctrl+− too', async ({ page }) => {
+  await openPdf(page);
+  const out = page.locator('.ann-bar [data-id="zoom-out"]'), zin = page.locator('.ann-bar [data-id="zoom-in"]');
+  const transform = () => page.locator('.ink-page').evaluate(el => (el as HTMLElement).style.transform);
+  await expect(out).toBeDisabled();
+  await expect(out).toHaveAttribute('title', /now fit page/);
+  await zin.click();
+  expect(await transform()).toContain('scale(1.25)');
+  await expect(out).toBeEnabled();
+  await expect(zin).toHaveAttribute('title', /now 125% of fit page/);
+  await page.keyboard.press('Control+Equal');
+  expect(await transform()).toContain('scale(1.5)');
+  await page.keyboard.press('Control+Minus');
+  await page.keyboard.press('Control+Minus');
+  expect(await transform()).toBe(''); // back at the fit, centred again
+  await expect(out).toBeDisabled();
+  for (let i = 0; i < 6; i++) await zin.click();
+  await expect(zin).toBeDisabled();
+  await page.keyboard.press('w'); // fit width starts unzoomed
+  await expect(page.locator('.ann-bar [data-id="fit-width"]')).toHaveClass(/is-active/);
+  expect(await transform()).toBe('');
+  await expect(zin).toBeEnabled();
+});
+
 test('a file that is not a PDF shows an error; no PDF.js worker stays behind', async ({ page }) => {
   await useFileInput(page);
   for (let i = 0; i < 2; i++) {

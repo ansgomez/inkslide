@@ -200,6 +200,12 @@ body.ink-dropping::after {
 }
 .ann-btn[data-id="save"].is-error::after { background: #e5484d; }
 
+/* ── Zoom − and + around the page counter ──────────────────────── */
+
+/* Docked left or right the counter fills a row: put it first, − and + share the next row. */
+body.ann-on[data-ann-dock="left"] .ann-group-pages .ann-label,
+body.ann-on[data-ann-dock="right"] .ann-group-pages .ann-label { order: -1; }
+
 /* ── Page overview (overview.ts) ──────────────────────────────── */
 
 .ann-ov {
