@@ -1,6 +1,7 @@
 /* Inkslide desktop - Electron main process
  *
- * One window with the shared front end (apps/web), file access over IPC for
+ * One window with the shared front end (apps/web, served from app://inkslide/,
+ * paths.ts APP_ORIGIN), file access over IPC for
  * the preload bridge (window.inkslide), single instance, recent files, window
  * state, preferences and a small native menu. No rendering happens here.
  * Presenter mode adds a second, read-only window (the audience window) that
@@ -8,23 +9,26 @@
  *
  * Environment:
  *   INKSLIDE_DEV_URL    load this URL (Vite dev server) instead of apps/web/dist
- *   INKSLIDE_PAGE       load this HTML file instead (tests)
- *   INKSLIDE_USER_DATA  use this userData directory (tests)
  *   INKSLIDE_DESKTOP_NAME  development only: desktop file id, and so the window's app id
  *                       (the dev desktop entry sets inkslide-dev.desktop)
+ * Tests only (packaged builds ignore them unless built with dist.mjs --test-build; paths.ts testEnv):
+ *   INKSLIDE_PAGE       load this HTML file instead (tests)
+ *   INKSLIDE_USER_DATA  use this userData directory (tests)
  *   INKSLIDE_SMOKE      smoke test mode: run window.inkslideSmoke(), print, quit
  *                       (mode "close": close the window instead, the page saves on close;
  *                       mode "backupsoff": then switch backups off as the menu does)
  *   INKSLIDE_PRINT_TO_PDF  smoke test mode only: Print writes this PDF file instead of
  *                       showing the print dialog
  */
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, net, protocol, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 import { checkDroppedPdf, checkPath, PathGrants } from './access';
+import { CrashRecovery } from './crashRecovery';
 import { sameFile, writeFileAtomic } from './fsutil';
 import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
 import { buildMenu } from './menu';
@@ -33,19 +37,23 @@ import {
   writeNotesFor, type NotesTarget,
 } from './notes';
 import { OpenRequests } from './openRequests';
-import { isSha256, pdfFromArgv, resolveWebEntry, type WebEntry } from './paths';
+import { APP_ORIGIN, APP_SCHEME, isSha256, pdfFromArgv, resolveWebEntry, testEnv, webFileFor, type WebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
 import { audienceEntry, audienceKey, audiencePlacement } from './presenter';
 import { printPdf } from './print';
 import { RECENT_MAX, recentInfo, RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
 
+/** true in a test build (dist.mjs --test-build, via build.mjs): packaged, it still takes the test variables. */
+declare const INKSLIDE_TEST_BUILD: boolean;
+
 const MAX_PDF_BYTES = 2 ** 31 - 1;
 const MAX_TEXT_BYTES = 256 * 2 ** 20;
 
 // Native Wayland when available (pen pressure, tilt and eraser need it).
 app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
-if (process.env.INKSLIDE_USER_DATA) app.setPath('userData', resolve(process.env.INKSLIDE_USER_DATA));
+const testVars = testEnv(process.env, !app.isPackaged || INKSLIDE_TEST_BUILD);
+if (testVars.userData) app.setPath('userData', resolve(testVars.userData));
 // Native crashes (main, GPU, renderer) leave a minidump in userData/Crashpad for
 // bug reports; nothing is uploaded. After setPath, so tests keep theirs apart.
 crashReporter.start({ uploadToServer: false });
@@ -56,7 +64,13 @@ if (!app.isPackaged && process.env.INKSLIDE_DESKTOP_NAME) {
   (app as typeof app & { setDesktopName?(name: string): void }).setDesktopName?.(process.env.INKSLIDE_DESKTOP_NAME);
 }
 
-const smokeMode = process.env.INKSLIDE_SMOKE || '';
+const smokeMode = testVars.smoke;
+// The front end's origin, app://inkslide/ (paths.ts APP_ORIGIN): standard and
+// secure like https, so its CSP 'self' is that origin only, and module
+// workers, fetch and wasm work. Must be registered before 'ready'.
+protocol.registerSchemesAsPrivileged([
+  { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, codeCache: true } },
+]);
 const onWayland = process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
 
 if (!app.requestSingleInstanceLock()) {
@@ -80,6 +94,8 @@ function start(): void {
   let win: BrowserWindow | null = null;
   let state: WindowState = loadWindowState(stateFile);
   let loaded = false;
+  /** The folder app://inkslide/ serves (the front end's, or the INKSLIDE_PAGE fixture's). */
+  let webRoot: string | null = null;
   /** PDFs from the command line or the OS before the page loaded. */
   const opens = new OpenRequests();
   /** The PDF opened last (default folder for dialogs, never an export target). */
@@ -91,6 +107,8 @@ function start(): void {
   let quitting = false;
   /** Notes writes in progress; quitting waits for them. */
   const writes = new Set<Promise<unknown>>();
+  /** Renderer crashes: reload at once, or ask (crashRecovery.ts). */
+  const crashes = new CrashRecovery();
 
   const argPdf = pdfFromArgv(process.argv, process.cwd());
   if (argPdf && 'path' in argPdf) opens.add(grants.grant(argPdf.path));
@@ -265,16 +283,45 @@ function start(): void {
 
     wc.on('did-start-loading', () => { loaded = false; });
     // A new page asks initialPath() again; a reload (menu in development,
-    // DevTools) gets the PDF that was open.
+    // DevTools, after a crash) gets the PDF that was open, unless the user
+    // chose to reload without it.
     let navigated = false;
+    let reopen = true;
     wc.on('did-navigate', () => {
-      opens.newPage(navigated ? current : null);
+      opens.newPage(navigated && reopen ? current : null);
       navigated = true;
+      reopen = true;
     });
-    wc.on('render-process-gone', () => {
+    // The renderer died (crash, killed for memory): the window would stay
+    // blank, unable to save or take open requests. Reload it (it reopens the
+    // PDF; requests that come meanwhile are queued); if it dies again soon or
+    // before it saved, ask (crashRecovery.ts). While closing, the window just
+    // closes: there is nothing left to save.
+    wc.on('render-process-gone', (_e, details) => {
       loaded = false;
-      if (closeAsked) w.close();
+      if (closeAsked) {
+        w.close();
+        return;
+      }
+      if (smokeMode || w.isDestroyed()) return;
+      const action = crashes.next(details.reason);
+      if (action === 'reload') wc.reload();
+      else if (action === 'ask') void askAfterCrash(details.reason);
     });
+    async function askAfterCrash(reason: string): Promise<void> {
+      const r = await dialog.showMessageBox(w, {
+        type: 'error', buttons: ['Reload', 'Reload Without the PDF', 'Close Window'], defaultId: 1, cancelId: 2,
+        title: 'Inkslide', message: `The Inkslide window stopped working again (${reason}).`,
+        detail: 'Notes saved before it stopped are kept. If the open PDF makes it stop, reload without it.',
+      });
+      if (w.isDestroyed() || loaded) return;
+      if (r.response === 2) w.close();
+      else {
+        reopen = r.response === 0;
+        crashes.reloaded();
+        wc.reload();
+      }
+    }
     wc.on('did-finish-load', () => {
       loaded = true;
       if (audienceLoaded) wc.send(IPC.presenterState, true); // a reloaded page presents again
@@ -289,13 +336,22 @@ function start(): void {
     if (entry.kind === 'url') void w.loadURL(entry.url);
     else if (!existsSync(entry.file)) {
       void w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
-    } else void w.loadFile(entry.file, smokeMode ? { hash: `smoke=${encodeURIComponent(smokeMode)}` } : {});
+    } else void w.loadURL(appUrl(entry.file, smokeMode ? `#smoke=${encodeURIComponent(smokeMode)}` : ''));
+  }
+
+  /**
+   * The app://inkslide/ URL of a front-end page (index.html, audience.html):
+   * app:// serves the page's folder (webRoot), never file:// (paths.ts APP_ORIGIN).
+   */
+  function appUrl(file: string, hash = ''): string {
+    webRoot = dirname(file);
+    return `${APP_ORIGIN}/${encodeURIComponent(basename(file))}${hash}`;
   }
 
   function webEntry(): WebEntry {
     return resolveWebEntry({
       devUrl: process.env.INKSLIDE_DEV_URL,
-      pageOverride: process.env.INKSLIDE_PAGE,
+      pageOverride: testVars.page,
       isPackaged: app.isPackaged,
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath,
@@ -366,7 +422,7 @@ function start(): void {
     if (entry.kind === 'url') void a.loadURL(entry.url);
     else if (!existsSync(entry.file)) {
       void a.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
-    } else void a.loadFile(entry.file);
+    } else void a.loadURL(appUrl(entry.file));
     refreshMenu();
   }
 
@@ -471,6 +527,7 @@ function start(): void {
   // With backups on, the save first copies the saved notes to the backup (notes.ts).
   handle(IPC.writeNotes, async (ref: unknown, text: unknown, sha256?: unknown): Promise<void> => {
     await tracked(writeNotesFor(checkTarget(ref, sha256), checkText(text), userData, prefs.backups));
+    crashes.saved();
     void updateRevert();
   });
 
@@ -506,7 +563,7 @@ function start(): void {
     if (!(bytes instanceof Uint8Array)) throw new Error('print bytes must be a Uint8Array');
     return printPdf(bytes, typeof name === 'string' ? name : '', {
       parent: win,
-      toPdf: smokeMode ? process.env.INKSLIDE_PRINT_TO_PDF : undefined,
+      toPdf: smokeMode ? testVars.printToPdf : undefined,
     });
   });
 
@@ -616,6 +673,12 @@ function start(): void {
     // Old backups and unreadable copies go, in the background.
     void cleanupNotesStore(userData).catch(err => console.warn(`notes cleanup failed: ${(err as Error).message}`));
     restrictPermissions(session.defaultSession);
+    // app://inkslide/<path>: files of webRoot only (webFileFor refuses anything outside it).
+    protocol.handle(APP_SCHEME, async req => {
+      const file = webRoot ? webFileFor(webRoot, req.url) : null;
+      if (!file) return new Response('Not found', { status: 404 });
+      return net.fetch(pathToFileURL(file).href).catch(() => new Response('Not found', { status: 404 }));
+    });
     refreshMenu();
     createWindow();
   });

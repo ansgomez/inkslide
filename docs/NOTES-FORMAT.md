@@ -198,8 +198,18 @@ so in a banner. Once saved, the notes are a v2 file.
   without a path) the newer file by modification time wins, the sidecar on a tie. If only one
   exists, that one is read.
 - **Writing** is crash-safe: a temp file in the same folder, `fsync`, rename over the old file,
-  then `fsync` of the folder. A crash leaves the old or the new file, never half of one. A
-  sidecar that is a symlink is written through, and the replaced file keeps its permissions.
+  then `fsync` of the folder. A crash leaves the old or the new file, never half of one. On
+  Windows a rename that fails because another program (antivirus, OneDrive) holds the file is
+  tried again for up to about 0.7 s before the notes go to app storage. A
+  sidecar that is a symlink is followed only to this PDF's own notes kept elsewhere (e.g. in a
+  synced folder): the target must have the sidecar's name (`<name>.pdf.notes.json`, or
+  `<name>.pdf.notes.backup.json`), must not be in `<userData>`, and, if it records a PDF hash
+  (`deck.sha256`), it must be this PDF's (so also a link to notes made for an earlier version of
+  the PDF is not followed; the linked file is left as it is). Any other link (as an archive could hold:
+  `deck.pdf.notes.json -> ../../.bashrc`, or a link to another PDF's notes) is never read or
+  copied (the notes count as unreadable), and a save replaces the link itself. A followed link
+  is resolved once and its target read through a handle opened without following links, checked
+  to be the same file. The replaced file keeps its permissions.
 - **Backup:** always in app storage, `<userData>/notes/<sha256>.notes.backup.json`, keyed by
   the PDF's SHA-256 like the app-storage notes; the same format as the notes file, written the
   same crash-safe way. Before a save replaces the notes, the saved notes (as read above) are

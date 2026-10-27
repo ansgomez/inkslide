@@ -16,10 +16,10 @@
  * OLD_COPIES_MAX_AGE_DAYS are deleted at startup (cleanupNotesStore).
  */
 import { createHash } from 'node:crypto';
-import { readdir, readFile, rm, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { BACKUP_MIN_AGE_MS, BACKUP_SUFFIX, isUsableNotes, notesPathFor, OLD_COPIES_MAX_AGE_DAYS, type NotesBackup } from '@inkslide/annotate/io';
-import { canWriteIn, ensureDir, readTextIfExists, writeFileAtomic } from './fsutil';
+import { lstat, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { BACKUP_MIN_AGE_MS, BACKUP_SUFFIX, isUsableNotes, NOTES_SUFFIX, notesPathFor, OLD_COPIES_MAX_AGE_DAYS, type NotesBackup } from '@inkslide/annotate/io';
+import { canWriteIn, ensureDir, type FollowLink, readFileChecked, readTextIfExists, RefusedLinkError, writeFileAtomic } from './fsutil';
 import { fallbackBackupPath, fallbackNotesPath, isSha256, isStorageName, NOTES_DIR, sidecarStatePath, UNREADABLE_SUFFIX, unreadableNotesPath } from './paths';
 
 /** The PDF whose notes are read or written. */
@@ -49,16 +49,62 @@ async function hashOf(t: NotesTarget): Promise<string> {
 const hashIfKnown = (t: NotesTarget): Promise<string | null> =>
   (t.path || t.sha256 !== undefined || t.bytes ? hashOf(t) : Promise.resolve(null));
 
+/** Whether `file` is `dir` or inside it. */
+function isInside(dir: string, file: string): boolean {
+  const rel = relative(dir, file);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
 /**
- * Write `text` crash-safe to `beside` (next to the PDF) if given and its folder
- * is writable, else, or if that write fails, to the app-storage file `stored()`
+ * Which symlink the sidecar of `t` may be followed through (a FollowLink for
+ * fsutil). A sidecar that is a link is followed only to this PDF's own notes
+ * file kept elsewhere (e.g. in a synced folder): the target has the same name
+ * ("<name>.pdf.notes.json", or "<name>.pdf.notes.backup.json"), is not in
+ * userData (app storage of any PDF), and, if it records a PDF hash
+ * (deck.sha256), it is this PDF's. Any other link, such as
+ * "deck.pdf.notes.json -> ../../.bashrc" from an archive, or a link to
+ * another PDF's notes, is never read, and a save replaces the link instead
+ * of writing through it. A sidecar that is a file is used as it is; one that
+ * is missing now and a link later is not followed.
+ */
+async function sidecarFollow(t: NotesTarget, userData: string): Promise<FollowLink> {
+  if (!t.path) return () => false;
+  const sidecar = notesPathFor(t.path);
+  const isLink = await lstat(sidecar).then(st => st.isSymbolicLink(), () => false);
+  const real = await realpath(sidecar).catch(() => null);
+  if (real === null || !isLink) return target => target === real;
+  const own = basename(sidecar);
+  const ok = (basename(real) === own || basename(real) === `${own.slice(0, -NOTES_SUFFIX.length)}${BACKUP_SUFFIX}`)
+    && !isInside(await realpath(userData).catch(() => resolve(userData)), real)
+    && await recordsThisPdf(real, t);
+  return target => ok && target === real;
+}
+
+/** Whether the notes in `file` are not recorded for another PDF: true if they record no hash, or this PDF's, or cannot be parsed. */
+async function recordsThisPdf(file: string, t: NotesTarget): Promise<boolean> {
+  let recorded: unknown;
+  try {
+    const bytes = await readFileChecked(file, () => false); // `file` is resolved: no link to follow
+    recorded = bytes && (JSON.parse(bytes.toString('utf8')) as { deck?: { sha256?: unknown } } | null)?.deck?.sha256;
+  } catch (_) {
+    return true; // unreadable: the notes flow reports it, and keeps a copy of a file with this PDF's notes name
+  }
+  if (typeof recorded !== 'string') return true;
+  return recorded === await hashIfKnown(t).catch(() => null);
+}
+
+/**
+ * Write `text` crash-safe to `beside` (next to the PDF; a link to follow as
+ * `follow` allows) if given and its folder is writable, else, or if that write fails, to the app-storage file `stored()`
  * (its folder created). Returns the file written; throws the first error.
  */
-async function writeBesideOrStored(beside: string | null, stored: () => Promise<string>, text: string): Promise<string> {
+async function writeBesideOrStored(
+  beside: string | null, stored: () => Promise<string>, text: string, follow: FollowLink,
+): Promise<string> {
   let besideError: unknown;
-  if (beside && await canWriteIn(dirname(beside), beside)) {
+  if (beside && await canWriteIn(dirname(beside), beside, follow)) {
     try {
-      await writeFileAtomic(beside, text);
+      await writeFileAtomic(beside, text, follow);
       return beside;
     } catch (err) {
       besideError = err;
@@ -78,7 +124,7 @@ async function writeBesideOrStored(beside: string | null, stored: () => Promise<
 export async function notesWritePath(t: NotesTarget, userData: string): Promise<string> {
   if (t.path) {
     const sidecar = notesPathFor(t.path);
-    if (await canWriteIn(dirname(sidecar), sidecar)) return sidecar;
+    if (await canWriteIn(dirname(sidecar), sidecar, await sidecarFollow(t, userData))) return sidecar;
   }
   return fallbackNotesPath(userData, await hashOf(t));
 }
@@ -102,9 +148,9 @@ interface SidecarState {
   sha256: string | null;
 }
 
-/** SHA-256 of the sidecar's text, null if it is missing or cannot be read. */
-const sidecarHash = (sidecar: string): Promise<string | null> =>
-  readFile(sidecar).then(sha256OfBytes, () => null);
+/** SHA-256 of the sidecar's text, null if it is missing or cannot be read (or is a link that is not followed). */
+const sidecarHash = (sidecar: string, follow: FollowLink): Promise<string | null> =>
+  readFileChecked(sidecar, follow).then(b => (b ? sha256OfBytes(b) : null), () => null);
 
 /** The record in `file`; null if it is missing or broken. */
 async function readSidecarState(file: string): Promise<SidecarState | null> {
@@ -124,9 +170,9 @@ async function readSidecarState(file: string): Promise<SidecarState | null> {
  * e.g. for notes written without a path or before this was recorded, the
  * newer file wins, the sidecar on a tie.
  */
-async function appStorageFirst(sidecar: string, stored: string, state: string): Promise<boolean> {
+async function appStorageFirst(sidecar: string, stored: string, state: string, follow: FollowLink): Promise<boolean> {
   const s = await readSidecarState(state);
-  if (s && s.sidecar === sidecar) return (await sidecarHash(sidecar)) === s.sha256;
+  if (s && s.sidecar === sidecar) return (await sidecarHash(sidecar, follow)) === s.sha256;
   return (await mtimeOf(stored)) > (await mtimeOf(sidecar));
 }
 
@@ -141,19 +187,20 @@ export async function readNotesFor(t: NotesTarget, userData: string): Promise<st
 
 /** The saved notes, as readNotesFor reads them, and the file they come from; null if there are none. */
 async function readSaved(t: NotesTarget, userData: string): Promise<{ file: string; text: string } | null> {
-  for (const file of await savedCandidates(t, userData)) {
-    const text = await readTextIfExists(file);
+  const follow = await sidecarFollow(t, userData);
+  for (const file of await savedCandidates(t, userData, follow)) {
+    const text = await readTextIfExists(file, follow);
     if (text !== null) return { file, text };
   }
   return null;
 }
 
 /** The files the saved notes can be in, the one read first first. */
-async function savedCandidates(t: NotesTarget, userData: string): Promise<string[]> {
+async function savedCandidates(t: NotesTarget, userData: string, follow: FollowLink): Promise<string[]> {
   const sidecar = t.path ? notesPathFor(t.path) : null;
   const sha = await hashIfKnown(t);
   const stored = sha ? fallbackNotesPath(userData, sha) : null;
-  const storedFirst = sidecar && sha && stored ? await appStorageFirst(sidecar, stored, sidecarStatePath(userData, sha)) : !sidecar;
+  const storedFirst = sidecar && sha && stored ? await appStorageFirst(sidecar, stored, sidecarStatePath(userData, sha), follow) : !sidecar;
   return (storedFirst ? [stored, sidecar] : [sidecar, stored]).filter((f): f is string => !!f);
 }
 
@@ -169,11 +216,12 @@ export async function writeNotesFor(t: NotesTarget, text: string, userData: stri
     await backupBeforeSave(t, userData).catch(err => console.warn(`notes backup failed: ${(err as Error).message}`));
   }
   const sidecar = t.path ? notesPathFor(t.path) : null;
+  const follow = await sidecarFollow(t, userData);
   let sha = '';
-  const file = await writeBesideOrStored(sidecar, async () => fallbackNotesPath(userData, sha = await hashOf(t)), text);
+  const file = await writeBesideOrStored(sidecar, async () => fallbackNotesPath(userData, sha = await hashOf(t)), text, follow);
   if (sidecar && file !== sidecar) {
     const state = sidecarStatePath(userData, sha);
-    const record: SidecarState = { sidecar, sha256: await sidecarHash(sidecar) };
+    const record: SidecarState = { sidecar, sha256: await sidecarHash(sidecar, follow) };
     const old = await readSidecarState(state);
     // Rewritten only when it changes (autosave runs every few seconds). Without
     // a record the newer file wins, which here is app storage too.
@@ -260,11 +308,17 @@ export const removeLegacyBackup = (pdfPath: string): Promise<void> =>
  * kept). Returns the copy, or null if there is no notes file.
  */
 export async function keepUnreadableFor(t: NotesTarget, userData: string): Promise<string | null> {
-  for (const file of await savedCandidates(t, userData)) {
-    if ((await mtimeOf(file)) < 0) continue;
+  const follow = await sidecarFollow(t, userData);
+  for (const file of await savedCandidates(t, userData, follow)) {
+    // A link that is not followed is not this PDF's notes: nothing of its target is copied.
+    const bytes = await readFileChecked(file, follow).catch(err => {
+      if (err instanceof RefusedLinkError) return null;
+      throw err;
+    });
+    if (bytes === null) continue;
     const copy = unreadableNotesPath(userData, await hashOf(t));
     await ensureDir(dirname(copy));
-    await writeFileAtomic(copy, await readFile(file));
+    await writeFileAtomic(copy, bytes);
     return copy;
   }
   return null;

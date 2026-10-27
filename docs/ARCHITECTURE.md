@@ -138,7 +138,12 @@ cancels the close, asks the front end to flush its notes, and closes when the re
 If saving fails, the user is asked. `will-quit` waits for notes writes still running. Open
 requests that come before the page has loaded wait in `OpenRequests` (the first one is
 `initialPath()`); a reloaded page gets the PDF it showed. Reload is in the menu of development
-builds only, since it skips the save before closing.
+builds only, since it skips the save before closing. If the page's renderer process dies
+(crash, killed for memory), main reloads the page and it reopens the PDF; open requests that
+come meanwhile are queued. If it dies again within 5 minutes of a reload, or before the
+reloaded page saved its notes, the user chooses: reload, reload
+without the PDF, or close the window (`crashRecovery.ts`). During the close handshake the
+window simply closes.
 
 All windows (the app, the audience window of presenter mode and the hidden print window) are
 locked down by `harden.ts`: context isolation, sandbox, no Node; no navigation, no new windows;
@@ -152,7 +157,7 @@ projector: full screen on a display other than the app window's, else a 960×540
 (`apps/desktop/src/main/presenter.ts`, `audiencePlacement`). On Wayland it is always the
 window: the compositor ignores positions, so a full-screen window could cover the app window
 on its own display. It loads `audience.html` of the
-same front end build (a second Vite entry, `apps/web/src/audience.ts`) with the same
+same front end build, as `app://inkslide/audience.html` like the app window's page (a second Vite entry, `apps/web/src/audience.ts`) with the same
 webPreferences and preload. Main answers none of its bridge calls (every handler checks that
 the sender is the app window), so it reads no files; it only receives.
 
@@ -203,6 +208,18 @@ backups, kept unreadable copies), `recent-files.v2.json` (older builds: `recent-
 `preferences.json`, and `Crashpad/`: `crashReporter.start({ uploadToServer: false })` in
 `main.ts` keeps a minidump of each native crash (main, GPU or renderer process) there; nothing
 is uploaded.
+
+The front end is not loaded from `file://`: a `file://` page counts every local file as its
+own origin, so its CSP `'self'` and `fetch` would reach any file (a PDF.js exploit could read
+`~/.ssh`). Main registers the privileged scheme `app` (standard, secure, fetch) and serves
+`resources/web` (in development `apps/web/dist`) as `app://inkslide/`; the handler maps a URL to
+a file of that folder only (`webFileFor` in `paths.ts`: no `..`, encoded slashes or other
+hosts). The built page's CSP (`apps/web/vite.config.ts`) then limits scripts, workers, fetch and
+wasm to that origin. The print window still loads its temp PDF with `loadFile`, which the fuses
+below do not affect. Packaged builds flip Electron fuses (`electronFuses` in
+`electron-builder.yml`): no `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` or `--inspect`, no extra
+`file://` privileges, app code only from `app.asar`, with its integrity checked on macOS and
+Windows.
 
 ## Autosave
 
@@ -368,4 +385,7 @@ startup bundle. The adapter then saves the bytes.
 - Desktop smoke test (`apps/desktop/test/smoke.mjs`) launches Electron with a fixture page
   and drives the bridge end to end (also the backup and revert, the unreadable copy, cleanup
   of old copies, switching backups off, printing, a second instance
-  and a desktop entry).
+  and a desktop entry). Its environment variables (`INKSLIDE_PAGE`, `INKSLIDE_SMOKE`,
+  `INKSLIDE_USER_DATA`, `INKSLIDE_PRINT_TO_PDF`) are ignored by packaged builds unless they
+  were packaged as test builds (`dist.mjs --test-build`, packages named `*-TEST*`), so a
+  release cannot be pointed at another page.

@@ -98,3 +98,9 @@ Set the new version in `package.json` and `apps/desktop/package.json`, commit, t
 `.github/workflows/release.yml` builds the AppImage and RPM, the Windows installer and the macOS
 DMGs and publishes them as a pre-release with `.github/release-notes.md`. Run the workflow by
 hand (Actions → Release → Run workflow) to build the packages without publishing them.
+
+Before publishing, check on a Mac that each DMG's app is validly signed (flipping the Electron
+fuses breaks the ad-hoc signature unless `resetAdHocDarwinSignature` signs it again; an arm64
+app with a broken signature does not launch): `codesign --verify --deep --strict
+/Volumes/Inkslide*/Inkslide.app`, then open it once. The workflow runs the same check on the
+`.app` folders it builds.
