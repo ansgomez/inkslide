@@ -212,7 +212,9 @@ scrolls into view, with the page's notes as SVG on top.
 - Pen buttons: the eraser end (button mask 32) uses the stroke eraser; the side button (mask 2
   in Electron, 4 in Chromium) uses the side-button tool, by default also the stroke eraser.
 - Once a pen has been seen (touching or hovering), touch never draws. A pen that comes down
-  while a finger draws discards the finger's stroke (a palm).
+  or starts hovering while a finger draws discards the finger's stroke (a palm), and so does
+  a second finger. `input.ts`'s own two-finger swipe (for hosts without `gestures.ts`) is
+  ignored while a gesture runs and for 500 ms after a pen event.
 - `gestures.ts` runs in the capture phase on the stage, before `input.ts`: one finger draws
   until a pen is seen, then pans a zoomed page; two fingers pinch-zoom and pan, or turn the
   page with a quick sideways swipe; Ctrl + wheel zooms. While the pen touches or hovers, and

@@ -94,15 +94,75 @@ describe('attachInput', () => {
     expect(pen.down).toHaveBeenCalledTimes(2);
   });
 
-  it('tells the pointer type of the running gesture, also after a pen hovered', () => {
+  it('tells the pointer type of the running gesture', () => {
     const { fire, input } = setup();
     expect(input.activePointerType).toBeNull();
     fire('pointerdown', { pointerType: 'touch', pointerId: 5 });
-    fire('pointermove', { pointerType: 'pen', pointerId: 6 }); // a hovering pen: penSeen, the finger still draws
-    expect(input.penSeen).toBe(true);
     expect(input.activePointerType).toBe('touch');
     input.discard();
     expect(input.activePointerType).toBeNull();
+  });
+
+  it('a pen starting to hover drops a running finger stroke (it was a palm)', () => {
+    const { fire, input, pen } = setup();
+    fire('pointerdown', { pointerType: 'touch', pointerId: 5 });
+    fire('pointermove', { pointerType: 'pen', pointerId: 6 });
+    expect(input.penSeen).toBe(true);
+    expect(input.busy).toBe(false);
+    expect(pen.cancel).toHaveBeenCalledTimes(1);
+    fire('pointerup', { pointerType: 'touch', pointerId: 5 });
+    expect(pen.up).not.toHaveBeenCalled();
+  });
+
+  it('a second finger drops the first finger\'s stroke and draws nothing', () => {
+    const { fire, input, pen } = setup();
+    fire('pointerdown', { pointerType: 'touch', pointerId: 5 });
+    fire('pointerdown', { pointerType: 'touch', pointerId: 6 });
+    expect(pen.cancel).toHaveBeenCalledTimes(1);
+    expect(pen.up).not.toHaveBeenCalled();
+    expect(pen.down).toHaveBeenCalledTimes(1);
+    expect(input.busy).toBe(false);
+    // a mouse gesture that lost its pointerup is still committed by the next one
+    fire('pointerdown', { pointerType: 'mouse', button: 0, pointerId: 7 });
+    fire('pointerdown', { pointerType: 'mouse', button: 0, pointerId: 8 });
+    expect(pen.up).toHaveBeenCalledTimes(1);
+    expect(pen.down).toHaveBeenCalledTimes(3);
+  });
+
+  describe('two-finger swipe', () => {
+    const touch = (svg: SVGSVGElement, type: string, xs: number[], timeStamp: number) => {
+      const touches = xs.map((x, i) => ({ identifier: i, clientX: x, clientY: 100, target: svg }));
+      const e = new TouchEvent(type, { bubbles: true, touches: touches as unknown as Touch[] });
+      Object.defineProperty(e, 'timeStamp', { value: timeStamp });
+      svg.dispatchEvent(e);
+    };
+    const swipeLeft = (svg: SVGSVGElement, t0: number) => {
+      touch(svg, 'touchstart', [300, 340], t0);
+      touch(svg, 'touchmove', [150, 190], t0 + 100);
+      touch(svg, 'touchend', [], t0 + 200);
+    };
+    function withPages() {
+      const ctx = setup();
+      const step = vi.fn();
+      ctx.host.pages = { step };
+      ctx.fire('pointerdown', { pointerType: 'pen', pointerId: 2, buttons: 1 });
+      return { ...ctx, step, penAt: performance.now() };
+    }
+
+    it('turns the page once the pen has been away for a moment', () => {
+      const { svg, step, fire, penAt } = withPages();
+      fire('pointerup', { pointerType: 'pen', pointerId: 2 });
+      swipeLeft(svg, penAt + 2000);
+      expect(step).toHaveBeenCalledWith(1);
+    });
+
+    it('not while a stroke is being written, nor right after a pen event', () => {
+      const { svg, step, fire, penAt } = withPages();
+      swipeLeft(svg, penAt + 2000); // the pen is still down
+      fire('pointerup', { pointerType: 'pen', pointerId: 2 });
+      swipeLeft(svg, performance.now()); // the hand lifts with the pen
+      expect(step).not.toHaveBeenCalled();
+    });
   });
 
   it('hover goes to the current tool; disabled mode ignores input', () => {
