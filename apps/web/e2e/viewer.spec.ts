@@ -132,8 +132,12 @@ test('inserts, re-papers and deletes blank pages', async ({ page }) => {
   await expectCounter(page, '1 / 3 · blank 1/1');
   await expect(page.locator('.ink-page')).toHaveClass(/is-blank/);
   await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'plain');
-  await page.locator('.ann-bar [data-id="paper-grid"]').click();
+  // The paper button cycles plain → lined → grid.
+  await page.locator('.ann-bar [data-id="page-paper"]').click();
+  await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'lined');
+  await page.locator('.ann-bar [data-id="page-paper"]').click();
   await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'grid');
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageGrid');
   await penStroke(page, [0.3, 0.3], [0.6, 0.5]);
   await expect(penStrokes(page)).toHaveCount(1);
   await page.keyboard.press('b'); // second blank page, after this one
@@ -152,6 +156,17 @@ test('inserts, re-papers and deletes blank pages', async ({ page }) => {
   // Alt+PgDn skips the blank pages.
   await page.keyboard.press('Alt+PageDown');
   await expectCounter(page, '2 / 3');
+});
+
+test('the paper for new blank pages is remembered', async ({ page }) => {
+  await openPdf(page);
+  await page.locator('.ann-bar [data-id="page-paper"]').click(); // on a PDF page: only new blank pages
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageLined');
+  await page.reload();
+  await openPdf(page);
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageLined');
+  await page.keyboard.press('b');
+  await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'lined');
 });
 
 test('a file that is not a PDF shows an error; no PDF.js worker stays behind', async ({ page }) => {

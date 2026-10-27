@@ -117,8 +117,10 @@ follow it, and "3 / 37 · blank 1/2" on the first of them.
 
 - **B** (or the page-with-plus button) inserts a blank page after the current page, with the
   current paper.
-- Paper: **plain**, **lined** (with a margin line) or **grid**. The paper buttons change the
-  current blank page and set the paper for new ones.
+- Paper: **plain**, **lined** (with a margin line) or **grid**. The paper button cycles plain →
+  lined → grid → plain, and its icon shows the current paper. On a blank page it changes that
+  page (undoable) and the paper for new ones; on a PDF page it sets the paper for new ones.
+  The paper for new blank pages is remembered.
 - The delete button removes the current blank page with its ink (undoable). PDF pages cannot be
   deleted.
 

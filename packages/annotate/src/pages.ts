@@ -7,12 +7,19 @@
 import type { Paper } from './model';
 import type { GroupBuilder, ToolbarHost } from './toolbar';
 
-/** Paper buttons of the pages group. */
+/** Papers of the paper button, in the order it cycles through them. */
 export const PAPERS: readonly { id: Paper; label: string; icon: string }[] = [
   { id: 'plain', label: 'Plain paper', icon: 'pagePlain' },
   { id: 'lined', label: 'Lined paper', icon: 'pageLined' },
   { id: 'grid', label: 'Grid paper', icon: 'pageGrid' },
 ];
+
+/** The paper after `paper` in the cycle plain → lined → grid → plain. */
+export function nextPaper(paper: Paper): Paper {
+  return PAPERS[(PAPERS.findIndex(p => p.id === paper) + 1) % PAPERS.length].id;
+}
+
+const paperInfo = (paper: Paper) => PAPERS.find(p => p.id === paper) || PAPERS[0];
 
 /** Page navigation and blank pages, as the toolbar and keys use them. */
 export interface PagesController {
@@ -24,6 +31,7 @@ export interface PagesController {
   insert(paper?: Paper): void;
   /** Paper of the current blank page, else the paper for new blank pages. */
   paper(): Paper;
+  /** Paper for new blank pages, and of the current blank page if one is shown. */
   setPaper(paper: Paper): void;
   deleteCurrent(): void;
   /** Is a blank page shown? */
@@ -69,11 +77,12 @@ export const pagesGroup: GroupBuilder<PagesHost> = app => ({
       disabled: () => !app.pages.canStep(1) },
     { id: 'page-insert', title: 'Insert blank page after this page (B)', icon: 'pageInsert',
       onClick: () => app.pages.insert() },
-    ...PAPERS.map(p => ({
-      id: `paper-${p.id}`, title: `${p.label} (for this and new blank pages)`, icon: p.icon,
-      onClick: () => app.pages.setPaper(p.id),
-      active: () => app.pages.paper() === p.id,
-    })),
+    // One button cycles the paper; its icon shows the current one. On a blank page it changes
+    // that page (undoable) and new ones, elsewhere the paper of new blank pages.
+    { id: 'page-paper', icon: () => paperInfo(app.pages.paper()).icon,
+      title: () => `${paperInfo(app.pages.paper()).label} · click for ${paperInfo(nextPaper(app.pages.paper())).label.toLowerCase()}` +
+        ` (${app.pages.onBlank() ? 'this and new blank pages' : 'new blank pages'})`,
+      onClick: () => app.pages.setPaper(nextPaper(app.pages.paper())) },
     { id: 'page-delete', title: 'Delete this blank page', icon: 'pageDelete',
       onClick: () => app.pages.deleteCurrent(), disabled: () => !app.pages.onBlank() },
   ],

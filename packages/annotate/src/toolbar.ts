@@ -218,9 +218,8 @@ registerGroup('pages', () => ({
   items: [
     soon('page-prev', 'Previous page', 'prev'),
     soon('page-next', 'Next page', 'next'),
-    soon('blank-plain', 'Insert plain page (B)', 'pagePlain'),
-    soon('blank-lined', 'Insert lined page', 'pageLined'),
-    soon('blank-grid', 'Insert grid page', 'pageGrid'),
+    soon('page-insert', 'Insert blank page (B)', 'pageInsert'),
+    soon('page-paper', 'Paper of blank pages', 'pagePlain'),
     soon('page-delete', 'Delete blank page', 'pageDelete'),
   ],
 }));

@@ -24,7 +24,7 @@ import {
   createAnnotator, NotesDoc, type Annotator, type NotesBackup, type Paper, type PdfFile, type Surface,
 } from '@inkslide/annotate';
 import { deckFromPdf, loadNotesText, sha256Hex } from '@inkslide/annotate/io';
-import { pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
+import { PAPERS, pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
 import * as render from '@inkslide/annotate/render';
 import { ICONS, isTyping, registerGroup, type ToolbarHost } from '@inkslide/annotate/toolbar';
 import { banner } from './banner';
@@ -47,6 +47,8 @@ import { printPageImages } from './print';
 const PAGE_MARGIN = 6;
 const CACHE_LIMIT = 6;
 const FIT_KEY = 'inkslide-fit-mode';
+/** Paper for new blank pages (the paper button), remembered like the fit mode. */
+const PAPER_KEY = 'inkslide-blank-paper';
 /** Keys of navKey that scroll or turn the page. */
 const PAGE_KEYS = new Set(['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'PageDown', 'PageUp', ' ', 'Home', 'End']);
 
@@ -350,6 +352,12 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     else stepBackToBottom();
   }
 
+  /** The remembered paper for new blank pages; plain if none (or storage is blocked). */
+  const storedPaper = (): Paper => {
+    const p = storedItem(PAPER_KEY);
+    return PAPERS.some(x => x.id === p) ? p as Paper : 'plain';
+  };
+
   const toggleFitMode = (): void => setFitMode(fitMode === 'width' ? 'page' : 'width');
 
   function setFitMode(mode: FitMode): void {
@@ -481,6 +489,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
       },
       setPaper(paper) {
         ses.defaultPaper = paper;
+        storeItem(PAPER_KEY, paper);
         if (onBlank()) doc.setPaper(ses.current, paper);
         ses.app.refresh();
       },
@@ -638,7 +647,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
   function startSession(file: PdfFile, sha256: string, pdf: PdfDoc, doc: NotesDoc): void {
     const app = createAnnotator({ doc, activeSurface: () => currentSurface(), renderer: liveInk.renderer });
     const ses: Session = {
-      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: 'plain',
+      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: storedPaper(),
       overview: null as unknown as Overview, pages: null as unknown as ViewerPages, unbind: () => {},
     };
     s = ses;

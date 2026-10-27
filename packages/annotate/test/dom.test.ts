@@ -2,9 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PAPER_STYLE, createLayer, createPageSurface, setSelectionBox, syncLayer, viewBoxSize } from '../src/render';
 import { createToolbar, defaultKeymap, isTyping, registerGroup } from '../src/toolbar';
-import { formatLabel, pagesGroup, parseSlideNumber, type PagesController } from '../src/pages';
+import { formatLabel, nextPaper, pagesGroup, parseSlideNumber, type PagesController } from '../src/pages';
 import { createAnnotator, loadPrefs, PREFS_KEY } from '../src/app';
-import { NotesDoc, createStroke } from '../src/model';
+import { NotesDoc, createStroke, type Paper } from '../src/model';
 import { deckFromPdf } from '../src/io';
 import type { Stroke } from '../src/geometry';
 
@@ -318,7 +318,39 @@ describe('annotator, toolbar and keys', () => {
       expect(bar.el.querySelector('[data-id="page-label"]')!.textContent).toBe('1 / 2');
       expect(bar.el.querySelector('.ann-edge-start [data-id="page-prev"]')).not.toBeNull();
       expect((bar.el.querySelector('[data-id="page-prev"]') as HTMLButtonElement).disabled).toBe(true);
-      expect(bar.el.querySelector('[data-id="paper-grid"]')!.classList.contains('is-active')).toBe(true);
+      expect(bar.el.querySelector('[data-id="page-paper"]')!.getAttribute('data-icon')).toBe('pageGrid');
+    } finally {
+      registerGroup('pages', () => ({ id: 'pages', label: 'Pages', placeholder: true, items: [] }));
+    }
+  });
+
+  it('the paper button cycles plain → lined → grid → plain and shows the current paper', () => {
+    const { app } = setup();
+    let paper: Paper = 'plain', blank = false;
+    const setPaper = vi.fn((p: Paper) => { paper = p; });
+    app.pages = {
+      step: () => {}, canStep: () => true, label: () => '1 / 2', insert: () => {},
+      paper: () => paper, setPaper, deleteCurrent: () => {}, onBlank: () => blank,
+    };
+    registerGroup('pages', pagesGroup);
+    try {
+      const bar = createToolbar(app as typeof app & { pages: PagesController });
+      const btn = bar.el.querySelector('[data-id="page-paper"]') as HTMLButtonElement;
+      expect(bar.el.querySelectorAll('[data-id^="paper-"]').length).toBe(0); // no separate paper buttons
+      expect(btn.dataset.icon).toBe('pagePlain');
+      expect(btn.getAttribute('aria-label')).toBe('Plain paper · click for lined paper (new blank pages)');
+      const seen: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        btn.click();
+        bar.update();
+        seen.push(btn.dataset.icon!);
+      }
+      expect(setPaper.mock.calls.map(c => c[0])).toEqual(['lined', 'grid', 'plain']);
+      expect(seen).toEqual(['pageLined', 'pageGrid', 'pagePlain']);
+      blank = true;
+      bar.update();
+      expect(btn.title).toBe('Plain paper · click for lined paper (this and new blank pages)');
+      expect([nextPaper('plain'), nextPaper('lined'), nextPaper('grid')]).toEqual(['lined', 'grid', 'plain']);
     } finally {
       registerGroup('pages', () => ({ id: 'pages', label: 'Pages', placeholder: true, items: [] }));
     }
