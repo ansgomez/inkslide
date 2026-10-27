@@ -74,9 +74,33 @@ const normalizeBox = ({ x, y, width, height }: Box): Box => ({
   x: Math.min(x, x + width), y: Math.min(y, y + height), width: Math.abs(width), height: Math.abs(height),
 });
 
-/** The box a viewer shows: CropBox clipped to the MediaBox (as PDF.js does). */
+/** PDF.js's MediaBox for a page without a usable one: US Letter. */
+const LETTER_BOX: Box = { x: 0, y: 0, width: 612, height: 792 };
+
+const hasArea = (b: Box): boolean => b.width > 0 && b.height > 0 && b.width < Infinity && b.height < Infinity;
+
+/** A page box, or null when it is missing, malformed or without area (pdf-lib throws on some). */
+function readBox(get: () => Box): Box | null {
+  try {
+    const b = normalizeBox(get());
+    return hasArea(b) ? b : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The box a viewer shows: CropBox clipped to the MediaBox (as PDF.js does).
+ * A page without a usable MediaBox gets Letter, as in PDF.js, written onto
+ * the page so other viewers show the same frame.
+ */
 function visibleBox(page: PDFPage): Box {
-  const m = normalizeBox(page.getMediaBox()), c = normalizeBox(page.getCropBox());
+  let m = readBox(() => page.getMediaBox());
+  if (!m) {
+    m = LETTER_BOX;
+    page.setMediaBox(m.x, m.y, m.width, m.height);
+  }
+  const c = readBox(() => page.getCropBox()) || m;
   const x = Math.max(m.x, c.x), y = Math.max(m.y, c.y);
   const x2 = Math.min(m.x + m.width, c.x + c.width), y2 = Math.min(m.y + m.height, c.y + c.height);
   return x2 > x && y2 > y ? { x, y, width: x2 - x, height: y2 - y } : m;

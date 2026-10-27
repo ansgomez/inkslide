@@ -4,6 +4,7 @@ import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, decod
 import { ENCRYPTED_PDF_MESSAGE, exportAnnotatedPdf, exportAnnotatedPdfWithReport, paperOperators } from '../src/export';
 import { displayMatrix, displaySize, normalizeRotation, parseColor, svgPathOperators } from '../src/ops';
 import { SIZE, crossStrokes, fixturePdf, hl, notesFile, openPdfJs, pageTexts, pen } from './helpers';
+import type { NotesJSON } from '@inkslide/annotate/model';
 
 const contentsCount = (page: PDFPage): number => {
   const c = page.node.Contents();
@@ -255,6 +256,36 @@ describe('exportAnnotatedPdf', () => {
       }
     }
     await js.destroy();
+  });
+
+  it('gives a page without a usable MediaBox Letter size, as PDF.js does', async () => {
+    const pdf = await PDFDocument.create();
+    pdf.addPage([600, 400]).node.delete(PDFName.of('MediaBox'));
+    pdf.addPage([600, 400]).node.set(PDFName.of('MediaBox'), pdf.context.obj([0, 0, 0, 0]));
+    pdf.addPage([600, 400]).node.set(PDFName.of('MediaBox'), pdf.context.obj(['a', 'b']));
+    const src = await pdf.save();
+    const js = await openPdfJs(src);
+    const vps = await Promise.all([1, 2, 3].map(async n => (await js.doc.getPage(n)).getViewport({ scale: 1 })));
+    await js.destroy();
+    for (const vp of vps) expect([vp.width, vp.height]).toEqual([612, 792]);
+    const notes: NotesJSON = {
+      format: 'marp-notes', version: 2,
+      deck: { source: 'pdf', title: 'fixture.pdf', slides: 3, size: [612, 792] },
+      pages: [
+        { id: 'p1', kind: 'slide', slide: 1, strokes: [pen('d', [[100, 50]], '#000', 10)] },
+        { id: 'p3', kind: 'slide', slide: 3, strokes: [pen('d3', [[100, 50]], '#000', 10)] },
+        { id: 'b-3', kind: 'blank', after: 3, paper: 'lined', strokes: [] },
+      ],
+    };
+    const res = await exportAnnotatedPdfWithReport(src, notes);
+    expect(res.warnings).toEqual([]);
+    const out = await PDFDocument.load(res.bytes);
+    expect(out.getPageCount()).toBe(4);
+    for (const i of [0, 1, 2, 3]) expect(out.getPage(i).getMediaBox()).toEqual({ x: 0, y: 0, width: 612, height: 792 });
+    for (const i of [0, 2]) {
+      const cm = /(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) cm/.exec(lastStream(out.getPage(i)));
+      expect(cm!.slice(1).map(Number)).toEqual([1, 0, 0, -1, 0, 792]);
+    }
   });
 
   it('leaves pages without notes untouched and handles empty notes', async () => {
