@@ -3,12 +3,18 @@
 /** A storage key as a file name: anything but [A-Za-z0-9_-] becomes '_'. */
 export const safeFileName = (key: string, ext: string): string => `${key.replace(/[^A-Za-z0-9_-]/g, '_')}${ext}`;
 
-/** Directory `name` in the origin's OPFS (created); null where there is none. */
-export async function opfsDir(name: string): Promise<FileSystemDirectoryHandle | null> {
+/**
+ * Directory `name` in the origin's OPFS (created); null where there is none.
+ * strict: only "no OPFS here" (SecurityError: private browsing, file://
+ * origin) is null; other failures reject (a read must not take them for
+ * "no notes").
+ */
+export async function opfsDir(name: string, strict = false): Promise<FileSystemDirectoryHandle | null> {
   try {
     if (!navigator.storage || typeof navigator.storage.getDirectory !== 'function') return null;
     return await (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true });
-  } catch (_) {
+  } catch (e) {
+    if (strict && (e as Error | null)?.name !== 'SecurityError') throw e;
     return null; // e.g. private browsing, file:// origin
   }
 }

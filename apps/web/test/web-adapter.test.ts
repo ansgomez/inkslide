@@ -9,13 +9,16 @@ const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
 /** In-memory OPFS "notes" directory whose writes can be made to fail. */
 function fakeOpfs() {
   const files = new Map<string, string>();
-  const state = { failWrites: false };
+  const state = { failWrites: false, readError: null as DOMException | null, dirError: null as DOMException | null };
   const dir = {
     async getFileHandle(name: string, opts?: { create?: boolean }) {
       if (!files.has(name) && !opts?.create) throw new DOMException('missing', 'NotFoundError');
       if (!files.has(name)) files.set(name, '');
       return {
-        async getFile() { return { text: async () => files.get(name) ?? '' }; },
+        async getFile() {
+          if (state.readError) throw state.readError;
+          return { text: async () => files.get(name) ?? '' };
+        },
         async createWritable() {
           if (state.failWrites) throw new DOMException('locked', 'NoModificationAllowedError');
           let data = '';
@@ -27,7 +30,12 @@ function fakeOpfs() {
       if (!files.delete(name)) throw new DOMException('missing', 'NotFoundError');
     },
   };
-  const root = { getDirectoryHandle: async () => dir };
+  const root = {
+    getDirectoryHandle: async () => {
+      if (state.dirError) throw state.dirError;
+      return dir;
+    },
+  };
   // The page can write OPFS (createWritable: Chromium, Firefox, Safari 26+).
   vi.stubGlobal('FileSystemFileHandle', class { createWritable() {} });
   return { files, state, storage: { getDirectory: async () => root } };
@@ -99,6 +107,25 @@ describe('web adapter notes storage', () => {
     localStorage.setItem(notesKey(pdf, 'abc'), 'kept');
     opfs.files.set(notesKey(pdf, 'abc').replace(/[^A-Za-z0-9_-]/g, '_') + '.json', '');
     expect(await createWebAdapter().readNotes(pdf, 'abc')).toBe('kept');
+  });
+
+  it('notes that are there but can not be read reject (not "no notes", which autosave would overwrite)', async () => {
+    const opfs = fakeOpfs();
+    vi.stubGlobal('navigator', { storage: opfs.storage });
+    vi.stubGlobal('localStorage', fakeLocalStorage());
+    const a = createWebAdapter();
+    await a.writeNotes(pdf, 'mine', 'abc');
+    opfs.state.readError = new DOMException('locked', 'NoModificationAllowedError');
+    await expect(a.readNotes(pdf, 'abc')).rejects.toThrow('locked');
+    opfs.state.readError = null;
+    opfs.state.dirError = new DOMException('broken', 'UnknownError');
+    await expect(a.readNotes(pdf, 'abc')).rejects.toThrow('broken');
+    // No notes file, or no OPFS here (private browsing): no notes, or those in localStorage.
+    opfs.state.dirError = null;
+    expect(await a.readNotes(pdf, 'other')).toBeNull();
+    opfs.state.dirError = new DOMException('denied', 'SecurityError');
+    localStorage.setItem(notesKey(pdf, 'abc'), 'kept');
+    expect(await a.readNotes(pdf, 'abc')).toBe('kept');
   });
 });
 

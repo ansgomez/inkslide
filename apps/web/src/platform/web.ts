@@ -41,15 +41,20 @@ export const notesKey = (pdf: Pick<PdfFile, 'name'>, sha256?: string): string =>
 
 const fileName = (key: string): string => safeFileName(key, '.json');
 
-/** The notes in OPFS; an empty file (left by a failed write of an older build) counts as none. */
+/**
+ * The notes in OPFS; an empty file (left by a failed write of an older build)
+ * counts as none. Rejects if they are there but can not be read: taken for
+ * "no notes", the first autosave would replace them.
+ */
 async function opfsRead(key: string): Promise<string | null> {
-  const dir = await opfsDir(OPFS_DIR);
+  const dir = await opfsDir(OPFS_DIR, true);
   if (!dir) return null;
   try {
     const handle = await dir.getFileHandle(fileName(key));
     return (await (await handle.getFile()).text()) || null;
-  } catch (_) {
-    return null;
+  } catch (e) {
+    if ((e as Error | null)?.name === 'NotFoundError') return null;
+    throw e;
   }
 }
 
