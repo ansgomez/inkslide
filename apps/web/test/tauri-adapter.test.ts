@@ -180,7 +180,8 @@ describe('helpers', () => {
     expect(fileArgs('android', bytes, 'Deck #1.pdf')).toEqual([{ name: 'Deck #1.pdf', data: 'ACX/gA==' }, undefined]);
     // Large files in chunks (String.fromCharCode has an argument limit).
     const big = Uint8Array.from({ length: 200_000 }, (_, i) => i % 256);
-    expect(Uint8Array.from(atob(base64(big)), c => c.charCodeAt(0))).toEqual(big);
+    // Compared as Buffers: a deep toEqual over 200 000 elements takes seconds.
+    expect(Buffer.from(atob(base64(big)), 'latin1').equals(Buffer.from(big))).toBe(true);
     expect(base64(new Uint8Array())).toBe('');
   });
 
