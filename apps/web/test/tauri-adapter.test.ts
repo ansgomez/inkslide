@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import type { PdfFile } from '@inkslide/annotate';
-import { createTauriAdapter, fileUrl, mobileOs, nameFromPath, notesFile, shareName } from '../src/platform/tauri';
+import { createTauriAdapter, fileUrl, mobileOs, nameFromPath, notesFile, notesKey, shareName } from '../src/platform/tauri';
 
 const SHA = 'a'.repeat(64);
 const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
@@ -13,11 +13,17 @@ type Reply = unknown | ((args: Record<string, unknown>) => unknown);
 
 /**
  * A fake Tauri backend behind mockIPC: an in-memory file system for the fs
- * plugin, path resolution, and canned dialog / share replies (an Error
- * rejects). invoke's headers (fs writes) reach it, unlike mockIPC's handler.
+ * plugin (read only, as the capabilities allow) and the app's write commands
+ * (apps/mobile/src-tauri/src/lib.rs, with their name checks), path
+ * resolution, and canned dialog / share replies (an Error rejects). invoke's
+ * headers reach it, unlike mockIPC's handler.
  */
 function fakeBackend() {
   const files = new Map<string, Uint8Array>();
+  /** The share folder of write_share_file: iOS tmp/, Android cache/share/. */
+  const share = { dir: '/tmp' };
+  /** The file save_pdf's own dialog picks; null: cancelled. */
+  const save: { target: string | null } = { target: null };
   const calls: { cmd: string; args: Record<string, unknown> }[] = [];
   const replies = new Map<string, Reply>();
   /** Commands that fail (also the fs ones the fake implements), with Tauri's plain message. */
@@ -26,11 +32,32 @@ function fakeBackend() {
     options?.baseDir !== undefined ? `${DIRS[options.baseDir]}/${path}` : path;
   const bytes = (data: unknown): Uint8Array => (data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer));
 
+  const shareName = (name: string): string => {
+    if (!/^[^./\\: ][^/\\:\0-\x1f]*\.pdf$/.test(name)) throw `invalid file name: ${name}`;
+    return name;
+  };
+
   function handle(cmd: string, args: Record<string, unknown>, headers?: Record<string, string>): unknown {
     calls.push({ cmd, args });
     if (failing.has(cmd)) throw failing.get(cmd);
     const opts = args?.options as { baseDir?: number } | undefined;
     switch (cmd) {
+      case 'write_notes': {
+        const key = args.key as string;
+        if (!/^[A-Za-z0-9_-]{1,200}$/.test(key)) throw `invalid notes key: ${key}`;
+        files.set(`/data/notes/${key}.notes.json`, new TextEncoder().encode(args.text as string));
+        return null;
+      }
+      case 'write_share_file': {
+        const path = `${share.dir}/${shareName(decodeURIComponent(headers!.name))}`;
+        files.set(path, bytes(args));
+        return path;
+      }
+      case 'remove_share_file': files.delete(`${share.dir}/${shareName(args.name as string)}`); return null;
+      case 'save_pdf':
+        if (!save.target) return false;
+        files.set(save.target, bytes(args));
+        return true;
       case 'plugin:fs|exists': return files.has(resolve(args.path as string, opts));
       case 'plugin:fs|read_file':
       case 'plugin:fs|read_text_file': {
@@ -38,21 +65,6 @@ function fakeBackend() {
         if (!data) throw `failed to open file at path: ${args.path as string}`;
         return Array.from(data);
       }
-      case 'plugin:fs|write_file':
-      case 'plugin:fs|write_text_file': {
-        const options = JSON.parse(headers!.options || '{}') as { baseDir?: number };
-        files.set(resolve(decodeURIComponent(headers!.path), options), bytes(args));
-        return null;
-      }
-      case 'plugin:fs|rename': {
-        const o = args.options as { oldPathBaseDir?: number; newPathBaseDir?: number };
-        const from = resolve(args.oldPath as string, { baseDir: o.oldPathBaseDir });
-        files.set(resolve(args.newPath as string, { baseDir: o.newPathBaseDir }), files.get(from)!);
-        files.delete(from);
-        return null;
-      }
-      case 'plugin:fs|remove': files.delete(resolve(args.path as string, opts)); return null;
-      case 'plugin:fs|mkdir': return null;
       case 'plugin:path|resolve_directory': return DIRS[args.directory as number];
       case 'plugin:path|join': return (args.paths as string[]).join('/');
     }
@@ -71,7 +83,7 @@ function fakeBackend() {
     const data = files.get(path);
     return data && new TextDecoder().decode(data);
   };
-  return { files, calls, replies, failing, text, commands: () => calls.map(c => c.cmd) };
+  return { files, calls, replies, failing, share, save, text, commands: () => calls.map(c => c.cmd) };
 }
 
 let backend: ReturnType<typeof fakeBackend>;
@@ -102,6 +114,8 @@ describe('helpers', () => {
     expect(notesFile(pdf, SHA)).toBe(`notes/${SHA}.notes.json`);
     expect(notesFile({ name: '../x.pdf' })).toBe('notes/name-___x_pdf.notes.json');
     expect(notesFile({ name: 'a.pdf' }, '../../etc')).toBe('notes/name-a_pdf.notes.json');
+    // Keys are what write_notes accepts: [A-Za-z0-9_-] only.
+    for (const name of ['../x.pdf', 'a b/c:d.pdf', '講義.pdf', '']) expect(notesKey({ name })).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
   it('names shared files safely, always as a PDF', () => {
@@ -134,25 +148,21 @@ describe('notes', () => {
     expect(await a.readNotes(pdf, SHA)).toBe('{"v":2}');
   });
 
-  it('writes through a temp file and creates the directory once', async () => {
+  it('writes through the write_notes command with a key, never a path, and no fs plugin write', async () => {
     const a = createTauriAdapter(null);
     await a.writeNotes(pdf, 'x', SHA);
-    await a.writeNotes(pdf, 'y', SHA);
-    expect(backend.commands().filter(c => c.startsWith('plugin:fs|'))).toEqual([
-      'plugin:fs|mkdir', 'plugin:fs|write_text_file', 'plugin:fs|rename', 'plugin:fs|write_text_file', 'plugin:fs|rename',
+    await a.writeNotes({ ...pdf, name: '../../x.pdf' }, 'y');
+    expect(backend.calls.filter(c => c.cmd === 'write_notes').map(c => c.args)).toEqual([
+      { key: SHA, text: 'x' }, { key: 'name-______x_pdf', text: 'y' },
     ]);
-    const renames = backend.calls.filter(c => c.cmd === 'plugin:fs|rename').map(c => c.args);
-    expect(renames[0]).toMatchObject({ newPath: `notes/${SHA}.notes.json` });
-    expect(renames[0]!.oldPath).toMatch(new RegExp(`^notes/${SHA}\\.notes\\.json\\.[a-z0-9]+\\.tmp$`));
-    expect(renames[1]!.oldPath).not.toBe(renames[0]!.oldPath); // overlapping writes do not share a temp file
+    expect(backend.commands().filter(c => c.startsWith('plugin:fs|'))).toEqual([]);
   });
 
-  it('removes the temp file when the rename fails', async () => {
+  it('passes a failed write on', async () => {
     const a = createTauriAdapter(null);
     await a.writeNotes(pdf, 'old', SHA);
-    backend.failing.set('plugin:fs|rename', 'Permission denied');
+    backend.failing.set('write_notes', 'Permission denied');
     await expect(a.writeNotes(pdf, 'new', SHA)).rejects.toBe('Permission denied');
-    expect([...backend.files.keys()]).toEqual([`/data/notes/${SHA}.notes.json`]);
     expect(backend.text(`/data/notes/${SHA}.notes.json`)).toBe('old');
   });
 
@@ -201,19 +211,20 @@ describe('files', () => {
 describe('export and print', () => {
   const pdfBytes = new Uint8Array([1, 2, 3]);
 
-  it('Android: saves through the save dialog', async () => {
-    backend.replies.set('plugin:dialog|save', 'content://downloads/document/42');
+  it('Android: saves through save_pdf, which opens the save dialog itself', async () => {
+    backend.save.target = 'content://downloads/document/42';
     const a = createTauriAdapter('android');
-    expect(await a.exportPdf(pdfBytes, 'deck-notes.pdf')).toBe(true);
+    expect(await a.exportPdf(pdfBytes, 'Lecture 3: Graphs-notes.pdf')).toBe(true);
     expect(backend.files.get('content://downloads/document/42')).toEqual(pdfBytes);
-    expect(backend.calls.find(c => c.cmd === 'plugin:dialog|save')!.args).toMatchObject({ options: { defaultPath: 'deck-notes.pdf' } });
+    expect(backend.commands()).toEqual(['save_pdf']); // no dialog or fs plugin call from the page
   });
 
-  it('Android: a cancelled save dialog is no export', async () => {
-    backend.replies.set('plugin:dialog|save', new Error('File picker cancelled'));
+  it('Android: a cancelled save dialog is no export; other errors are passed on', async () => {
     expect(await createTauriAdapter('android').exportPdf(pdfBytes, 'a.pdf')).toBe(false);
-    backend.replies.set('plugin:dialog|save', null);
+    backend.failing.set('save_pdf', 'File picker cancelled');
     expect(await createTauriAdapter(null).exportPdf(pdfBytes, 'a.pdf')).toBe(false);
+    backend.failing.set('save_pdf', 'No space left on device');
+    await expect(createTauriAdapter(null).exportPdf(pdfBytes, 'a.pdf')).rejects.toBe('No space left on device');
   });
 
   it('iOS: shares tmp/<name>, the file the share plugin would copy it to', async () => {
@@ -227,9 +238,11 @@ describe('export and print', () => {
       url: 'file:///tmp/My%20deck-notes.pdf', mimeType: 'application/pdf', title: 'My deck-notes.pdf',
     });
     expect([...backend.files.keys()]).toEqual(['/tmp/My deck-notes.pdf']); // kept until the next share
+    expect(backend.commands()).toEqual(['write_share_file', 'plugin:sharekit|share_file']);
   });
 
   it('Android: prints through the share sheet from a cache subdirectory', async () => {
+    backend.share.dir = '/cache/share';
     backend.replies.set('plugin:sharekit|share_file', null);
     const a = createTauriAdapter('android');
     let shared: Uint8Array | undefined;
@@ -238,6 +251,7 @@ describe('export and print', () => {
     expect(shared).toEqual(pdfBytes);
     expect(backend.files.size).toBe(0);
     expect(backend.calls.find(c => c.cmd === 'plugin:sharekit|share_file')!.args).toMatchObject({ url: 'file:///cache/share/a_b_c.pdf' });
+    expect(backend.calls.find(c => c.cmd === 'remove_share_file')!.args).toEqual({ name: 'a_b_c.pdf' });
   });
 
   it('a dismissed share sheet is no export; other share errors are passed on', async () => {
@@ -258,12 +272,13 @@ describe('export and print', () => {
     expect([...backend.files.keys()]).toEqual(['/tmp/two.pdf']);
   });
 
-  it('Android: creates the share folder for every share (the cache may have been cleared)', async () => {
+  it('sends the shared file name percent-encoded in a header, with the bytes as the body', async () => {
     backend.replies.set('plugin:sharekit|share_file', null);
-    const a = createTauriAdapter('android');
-    await a.print!(pdfBytes, 'a.pdf');
-    await a.print!(pdfBytes, 'a.pdf');
-    expect(backend.calls.filter(c => c.cmd === 'plugin:fs|mkdir')).toHaveLength(2);
+    await createTauriAdapter('ios').exportPdf(pdfBytes, '講義 #1.pdf');
+    expect(backend.files.get('/tmp/講義 #1.pdf')).toEqual(pdfBytes);
+    expect(backend.calls.find(c => c.cmd === 'plugin:sharekit|share_file')!.args).toMatchObject({
+      url: `file:///tmp/${encodeURIComponent('講義 #1.pdf')}`,
+    });
   });
 
   it('leaves printing to the front end on the desktop', () => {

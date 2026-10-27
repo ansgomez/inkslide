@@ -223,9 +223,9 @@ same site storage would be lost together with the notes.
 
 No sidecars: picked files are copies (iPadOS) or content URIs (Android), next to which the app
 can rarely write. Notes are kept in the app data directory, `notes/<sha256>.notes.json`, keyed
-by the PDF's SHA-256 like the desktop's app storage. A save writes a
-temp file (`<sha256>.notes.json.<random>.tmp`), then renames it over the old file (no `fsync`: the fs plugin has
-none). Uninstalling the app deletes the notes; Import brings notes from elsewhere. No backup
+by the PDF's SHA-256 like the desktop's app storage. A save (the app's `write_notes` command)
+writes a temp file (`<sha256>.notes.json.<random>.tmp`), flushes it to disk, then renames it
+over the old file. Uninstalling the app deletes the notes; Import brings notes from elsewhere. No backup
 is kept yet (the Tauri adapter has no `readBackup`; it could live next to the notes in the app
 data directory once it can be tested on devices).
 
