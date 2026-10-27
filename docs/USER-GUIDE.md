@@ -49,7 +49,7 @@ it to the next edge. The choice is remembered.
 |---|---|---|
 | Pen | P | Pressure-sensitive ink. Hold **Shift** to draw a straight line. |
 | Highlighter | H | Wide, transparent strokes, always drawn under the pen ink. Shift for a straight line. |
-| Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it; Delete or Backspace removes it; Esc deselects. |
+| Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it (− and + make each selected stroke one size thinner or thicker); Delete or Backspace removes it; Esc deselects. |
 | Laser pointer | L | A red trail that fades out. Never saved. |
 | Stroke eraser | E | Removes every stroke it touches. |
 | Partial eraser | Shift+E | Erases only the parts of strokes it touches. |
@@ -57,8 +57,12 @@ it to the next edge. The choice is remembered.
 **Colors:** black, white, red, blue, green, orange, yellow and purple. The pen and the
 highlighter each remember their own color.
 
-**Sizes:** S, M, L, XL (keys **1**–**4**). Pen, highlighter and both erasers each remember
-their own size. Sizes are relative to the page: they look the same on a slide, a 960×540 PDF
+**Sizes:** the size control has **−** and **+** buttons (keys **[** and **]**) and between them a
+dot in the current size and color. It steps through nine sizes and stops at the thinnest and
+the thickest. Keys **1**–**4** pick the sizes S, M, L and XL (the 2nd, 4th, 6th and 8th of the
+nine; the four sizes of earlier versions). Pen, highlighter and both erasers each remember
+their own size; with the selector or the laser, − and + change the pen's size and switch to
+the pen. Sizes are relative to the page: they look the same on a slide, a 960×540 PDF
 or an A4 page.
 
 **Undo** (Ctrl/Cmd+Z) and **redo** (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y) work per finished stroke,
@@ -230,4 +234,5 @@ Safari 18.2 and later).
 | Ctrl/Cmd+Q | Quit (desktop, Linux and Windows) |
 | Alt | Show the hidden menu bar (desktop, Linux and Windows; View → Hide Menu Bar) |
 
-Tool and size keys follow the physical key position, so they work with any keyboard layout.
+Tool and size keys follow the physical key position, so they work with any keyboard layout;
+**[** and **]** follow the key label.

@@ -142,13 +142,15 @@ app never writes one.
 
 ### Tool sizes
 
-The four sizes S, M, L, XL of each tool are defined for a 1280×720 slide:
+The nine sizes of each tool (the − and + of the size control) are defined for a 1280×720
+slide. The 2nd, 4th, 6th and 8th are the presets S, M, L, XL (keys 1–4), the four sizes of
+earlier versions:
 
-| Tool | S | M | L | XL |
-|---|---|---|---|---|
-| Pen (width) | 2 | 4 | 7 | 12 |
-| Highlighter (width) | 12 | 20 | 32 | 48 |
-| Eraser, partial eraser (radius) | 8 | 16 | 32 | 64 |
+| Tool | | S | | M | | L | | XL | |
+|---|---|---|---|---|---|---|---|---|---|
+| Pen (width) | 1 | 2 | 3 | 4 | 5.5 | 7 | 9.5 | 12 | 16 |
+| Highlighter (width) | 8 | 12 | 16 | 20 | 26 | 32 | 40 | 48 | 64 |
+| Eraser, partial eraser (radius) | 4 | 8 | 12 | 16 | 24 | 32 | 48 | 64 | 96 |
 
 On other pages they are scaled by the page diagonal, `unit = hypot(w, h) / hypot(1280, 720)`:
 0.75 on a 960×540 pt PDF page, about 0.70 on A4. A stroke stores the scaled `size` in page

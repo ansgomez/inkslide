@@ -9,7 +9,7 @@
  */
 import type { NotesDoc } from './model';
 import type { Stroke } from './geometry';
-import { COLORS, SIZE_LABELS, TOOLS, type ToolId } from './tools';
+import { COLORS, SIZE_LABELS, SIZE_PRESETS, SIZES, TOOLS, type ToolId } from './tools';
 
 // ── Icons (24×24, stroked with currentColor) ───────────────────
 
@@ -45,6 +45,8 @@ export const ICONS: Record<string, string> = {
   // Export: a page with an arrow out of it.
   pdf: '<path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/><path d="M9 14h7M13.5 11.5L16 14l-2.5 2.5"/>',
   print: '<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/>',
+  minus: '<path d="M5 12h14" stroke-width="2.4"/>',
+  plus: '<path d="M5 12h14M12 5v14" stroke-width="2.4"/>',
 };
 
 /** Inline SVG markup of icon `name`. */
@@ -64,8 +66,10 @@ export interface ToolbarItem {
   caption?: string;
   /** Color swatch (CSS color). */
   swatch?: string;
-  /** Size dot index 0..3. */
-  dot?: number;
+  /** Size preview: a dot for a step of the size scale (SIZES); null shows an empty ring. */
+  dot?: Dyn<number | null>;
+  /** Color of the size preview's dot (CSS color); null: the bar's text color. */
+  dotColor?: () => string | null;
   /** Text item (label, or a button with a label's look if it has onClick). */
   text?: () => string;
   /** Put the button at one end of the bar (large prev/next). */
@@ -95,6 +99,8 @@ export interface ToolbarHost {
   setTool(id: ToolId): void;
   setColor(color: string): void;
   setSize(i: number): void;
+  stepSize(dir: -1 | 1): void;
+  canStepSize(dir: -1 | 1): boolean;
   currentColor(): string | null;
   currentSize(): number | null;
   undo(): void;
@@ -176,13 +182,22 @@ registerGroup('colors', app => ({
   })),
 }));
 
+/** Tooltip of the size preview: the step, and its preset name if it is one. */
+function sizeTitle(app: ToolbarHost): string {
+  const i = app.currentSize();
+  if (i === null) return app.selection ? 'Size: the selected strokes differ' : 'Size: this tool has none';
+  const preset = SIZE_PRESETS.indexOf(i as typeof SIZE_PRESETS[number]);
+  return `Size ${i + 1} of ${SIZES.pen.length}${preset < 0 ? '' : ` (${SIZE_LABELS[preset]}, key ${preset + 1})`}`;
+}
+
+// One size control: − and + step through the size scale, the dot between them shows the size.
 registerGroup('sizes', app => ({
-  id: 'sizes', label: 'Sizes',
-  items: SIZE_LABELS.map((label, i) => ({
-    id: `size-${i}`, title: `Size ${label} (${i + 1})`, dot: i,
-    onClick: () => app.setSize(i),
-    active: () => app.currentSize() === i,
-  })),
+  id: 'sizes', label: 'Size',
+  items: [
+    { id: 'size-down', title: 'Thinner ([)', icon: 'minus', onClick: () => app.stepSize(-1), disabled: () => !app.canStepSize(-1) },
+    { id: 'size', title: () => sizeTitle(app), dot: () => app.currentSize(), dotColor: () => app.currentColor() },
+    { id: 'size-up', title: 'Thicker (])', icon: 'plus', onClick: () => app.stepSize(1), disabled: () => !app.canStepSize(1) },
+  ],
 }));
 
 registerGroup('history', app => ({
@@ -221,6 +236,31 @@ registerGroup('file', () => ({
 
 // ── DOM ────────────────────────────────────────────────────────
 
+/** Dot diameters (CSS px) of the size steps; S, M, L, XL keep the dots of the old size buttons. */
+const DOT_PX = [3, 4, 6, 8, 10, 13, 16, 19, 23];
+
+function setDot(el: HTMLElement, item: ToolbarItem): void {
+  const i = typeof item.dot === 'function' ? item.dot() : item.dot;
+  const color = item.dotColor ? item.dotColor() : null;
+  el.classList.toggle('is-none', i == null);
+  el.style.setProperty('--dot', `${i == null ? 12 : DOT_PX[Math.max(0, Math.min(DOT_PX.length - 1, i))]}px`);
+  if (color) el.style.setProperty('--dot-color', color);
+  else el.style.removeProperty('--dot-color');
+}
+
+/** The size preview: not a button, only a picture of the size (named by its title). */
+function buildPreview(item: ToolbarItem): HTMLElement {
+  const span = document.createElement('span');
+  span.className = 'ann-preview ann-size';
+  span.dataset.id = item.id;
+  span.setAttribute('role', 'img');
+  span.title = (typeof item.title === 'function' ? item.title() : item.title) || '';
+  span.setAttribute('aria-label', span.title);
+  span.innerHTML = '<span></span>';
+  setDot(span, item);
+  return span;
+}
+
 function buildLabel(item: ToolbarItem): HTMLElement {
   if (item.onClick) return buildButton(item, 'ann-label');
   const span = document.createElement('span');
@@ -234,6 +274,7 @@ function buildLabel(item: ToolbarItem): HTMLElement {
 /** A text item with onClick becomes a button with the label's look (extraClass). */
 function buildButton(item: ToolbarItem, extraClass?: string): HTMLElement {
   if (item.text && !extraClass) return buildLabel(item);
+  if (item.dot !== undefined && !item.onClick) return buildPreview(item);
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = extraClass ? `ann-btn ${extraClass}` : 'ann-btn';
@@ -248,9 +289,10 @@ function buildButton(item: ToolbarItem, extraClass?: string): HTMLElement {
     btn.classList.add('ann-swatch');
     btn.style.setProperty('--swatch', item.swatch);
     btn.innerHTML = '<span></span>';
-  } else if (item.dot != null) {
+  } else if (item.dot !== undefined) {
     btn.classList.add('ann-size');
-    btn.innerHTML = `<span style="--dot:${[4, 8, 13, 19][item.dot]}px"></span>`;
+    btn.innerHTML = '<span></span>';
+    setDot(btn, item);
   }
   // Do not take focus: a focused button would swallow Space meant for page turns.
   btn.addEventListener('pointerdown', e => e.preventDefault());
@@ -334,6 +376,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
           btn.dataset.icon = name;
         }
       }
+      if (item.dot !== undefined) setDot(btn, item);
       const on = item.active ? !!item.active() : false;
       btn.classList.toggle('is-active', on);
       if (item.active) btn.setAttribute('aria-pressed', String(on));
@@ -370,7 +413,7 @@ export const letter = (e: KeyboardEvent, k: string): boolean => e.code === `Key$
 const labelOrCode = (e: KeyboardEvent, k: string): boolean =>
   e.key.toLowerCase() === k || (!/^[a-z]$/i.test(e.key) && letter(e, k));
 
-/** Shortcuts of annotate mode: tools, sizes 1–4, undo/redo, delete or drop the selection. */
+/** Shortcuts of annotate mode: tools, sizes 1–4 and [ ], undo/redo, delete or drop the selection. */
 export function defaultKeymap(app: ToolbarHost): Shortcut[] {
   const mod = (e: KeyboardEvent): boolean => (e.ctrlKey || e.metaKey) && !e.altKey;
   const tool = (k: string, id: ToolId, shift = false): Shortcut => ({
@@ -382,9 +425,14 @@ export function defaultKeymap(app: ToolbarHost): Shortcut[] {
     { test: e => mod(e) && ((labelOrCode(e, 'z') && e.shiftKey) || labelOrCode(e, 'y')), run: () => app.redo() },
     tool('p', 'pen'), tool('h', 'highlighter'), tool('s', 'selector'),
     tool('l', 'laser'), tool('e', 'eraser'), tool('e', 'partial', true),
-    ...[0, 1, 2, 3].map((i): Shortcut => ({
+    ...SIZE_PRESETS.map((step, i): Shortcut => ({
       test: e => (e.code === `Digit${i + 1}` || e.code === `Numpad${i + 1}`) && noMods(e),
-      run: () => app.setSize(i),
+      run: () => app.setSize(step),
+    })),
+    // [ and ] by their label (on some layouts behind AltGr, which reports Ctrl+Alt on Windows).
+    ...([['[', -1], [']', 1]] as const).map(([key, dir]): Shortcut => ({
+      test: e => e.key === key && !e.metaKey && (!e.ctrlKey || e.altKey),
+      run: () => app.stepSize(dir),
     })),
     { test: e => (e.key === 'Delete' || e.key === 'Backspace') && !!app.selection, run: () => app.deleteSelection() },
     { test: e => e.key === 'Escape' && !!app.selection, run: () => app.select(null) },

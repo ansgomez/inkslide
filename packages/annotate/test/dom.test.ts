@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PAPER_STYLE, createLayer, createPageSurface, setSelectionBox, syncLayer, viewBoxSize } from '../src/render';
 import { createToolbar, defaultKeymap, isTyping, registerGroup } from '../src/toolbar';
 import { formatLabel, pagesGroup, parseSlideNumber, type PagesController } from '../src/pages';
-import { createAnnotator } from '../src/app';
+import { createAnnotator, loadPrefs, PREFS_KEY } from '../src/app';
 import { NotesDoc, createStroke } from '../src/model';
 import { deckFromPdf } from '../src/io';
 import type { Stroke } from '../src/geometry';
@@ -170,8 +170,8 @@ describe('annotator, toolbar and keys', () => {
   it('prefs, colors, sizes and the selection', () => {
     const { app, doc } = setup();
     app.setColor('#1e64c8');
-    app.setSize(3);
-    expect(app.prefs.pen).toEqual({ color: '#1e64c8', size: 3 });
+    app.setSize(7);
+    expect(app.prefs.pen).toEqual({ color: '#1e64c8', size: 7 });
     app.setTool('eraser');
     expect(app.currentColor()).toBeNull();
     app.setColor('#be1e3c'); // a color switches back to the pen
@@ -196,14 +196,69 @@ describe('annotator, toolbar and keys', () => {
     doc.addStroke('p1', createStroke({ id: 'b', tool: 'highlighter', color: '#000', size: 20 * layer.unit, points: pts }));
     app.setTool('selector');
     app.select({ pageId: 'p1', ids: ['a', 'b'] });
-    expect(app.currentSize()).toBe(1);
-    app.setSize(2);
+    expect(app.currentSize()).toBe(3);
+    app.setSize(5);
     const [a, b] = doc.strokes('p1');
     expect(a.size).toBeCloseTo(7 * 0.75);
     expect(b.size).toBeCloseTo(32 * 0.75);
-    expect(app.currentSize()).toBe(2);
+    expect(app.currentSize()).toBe(5);
+    // − and + restyle the selection one step.
+    app.stepSize(1);
+    expect(doc.strokes('p1').map(s => s.size / 0.75)).toEqual([9.5, 40].map(v => expect.closeTo(v)));
+    expect(app.currentSize()).toBe(6);
     doc.restyleStrokes('p1', ['a'], { size: 5 }); // not one of the sizes
     expect(app.currentSize()).toBeNull();
+    // Strokes of different sizes: each goes to its own next step.
+    app.stepSize(-1);
+    expect(doc.strokes('p1').map(s => s.size)).toEqual([5.5 * 0.75, 32 * 0.75].map(v => expect.closeTo(v)));
+    app.undo();
+    expect(doc.strokes('p1')[0].size).toBe(5);
+  });
+
+  it('− and + step the tool size and stop at the ends of the scale', () => {
+    const { app } = setup();
+    app.mount();
+    app.toggle(true);
+    const btn = (id: string) => document.querySelector(`[data-id="${id}"]`) as HTMLElement;
+    expect(app.prefs.pen.size).toBe(3); // M
+    expect(btn('size').getAttribute('aria-label')).toBe('Size 4 of 9 (M, key 2)');
+    expect(btn('size').style.getPropertyValue('--dot-color')).toBe('#000000');
+    btn('size-up').click();
+    expect(app.prefs.pen.size).toBe(4);
+    expect(btn('size').title).toBe('Size 5 of 9');
+    app.setSize(8);
+    expect((btn('size-up') as HTMLButtonElement).disabled).toBe(true);
+    expect((btn('size-down') as HTMLButtonElement).disabled).toBe(false);
+    app.stepSize(1); // at the end: nothing
+    expect(app.prefs.pen.size).toBe(8);
+    app.setTool('highlighter'); // its own size
+    expect(app.prefs.highlighter.size).toBe(3);
+    app.setSize(0);
+    expect((btn('size-down') as HTMLButtonElement).disabled).toBe(true);
+    expect(app.prefs.pen.size).toBe(8);
+    // A tool without a size steps the pen's, like the size buttons did.
+    app.setTool('laser');
+    expect(btn('size').classList.contains('is-none')).toBe(true);
+    btn('size-down').click();
+    expect(app.tool).toBe('pen');
+    expect(app.prefs.pen.size).toBe(7);
+    // The preview is a picture, not a button; − and + are buttons with names.
+    expect(btn('size').tagName).toBe('SPAN');
+    expect(btn('size').getAttribute('role')).toBe('img');
+    expect(btn('size-up').getAttribute('aria-label')).toBe('Thicker (])');
+  });
+
+  it('saves the size step and the nearest preset; they load back', () => {
+    const items = new Map<string, string>();
+    const storage = { getItem: (k: string) => items.get(k) ?? null, setItem: (k: string, v: string) => void items.set(k, v) };
+    const doc = new NotesDoc(deckFromPdf({ title: 't.pdf', pageSizes: [[960, 540]] }));
+    const app = createAnnotator({ doc, activeSurface: () => null, storage: storage as unknown as Storage });
+    app.setSize(4);
+    const saved = JSON.parse(items.get(PREFS_KEY)!);
+    expect(saved.prefs.pen).toEqual({ color: '#000000', size: 1, step: 4 }); // between M and L: the smaller
+    expect(saved.prefs.selector).toEqual({});
+    expect(loadPrefs(storage).prefs.pen.size).toBe(4);
+    app.input.destroy();
   });
 
   it('default keymap: tools, sizes, undo', () => {
@@ -220,7 +275,15 @@ describe('annotator, toolbar and keys', () => {
     press({ code: 'KeyE', key: 'E', shiftKey: true });
     expect(app.tool).toBe('partial');
     press({ code: 'Digit4', key: '4' });
-    expect(app.prefs.partial.size).toBe(3);
+    expect(app.prefs.partial.size).toBe(7); // XL
+    press({ code: 'BracketLeft', key: '[' });
+    expect(app.prefs.partial.size).toBe(6);
+    press({ code: 'BracketRight', key: ']' });
+    press({ code: 'BracketRight', key: ']' });
+    expect(app.prefs.partial.size).toBe(8);
+    press({ code: 'Digit8', key: ']', ctrlKey: true, altKey: true }); // AltGr+9 on a German layout (Windows)
+    expect(app.prefs.partial.size).toBe(8); // the end of the scale
+    expect(press({ code: 'BracketLeft', key: '[', ctrlKey: true })).toBe(false);
     doc.addStroke('p1', stroke('a'));
     press({ code: 'KeyZ', key: 'z', ctrlKey: true });
     expect(doc.strokes('p1')).toEqual([]);

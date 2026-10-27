@@ -26,21 +26,28 @@ export const COLORS = [
   { id: 'purple', value: '#7a3c96', label: 'Purple' },
 ] as const;
 
-/** Labels of the four sizes. */
+/** Labels of the four preset sizes (keys 1–4). */
 export const SIZE_LABELS = ['S', 'M', 'L', 'XL'] as const;
-/** The four sizes per tool, in units of a 1280×720 slide (scaled by layer.unit). */
+/**
+ * The size scale per tool, in units of a 1280×720 slide (scaled by layer.unit); − and + step
+ * through it. Every tool has the same number of steps, so a selection of pen and highlighter
+ * strokes restyles to the same step. The four sizes of earlier versions (S, M, L, XL) are
+ * steps 1, 3, 5 and 7 (SIZE_PRESETS), so their strokes and stored prefs keep their size.
+ */
 export const SIZES = {
-  pen: [2, 4, 7, 12],           // stroke width
-  highlighter: [12, 20, 32, 48],
-  eraser: [8, 16, 32, 64],      // eraser radius
-  partial: [8, 16, 32, 64],
+  pen: [1, 2, 3, 4, 5.5, 7, 9.5, 12, 16],           // stroke width
+  highlighter: [8, 12, 16, 20, 26, 32, 40, 48, 64],
+  eraser: [4, 8, 12, 16, 24, 32, 48, 64, 96],       // eraser radius
+  partial: [4, 8, 12, 16, 24, 32, 48, 64, 96],
 } as const;
+/** Steps of SIZES that are the presets S, M, L, XL (keys 1–4; the sizes of earlier versions). */
+export const SIZE_PRESETS = [1, 3, 5, 7] as const;
 
 /** Every tool. */
 export type ToolId = 'pen' | 'highlighter' | 'selector' | 'laser' | 'eraser' | 'partial';
 /** Tools with a size setting. */
 export type SizedTool = keyof typeof SIZES;
-/** Index into SIZES[tool] (0..3). */
+/** Index into SIZES[tool] (a step of the size scale). */
 export type SizeIndex = number;
 
 /** Per-tool settings (color, size index). */
@@ -55,10 +62,10 @@ export interface Prefs {
 
 /** Prefs before the user changes anything. */
 export const DEFAULT_PREFS: Readonly<Prefs> = {
-  pen: { color: '#000000', size: 1 },
-  highlighter: { color: '#ffd200', size: 1 },
-  eraser: { size: 1 },
-  partial: { size: 1 },
+  pen: { color: '#000000', size: 3 },
+  highlighter: { color: '#ffd200', size: 3 },
+  eraser: { size: 3 },
+  partial: { size: 3 },
   selector: {},
   laser: {},
 };
@@ -128,6 +135,18 @@ export const toolSize = (tool: SizedTool, i: SizeIndex, unit = 1): number => SIZ
 /** Index of a stroke size among a tool's sizes on a page with scale `unit`; -1 if it is none of them. */
 export function sizeIndex(tool: SizedTool, size: number, unit = 1): SizeIndex {
   return SIZES[tool].findIndex(v => Math.abs(v * unit - size) <= 1e-3 * v * unit);
+}
+
+/**
+ * The size one step smaller (dir -1) or larger (dir 1) than `size` on a tool's scale, on a page
+ * with scale `unit`. A size between two steps goes to the nearer step in that direction; at the
+ * end of the scale `size` itself comes back.
+ */
+export function nextSize(tool: SizedTool, size: number, dir: -1 | 1, unit = 1): number {
+  const steps = SIZES[tool].map(v => v * unit);
+  const tol = 1e-3 * size;
+  const next = dir > 0 ? steps.find(v => v > size + tol) : steps.reverse().find(v => v < size - tol);
+  return next ?? size;
 }
 
 /** Size of a tool on a surface's page, in its page units (unscaled if the page has no usable scale). */

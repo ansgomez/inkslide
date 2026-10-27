@@ -59,7 +59,9 @@ access.
   functions are injected (`ToolRenderer`), which is how the web app swaps in its canvas live
   stroke.
 - **App** (`app.ts`): `createAnnotator()` ties doc, tools, input, toolbar and keys together:
-  current tool, colors and sizes (stored in `localStorage`), selection, undo/redo, the
+  current tool, colors and sizes (stored in `localStorage`; a size is a step of the scale
+  `SIZES`, stored with the nearest of the four old sizes for earlier versions and the Marp
+  decks), selection, undo/redo, the
   `PagesController` and overview supplied by the viewer.
 - **Toolbar** (`toolbar.ts`, `toolbar.css`): the Marp Notes bar, built from registered groups
   (`mode, tools, colors, sizes, history, pages, file`); dockable on four edges. `bindKeys`
