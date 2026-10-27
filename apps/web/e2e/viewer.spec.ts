@@ -284,8 +284,10 @@ test('overview grid and G + number jump', async ({ page }) => {
   await expect(page.locator('#ann-ov')).toBeVisible();
   await expect(page.locator('#ann-ov .ann-ov-item')).toHaveCount(3);
   await expect(page.locator('#ann-ov .ann-ov-item.is-current')).toHaveAttribute('data-n', '3');
-  // Thumbnails are PDF.js renders.
-  await expect.poll(() => page.locator('#ann-ov .ann-ov-item[data-n="1"] canvas').evaluate(c => (c as HTMLCanvasElement).width)).toBeGreaterThan(100);
+  // Thumbnails are PDF.js renders, kept as images (the render canvas is freed).
+  const thumb = page.locator('#ann-ov .ann-ov-item[data-n="1"] img.ink-ov-pdf');
+  await expect.poll(() => thumb.evaluate(i => (i as HTMLImageElement).naturalWidth)).toBeGreaterThan(100);
+  await expect(page.locator('#ann-ov .ann-ov-item[data-n="1"] canvas')).toHaveCount(0);
   await page.locator('#ann-ov .ann-ov-item[data-n="2"]').click();
   await expect(page.locator('#ann-ov')).toBeHidden();
   await expectCounter(page, '2 / 3');

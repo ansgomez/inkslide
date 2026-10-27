@@ -5,7 +5,9 @@
  * collapsed bar's grid button, or G + Enter. Clicking one jumps there; Esc
  * closes it; arrows move between thumbnails. Instead of cloning slide SVGs,
  * each tile is a small PDF.js render (made once, lazily, the first time it
- * scrolls into view, then kept) with the page's notes as an SVG on top.
+ * scrolls into view, then kept as a compressed image: the render canvas is
+ * freed, the browser may drop the decoded pixels of tiles out of view) with
+ * the page's notes as an SVG on top.
  *
  * Keyboard: G, a page number, Enter jumps; G, Enter opens the overview.
  */
@@ -47,7 +49,10 @@ interface Item {
   btn: HTMLButtonElement;
   tile: HTMLDivElement;
   badges: HTMLSpanElement;
-  canvas: HTMLCanvasElement | null;
+  /** The thumbnail render, then its image; null before the tile was first shown. */
+  canvas: HTMLCanvasElement | HTMLImageElement | null;
+  /** Object URL of the image (revoked on destroy). */
+  url: string;
   layer: render.Layer | null;
   badgeKey: string;
   notesKey: unknown;
@@ -107,7 +112,7 @@ export function createOverview(host: OverviewHost): Overview {
       btn.append(tile, num, badges);
       btn.addEventListener('click', () => { api.close(); host.jump(n); });
       grid.appendChild(btn);
-      items.push({ n, btn, tile, badges, canvas: null, layer: null, badgeKey: '', notesKey: null });
+      items.push({ n, btn, tile, badges, canvas: null, url: '', layer: null, badgeKey: '', notesKey: null });
     }
     root.append(head, grid);
     for (const type of ['pointerdown', 'click', 'wheel', 'touchstart', 'touchmove', 'touchend'] as const) {
@@ -143,7 +148,28 @@ export function createOverview(host: OverviewHost): Overview {
     item.layer = layer;
     item.tile.append(canvas, svg);
     syncNotes(item);
-    pdf.renderInto(canvas, item.n, scale, PRIORITY.thumb).catch(() => { /* closed meanwhile */ });
+    pdf.renderInto(canvas, item.n, scale, PRIORITY.thumb).then(() => keepAsImage(item, canvas), () => { /* closed meanwhile */ });
+  }
+
+  /** Swap the rendered canvas (~1.4 MB of pixels each) for a JPEG image and free the canvas. */
+  function keepAsImage(item: Item, canvas: HTMLCanvasElement): void {
+    if (typeof canvas.toBlob !== 'function') return;
+    canvas.toBlob(blob => {
+      if (!blob || item.canvas !== canvas || !ui) return; // failed (the canvas stays), or destroyed
+      const img = new Image();
+      img.className = 'ink-ov-pdf';
+      img.alt = '';
+      img.width = canvas.width;
+      img.height = canvas.height;
+      item.url = URL.createObjectURL(blob);
+      img.src = item.url;
+      img.decode().catch(() => { /* shown when it loads */ }).then(() => {
+        if (item.canvas !== canvas) return;
+        canvas.replaceWith(img);
+        item.canvas = img;
+        canvas.width = canvas.height = 0; // free the backing store at once (WebKit keeps it otherwise)
+      });
+    }, 'image/jpeg', 0.9);
   }
 
   function syncNotes(item: Item): void {
@@ -308,7 +334,14 @@ export function createOverview(host: OverviewHost): Overview {
       endGoto();
       window.removeEventListener('keydown', onKey, true);
       if (observer) observer.disconnect();
-      if (ui) ui.root.remove();
+      if (ui) {
+        ui.root.remove();
+        for (const item of ui.items) {
+          if (item.url) URL.revokeObjectURL(item.url);
+          if (item.canvas instanceof HTMLCanvasElement) item.canvas.width = item.canvas.height = 0;
+          item.canvas = null;
+        }
+      }
       ui = null;
     },
   };
