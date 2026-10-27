@@ -219,10 +219,29 @@ the pages are printed as images at 200 dpi (Safari cannot print a PDF from a web
 reliably); each page gets its own paper size where the browser supports it (Chrome, Edge,
 Safari 18.2 and later).
 
+## Presenter mode (desktop)
+
+**View → Presenter Mode** (or **F5**) opens a second window for the projector: the audience
+window. It shows the page you are on, your ink (also the stroke you are writing), the laser
+pointer and blank pages, filling the window on black, with no toolbar. You keep writing in
+the main window; the audience window takes no input.
+
+- With a second display (a projector or an external screen), the audience window opens full
+  screen on it. With one display, it opens as a small window: move it to the other screen
+  and press **F11** there to make it full screen.
+- The audience window always shows the whole page; zooming or fit width in the main window
+  does not change it. Erasing and moving strokes show there once they are done.
+- **F5** again, View → Presenter Mode, or **Esc** in the audience window ends presenter mode,
+  as does closing the audience window. Closing the main window closes it too.
+- Many presenter remotes send F5 for their "start presentation" button.
+
+The browser and the iPad and Android apps have no presenter mode yet.
+
 ## Other keys
 
 | Key | Action |
 |---|---|
+| F5 | Presenter mode on or off (desktop) |
 | Ctrl/Cmd+O | Open a PDF |
 | Ctrl/Cmd+S | Save the notes now |
 | Ctrl/Cmd+E | Export annotated PDF (desktop menu) |

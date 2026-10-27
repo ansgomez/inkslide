@@ -5,6 +5,7 @@ import { menuTemplate, type MenuActions } from '../src/main/menu';
 const actions: MenuActions = {
   open() {}, openRecent() {}, clearRecent() {}, command() {}, toggleMenuBar() {}, toggleBackups() {},
   recent: () => ['/x/a&b.pdf'], menuHidden: () => false, backups: () => true, canRevert: () => false,
+  togglePresenter() {}, presenting: () => false,
 };
 const roles = (items: MenuItemConstructorOptions[]): string[] =>
   items.flatMap(i => [...(i.role ? [i.role] : []), ...roles(Array.isArray(i.submenu) ? i.submenu : [])]);
@@ -36,5 +37,30 @@ describe('menuTemplate', () => {
     (item('Re&vert to Backup…').click as () => void)();
     expect(toggled).toBe(1);
     expect(commands).toEqual(['revert-backup']);
+  });
+  it('has Presenter Mode in View: a checkbox on F5 that opens and closes the audience window', () => {
+    let on = false, toggled = 0;
+    const a = { ...actions, presenting: () => on, togglePresenter: () => { toggled++; } };
+    const item = (isMac: boolean) => {
+      const view = menuTemplate(a, { isMac, dev: false }).find(m => m.label === '&View')!.submenu as MenuItemConstructorOptions[];
+      return view.find(i => i.label === '&Presenter Mode')!;
+    };
+    for (const isMac of [false, true]) {
+      expect(item(isMac).type).toBe('checkbox');
+      expect(item(isMac).accelerator).toBe('F5');
+      expect(item(isMac).checked).toBe(false);
+    }
+    on = true;
+    expect(item(false).checked).toBe(true);
+    (item(false).click as () => void)();
+    expect(toggled).toBe(1);
+  });
+  it('uses no accelerator twice', () => {
+    const accels = (items: MenuItemConstructorOptions[]): string[] =>
+      items.flatMap(i => [...(i.accelerator ? [String(i.accelerator)] : []), ...accels(Array.isArray(i.submenu) ? i.submenu : [])]);
+    for (const isMac of [false, true]) {
+      const list = accels(menuTemplate(actions, { isMac, dev: true }));
+      expect(new Set(list).size).toBe(list.length);
+    }
   });
 });

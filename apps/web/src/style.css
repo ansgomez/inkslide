@@ -349,3 +349,23 @@ body.ink-dropping::after {
   .ink-print-page:last-child { break-after: auto; }
   .ink-print-page > img { display: block; width: 100%; height: 100%; object-fit: contain; }
 }
+
+/* ── Audience window of presenter mode (audience.html) ────────── */
+
+/* The page fills the window on black, as on a projector; nothing takes input. */
+body.ink-audience { background: #000; cursor: none; }
+body.ink-audience .ink-stage { inset: 0; }
+body.ink-audience .ink-page { box-shadow: none; }
+body.ink-audience * { pointer-events: none; }
+.ink-waiting {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  font-size: 18px;
+  opacity: 0.6;
+}

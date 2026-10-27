@@ -9,9 +9,9 @@ access.
                     ┌──────────────────────── apps/web (Vite) ──────────────────────────┐
                     │ main.ts ── viewer.ts ── pdf.ts (PDF.js) ── bitmap-cache.ts        │
                     │              │   live-ink.ts   gestures.ts   overview.ts          │
-                    │              │   persist.ts ── export.ts                          │
+                    │              │   persist.ts ── export.ts   presenter.ts           │
                     │              │                   │                                │
-                    │      platform/index.ts           │                                │
+                    │      platform/index.ts           │   audience.ts (presenter mode) │
                     │        ├─ web.ts (OPFS / localStorage, file input, download)     │
                     │        ├─ tauri.ts (Tauri plugins, loaded on first use)          │
                     │        └─ window.inkslide (Electron preload bridge)               │
@@ -28,7 +28,7 @@ access.
               │ apps/desktop (Electron 39)                                         │
               │ preload.ts ── IPC ── main.ts: dialogs, notes.ts, fsutil.ts,        │
               │      access.ts, openRequests.ts, print.ts, harden.ts, recent.ts,   │
-              │      windowState.ts, preferences.ts, menu.ts                       │
+              │      windowState.ts, preferences.ts, menu.ts, presenter.ts         │
               └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -83,6 +83,7 @@ The front end never touches files itself. It talks to a `PlatformAdapter`
 | `onOpenRequest(fn)` | second instance, macOS `open-file`, recent files | – | – |
 | `opened(pdf, info)` | tracks the open PDF (Revert to Backup) | recent files | – |
 | `readBackup`, `revertToBackup`, `keepUnreadableNotes` | backup in app storage, made by `writeNotes`; copy of an unreadable notes file; off in the File menu | – | – |
+| `onPresenter`, `presenterSend`, `onAudience` (bridge only) | presenter mode: messages to the audience window, relayed and checked by main | – | – |
 
 `apps/web/src/platform/index.ts` picks the adapter: `window.inkslide` if the preload put it
 there, `createTauriAdapter()` when `window.__TAURI_INTERNALS__` exists, else
@@ -95,8 +96,8 @@ hash. Both the page's CSP and the shell's must allow Tauri's IPC (`ipc:`,
 so the browser and Electron builds cannot reach it; see [apps/mobile/README.md](../apps/mobile/README.md).
 
 **Electron bridge.** `apps/desktop/src/shared/bridge.ts` declares `InkslideBridge` (the
-adapter plus `initialPath`, `pathForFile`, `onMenuCommand`, `onCloseRequest`) and the IPC
-channel names. The preload (`contextIsolation`, `sandbox: true`, no Node in the page) exposes
+adapter plus `initialPath`, `pathForFile`, `onMenuCommand`, `onCloseRequest` and the
+presenter mode calls `onPresenter`, `presenterSend`, `onAudience`) and the IPC channel names. The preload (`contextIsolation`, `sandbox: true`, no Node in the page) exposes
 it with `contextBridge`; each method is an `ipcRenderer.invoke` to a handler in `main.ts`.
 
 Main checks every call:
@@ -111,16 +112,63 @@ Main checks every call:
 - an export may not overwrite the open PDF (also not through a link or another letter case).
 
 Main to renderer messages: `openRequest` (queued in the preload until the front end
-subscribes), `menuCommand` (Export, Import notes) and `closeRequest`. On window close, main
+subscribes), `menuCommand` (Export, Import notes), `closeRequest`, and for presenter mode
+`presenterState` (to the app window) and `audience` (to the audience window). On window close, main
 cancels the close, asks the front end to flush its notes, and closes when the reply is `ok`.
 If saving fails, the user is asked. `will-quit` waits for notes writes still running. Open
 requests that come before the page has loaded wait in `OpenRequests` (the first one is
 `initialPath()`); a reloaded page gets the PDF it showed. Reload is in the menu of development
 builds only, since it skips the save before closing.
 
-Both windows (the app and the hidden print window) are locked down by `harden.ts`: context
-isolation, sandbox, no Node; no navigation, no new windows (http(s) links open in the system
-browser); every permission request and check is refused except fullscreen.
+All windows (the app, the audience window of presenter mode and the hidden print window) are
+locked down by `harden.ts`: context isolation, sandbox, no Node; no navigation, no new windows
+(http(s) links open in the system browser); every permission request and check is refused
+except fullscreen.
+
+## Presenter mode
+
+View → Presenter Mode (F5, desktop only) opens a second window, the audience window, for a
+projector: full screen on a display other than the app window's, else a 960×540 window
+(`apps/desktop/src/main/presenter.ts`, `audiencePlacement`). It loads `audience.html` of the
+same front end build (a second Vite entry, `apps/web/src/audience.ts`) with the same
+webPreferences and preload. Main answers none of its bridge calls (every handler checks that
+the sender is the app window), so it reads no files; it only receives.
+
+```
+ app window                         main                          audience window
+ viewer.ts ── presenter.ts ──presenterSend──► parsePresenterMessage ──audience──► audience.ts
+   (ViewerMirror hooks)      ◄─presenterState── (audience loaded / closed)          NotesDoc (never saved)
+```
+
+- **Messages** (`packages/annotate/src/presenter.ts`): `open` (the PDF bytes and title),
+  `notes` (the notes file text), `close`, `page`, `strokes` (all strokes of one page),
+  `blanks` (every blank page), `live` (the stroke being written, points from index `from`
+  on), `live-end` and `laser` (points). `parsePresenterMessage` rebuilds a message from its
+  known fields and refuses wrong types and oversized ones; main runs it before relaying, the
+  audience page again on arrival, and `createStroke` checks strokes once more when they are
+  applied.
+- **Presenter side** (`apps/web/src/presenter.ts`): the viewer reports the opened PDF and its
+  `NotesDoc`, the page shown, the stroke being written (a wrapper around the live ink
+  renderer) and the laser (`ToolHost.sync`). When main says the audience page has loaded
+  (`presenterState` true; also after a reload of either window), everything is sent. Then a
+  finished edit sends its page's strokes at the end of the task; blank page changes and page
+  turns go at once; a load (import, revert) sends the notes again. The stroke being written
+  and the laser go at most every 30 ms (`LIVE_MS`), the stroke with only the points that
+  changed since the last message (`commonPrefix`). `live-end` follows the finished stroke's
+  `strokes`, so the audience never shows neither.
+- **Audience side** (`audience.ts`): messages are handled one at a time, in order (opening the
+  PDF is async). The PDF is rendered with PDF.js like the viewer's (bitmap cache, the next
+  page pre-rendered), always the whole page fitted to the window; notes go into a `NotesDoc`
+  through `load`, `applyRemoteStrokes` and `applyRemoteBlanks`; the live stroke and the laser
+  are drawn in the page's SVG (`render.liveStroke`, `render.laser`). Nothing takes input.
+- **Ending:** closing the audience window, F5 or View → Presenter Mode again, or Escape in the
+  audience window (which has no menu on Linux and Windows; F11 there toggles full screen).
+  Closing the app window closes the audience window.
+
+Erasing and moving strokes are mirrored when they are done, not while they happen. The
+browser, PWA and Tauri builds have no presenter mode: the presenter and audience modules are
+transport independent, so a `BroadcastChannel` and `window.open` could carry the same
+messages there.
 
 ## Autosave
 
@@ -243,12 +291,14 @@ startup bundle. The adapter then saves the bytes.
 ## Tests
 
 - Unit tests (Vitest) in each package's `test/`: geometry, model, io (v1/v2), tools, input,
-  autosave, DOM rendering (happy-dom), legacy parity; export (checked with PDF.js); web
-  helpers and the web adapter; desktop path rules, notes and backup stores, preferences, file
-  helpers, open requests, menu, window hardening, packaging config.
+  autosave, DOM rendering (happy-dom), legacy parity, presenter messages; export (checked with
+  PDF.js); web helpers, the web adapter and the presenter side of presenter mode; desktop path
+  rules, notes and backup stores, preferences, file helpers, open requests, menu, window
+  hardening, audience window placement, packaging config.
 - End-to-end tests (Playwright) in `apps/web/e2e` against the production build, with
   synthetic pen and touch events; `backup.spec.ts` uses a stand-in Electron bridge for the
-  second read, the backup offer, the kept unreadable copy and Revert to Backup.
+  second read, the backup offer, the kept unreadable copy and Revert to Backup;
+  `presenter.spec.ts` passes an app window's presenter messages to the audience page.
 - Desktop smoke test (`apps/desktop/test/smoke.mjs`) launches Electron with a fixture page
   and drives the bridge end to end (also the backup and revert, the unreadable copy, cleanup
   of old copies, switching backups off, printing, a second instance

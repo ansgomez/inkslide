@@ -37,6 +37,20 @@ ipcRenderer.on(IPC.closeRequest, () => {
     .then(ok => ipcRenderer.send(IPC.closeReply, ok));
 });
 
+/** Presenter mode: the audience window's state (replayed to a late subscriber) and the messages for it. */
+const presenterHandlers = new Set<(on: boolean) => void>();
+let presenterOn = false;
+ipcRenderer.on(IPC.presenterState, (_e: IpcRendererEvent, on: unknown) => {
+  presenterOn = on === true;
+  presenterHandlers.forEach(h => h(presenterOn));
+});
+const audienceHandlers = new Set<(message: unknown) => void>();
+const pendingAudience: unknown[] = [];
+ipcRenderer.on(IPC.audience, (_e: IpcRendererEvent, message: unknown) => {
+  if (audienceHandlers.size) audienceHandlers.forEach(h => h(message));
+  else if (pendingAudience.length < 1000) pendingAudience.push(message);
+});
+
 const bridge: InkslideBridge = {
   platform: 'electron',
   openPdf: path => ipcRenderer.invoke(IPC.openPdf, path),
@@ -63,6 +77,17 @@ const bridge: InkslideBridge = {
   onCloseRequest(handler) {
     closeHandler = handler;
     return () => { if (closeHandler === handler) closeHandler = null; };
+  },
+  onPresenter(handler) {
+    presenterHandlers.add(handler);
+    if (presenterOn) handler(true);
+    return () => { presenterHandlers.delete(handler); };
+  },
+  presenterSend: message => ipcRenderer.send(IPC.presenterSend, message),
+  onAudience(handler) {
+    audienceHandlers.add(handler);
+    pendingAudience.splice(0).forEach(m => handler(m));
+    return () => { audienceHandlers.delete(handler); };
   },
   pathForFile(file) {
     const path = webUtils.getPathForFile(file);

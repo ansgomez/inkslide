@@ -88,7 +88,7 @@ export interface ToolHost {
   select(sel: { pageId: string; ids: readonly string[] } | null): void;
   /** Every surface with a layer (Map or array). */
   surfaces: { forEach(fn: (s: Surface) => void): void };
-  /** Mirror of the laser to another window (presenter view, later). */
+  /** Mirror of the laser to another window (presenter mode: the web app's presenter.ts). */
   sync?: { laser(pageId: string, pt: Point): void } | null;
 }
 

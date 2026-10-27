@@ -35,6 +35,8 @@ picks another preview port than 4173.
 | `persist.ts` | One autosave controller per open document (`@inkslide/annotate/autosave`). |
 | `export.ts` | Lazy import of `@inkslide/export`. |
 | `print.ts` | Browser print: the export rendered to page images (200 dpi), one `@page` size per page. |
+| `presenter.ts` | Presenter mode (desktop), the app window's side: the viewer's page, ink, stroke being written and laser as presenter messages for the audience window. |
+| `audience.ts` | Entry of `audience.html`: presenter mode's audience window, read-only (the page fitted whole, the ink, the live stroke, the laser). |
 | `counter.ts` | Page counter text and PDF-page steps (pure). |
 | `banner.ts` | Message banners, optionally with an action button. |
 | `dom.ts` | `localStorage` access that survives blocked storage (`isTyping()` is the toolbar's, `@inkslide/annotate/toolbar`). |

@@ -13,6 +13,7 @@ desktop app uses Electron.
 | Pages: blank pages with plain, lined or grid paper | Done |
 | Notes: sidecar file, autosave, backup on the desktop | Done |
 | Export to an annotated PDF, print | Done |
+| Presenter mode: page, ink and laser mirrored in a second window (desktop) | Done, not yet tried with a projector |
 | Desktop on Linux (AppImage) | Done |
 | Web app and PWA (installable, offline) | Done |
 | Desktop on Windows and macOS | Configured, not yet built or tested there |
@@ -38,8 +39,11 @@ desktop app uses Electron.
   undo step per paste. Ctrl+D duplicates.
 - **Backups beyond the desktop:** the browser, PWA and Tauri apps keep no notes backup; revisit
   for Tauri after the device tests.
-- **Later:** a presenter mode that mirrors page, ink and laser on a second window; opening Marp
-  HTML decks directly.
+- **Presenter mode:** try it with a real projector on Linux (Wayland places windows itself, so
+  the audience window may open on the app's display), Windows and macOS. Mirror erasing and
+  moving while they happen; send stroke changes as deltas instead of the whole page; a
+  browser and PWA version (`BroadcastChannel` and `window.open`).
+- **Later:** opening Marp HTML decks directly.
 
 ## Why Electron on the desktop
 

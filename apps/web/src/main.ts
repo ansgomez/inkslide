@@ -3,19 +3,24 @@ import '@inkslide/annotate/toolbar.css';
 import './style.css';
 import { banner } from './banner';
 import { getAdapter, isWebAdapter } from './platform';
+import { createPresenter } from './presenter';
 import { setupPwa } from './pwa';
 import { createViewer } from './viewer';
 
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
 
 const adapter = getAdapter();
+// Presenter mode (desktop): the audience window mirrors this one (presenter.ts, audience.ts).
+const bridge = window.inkslide;
+const presenter = bridge && typeof bridge.onPresenter === 'function' ? createPresenter(m => bridge.presenterSend(m)) : null;
+if (presenter) bridge!.onPresenter(on => presenter.setActive(on));
 const viewer = createViewer({
   stage: $('.ink-stage'),
   page: $('.ink-page'),
   pdfCanvas: $('canvas.ink-pdf'),
   liveCanvas: $('canvas.ink-live'),
   empty: $('.ink-empty'),
-}, adapter);
+}, adapter, presenter);
 
 document.body.dataset.platform = adapter.platform;
 $('.ink-open').addEventListener('click', () => void viewer.openFrom());

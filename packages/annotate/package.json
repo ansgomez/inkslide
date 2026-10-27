@@ -30,6 +30,7 @@
     "./app": "./src/app.ts",
     "./io": "./src/io.ts",
     "./autosave": "./src/autosave.ts",
+    "./presenter": "./src/presenter.ts",
     "./toolbar.css": "./src/toolbar.css"
   },
   "scripts": {
