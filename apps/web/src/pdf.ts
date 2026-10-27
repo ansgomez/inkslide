@@ -8,6 +8,11 @@
  * can be moved up (a pre-render becomes the page on screen) or cancelled
  * (queued: dropped; running: PDF.js's RenderTask is cancelled).
  *
+ * All pages are fetched up front: their sizes make the notes document
+ * (deckFromPdf), and PDF.js keeps the page objects anyway. What a render
+ * leaves behind on a page (operator list, images) is freed with
+ * page.cleanup() once the page is not among the last few rendered.
+ *
  * The legacy build: the modern one uses Map.getOrInsertComputed, which
  * Electron 39 (Chromium 142) and older iPad Safari versions lack.
  */
@@ -20,6 +25,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 /** Directory of the bundled PDF.js data files, relative to the page. */
 const assetUrl = (dir: string): string => new URL(`./pdfjs/${dir}/`, document.baseURI).href;
+
+/** Pages whose render resources are kept (the page shown, its neighbours, one more). */
+const KEEP_RENDERED = 4;
 
 /** Render queue priorities, lower first. */
 export const PRIORITY = { current: 0, neighbor: 1, thumb: 2 } as const;
@@ -95,6 +103,16 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
 
   const queue: Job[] = [];
   let seq = 0, running = false, destroyed = false;
+  /** Pages rendered last, oldest first. */
+  const rendered: number[] = [];
+
+  /** Page n was rendered: free the render resources of the page that drops out of the last KEEP_RENDERED. */
+  function renderedPage(n: number): void {
+    const i = rendered.indexOf(n);
+    if (i >= 0) rendered.splice(i, 1);
+    rendered.push(n);
+    if (rendered.length > KEEP_RENDERED && !destroyed) pages[rendered.shift()! - 1].cleanup();
+  }
 
   async function pump(): Promise<void> {
     if (running) return;
@@ -148,6 +166,7 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
       await task.promise;
     } finally {
       if (ctl) ctl.task = null;
+      renderedPage(n);
     }
   }
 
