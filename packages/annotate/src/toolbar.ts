@@ -288,6 +288,8 @@ function buildButton(item: ToolbarItem, extraClass?: string): HTMLElement {
 export interface Toolbar {
   el: HTMLDivElement;
   update(): void;
+  /** Remove the bar and stop watching its size. */
+  destroy(): void;
 }
 
 /** Build the toolbar from the registered groups (in GROUP_ORDER) and add it to `parent`. */
@@ -338,10 +340,13 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
     style.setProperty('--ann-bar-w', `${bar.offsetWidth}px`);
   };
   if (!document.body.dataset.annDock) document.body.dataset.annDock = loadDock();
-  if ('ResizeObserver' in window) new ResizeObserver(setOffset).observe(bar);
+  const resize = 'ResizeObserver' in window ? new ResizeObserver(setOffset) : null;
+  if (resize) resize.observe(bar);
   setOffset();
 
+  let destroyed = false;
   function update(): void {
+    if (destroyed) return; // a detached bar would set the bar size to 0 for the next one
     for (const { item, btn } of entries) {
       if (item.text) {
         const t = item.text();
@@ -369,7 +374,15 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
     setOffset();
   }
   update();
-  return { el: bar, update };
+  return {
+    el: bar,
+    update,
+    destroy() {
+      destroyed = true;
+      if (resize) resize.disconnect();
+      bar.remove();
+    },
+  };
 }
 
 // ── Keyboard ───────────────────────────────────────────────────

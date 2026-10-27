@@ -90,7 +90,8 @@ function frameOf(page: PDFPage): Frame {
 function withoutLaser(notes: NotesJSON): NotesJSON {
   return {
     ...notes,
-    pages: (notes.pages || []).map(p => (p && Array.isArray(p.strokes)
+    // Not an array: passed on for the model to warn about.
+    pages: !Array.isArray(notes.pages) ? notes.pages : notes.pages.map(p => (p && Array.isArray(p.strokes)
       ? { ...p, strokes: p.strokes.filter(s => !s || (s.tool as string) !== 'laser') } : p)),
   };
 }

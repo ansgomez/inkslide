@@ -49,9 +49,9 @@ does). Readers must not depend on the layout.
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | `"marp-notes"` | Required. Any other value is rejected ("Not a marp-notes file"). |
-| `version` | number | `1` or `2`. Files with a version above 2, or without a numeric version, are rejected ("Unsupported notes version"), so a newer Inkslide never has its files silently misread. |
+| `version` | number | `1` or `2`. Files with a version above 2, any other number (0, negative, fractional) or no numeric version are rejected ("Unsupported notes version"), so a newer Inkslide never has its files silently misread. |
 | `deck` | object | What the notes were made for (see below). |
-| `pages` | array | Pages that have notes (see below). |
+| `pages` | array | Pages that have notes (see below). A `pages` that is not an array is skipped with a warning; the file loads without pages. |
 
 ## `deck`
 
@@ -74,8 +74,9 @@ shows warnings, but loads the notes anyway:
 - the `sha256` differs ("made for a different version of this PDF");
 - the `title` differs, unless both `sha256` are equal (a renamed copy of the same PDF);
 - `slides` differs;
-- page 1's `size` differs;
-- other entries of `pageSizes` differ (counted in one warning).
+- page 1's `size` differs (a `size` that is not an array counts as missing);
+- other entries of `pageSizes` differ (counted in one warning; a `pageSizes` that is not an
+  array is ignored).
 
 ## `pages`
 
@@ -88,7 +89,7 @@ Each entry is a slide page (a page of the source document) or a blank page.
 | `slide` | yes | – | 1-based number of the source page. |
 | `after` | – | yes | Number of the source page the blank page follows. |
 | `paper` | – | yes | `"plain"`, `"lined"` or `"grid"`. Unknown values load as `"plain"`. |
-| `strokes` | yes | yes | Strokes, bottom to top. |
+| `strokes` | yes | yes | Strokes, bottom to top. A `strokes` that is not an array is skipped with a warning; the page loads without strokes. |
 
 Writing:
 
@@ -126,7 +127,7 @@ on the next save.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | string | Unique within the file. A missing or duplicate id gets a new one on load. |
+| `id` | string | Unique within the file. A missing, non-string or duplicate id gets a new one on load. |
 | `tool` | `"pen"` or `"highlighter"` | The laser is never stored. Other tools make the stroke invalid. |
 | `color` | string | CSS color, e.g. `#be1e3c`. |
 | `size` | number, 0 < size ≤ 10⁶ | Pen: ink width at pressure 0.5. Highlighter: line width. In page units. |
@@ -134,9 +135,9 @@ on the next save.
 
 Coordinates are rounded to 2 decimals, pressure to 3, when saved. Points are already smoothed
 (they are not the raw pointer positions). A pen stroke's width at pressure `p` is
-`size × (1 − 1.2 × (0.5 − p))`, at least 0.5 units. A stroke with a bad tool, a size out of
-range, no points, non-finite numbers or coordinates beyond ±10⁶ is skipped with a warning; the
-rest of the page loads. (Such numbers would overflow when rounded for saving, or end up as
+`size × (1 − 1.2 × (0.5 − p))`, at least 0.5 units. A stroke with a bad tool, a size that is
+not a number or out of range, no points, non-finite or non-numeric coordinates, or coordinates
+beyond ±10⁶ is skipped with a warning; the rest of the page loads. (Such numbers would overflow when rounded for saving, or end up as
 `Infinity` in an exported PDF.) The same check applies to every new or changed stroke, so the
 app never writes one.
 
@@ -161,11 +162,19 @@ PDF exported from that deck. Its strokes are in slide px; the PDF is in points. 
 `scaleV1ToPdf` scales them:
 
 - per page, `s = pageWidth / deck.size[0]`, but only if the aspect ratio matches within 1 %
-  (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays;
-- a page whose aspect ratio differs is left unscaled;
+  (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays.
+  Only numbers are scaled: other values are left as they are, so the stroke is skipped as
+  invalid on load;
+- a page with strokes whose aspect ratio differs is left unscaled; when page 1 or another
+  page fits, one warning names the pages left unscaled ("Notes not scaled to the PDF …");
 - pages beyond the PDF (kept, see above) are scaled with the size of page 1, since they are
   saved as v2 too;
-- if page 1 does not match (or `s` is 1), nothing is scaled and the size warning stays.
+- the deck's `size` counts as matching whenever PDF page 1 fits, whether or not any page has
+  strokes (no size warning then); if page 1 does not fit, the size warning stays even when
+  other pages are scaled;
+- the scale reported (and shown in the banner) is page 1's if it fits and is not 1, else that
+  of the first page scaled, else none;
+- if no page fits, nothing is scaled and only the size warning is shown.
 
 Marp exports 1280×720 px slides as 960×540 pt pages, so the usual scale is 0.75. The app says
 so in a banner. Once saved, the notes are a v2 file.

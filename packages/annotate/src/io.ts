@@ -111,38 +111,60 @@ export function inkedPages(text: string): { pages: number; blank: number } {
 const ASPECT_TOLERANCE = 0.01;
 
 /**
- * Scale a v1 (Marp slide units) file onto the pages of a PDF deck. Returns a
- * new object and the scale of page 1, or the data unchanged (scale null) when
- * nothing needs scaling or the aspect ratios differ (then the model warns).
+ * Scale a v1 (Marp slide units) file onto the pages of a PDF deck, deciding
+ * per page: a page is scaled when its aspect ratio matches the slides'.
+ * Returns a new object, the scale (page 1's, else that of the first page
+ * scaled; null if nothing is scaled) and a warning naming the pages left
+ * unscaled when page 1 or another page fits. The deck size counts as matching
+ * whenever page 1 fits; otherwise the model's size warning stays. The data is
+ * returned unchanged when no page fits. Only numbers are scaled; anything
+ * else is passed on for the model to reject.
  */
-export function scaleV1ToPdf(data: NotesJSON, doc: NotesDoc): { data: NotesJSON; scale: number | null } {
+export function scaleV1ToPdf(data: NotesJSON, doc: NotesDoc): { data: NotesJSON; scale: number | null; warnings: string[] } {
   const from = data.deck && data.deck.size;
-  if (data.version !== 1 || doc.deck.source !== 'pdf' || !from || !(from[0] > 0) || !(from[1] > 0)) {
-    return { data, scale: null };
+  const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  if (data.version !== 1 || doc.deck.source !== 'pdf' || !Array.isArray(from) || !positive(from[0]) || !positive(from[1])) {
+    return { data, scale: null, warnings: [] };
   }
   const scaleFor = (n: number): number | null => {
     const to = doc.deck.pageSizes && doc.deck.pageSizes[n - 1] || doc.deck.size;
     const sx = to[0] / from[0], sy = to[1] / from[1];
     return Math.abs(sx - sy) / sx <= ASPECT_TOLERANCE ? sx : null;
   };
+  const times = (v: unknown, s: number): unknown => (typeof v === 'number' ? v * s : v);
   const first = scaleFor(1);
-  if (first === null || first === 1) return { data, scale: null };
-  const pages = (data.pages || []).map((page: PageJSON): PageJSON => {
-    const n = Number(page && (page.kind === 'blank' ? page.after : page.slide));
-    // Pages beyond the PDF are kept and saved as v2 too: scale them by the deck size.
-    const s = Number.isInteger(n) && n >= 1 ? scaleFor(n) : null;
-    if (!page || s === null || s === 1 || !Array.isArray(page.strokes)) return page;
+  let scale: number | null = null, matched = false;
+  const unscaled: string[] = [];
+  // Not an array: passed on for the model to warn about.
+  const pages = !Array.isArray(data.pages) ? data.pages : data.pages.map((page: PageJSON): PageJSON => {
+    if (!page || !Array.isArray(page.strokes) || !page.strokes.length) return page;
+    const n = Number(page.kind === 'blank' ? page.after : page.slide);
+    if (!Number.isInteger(n) || n < 1) return page; // the model skips it
+    // Pages beyond the PDF are kept and saved as v2 too: scaleFor scales them by the deck size.
+    const s = scaleFor(n);
+    if (s === null) {
+      unscaled.push(page.kind === 'blank' ? `blank page ${page.id}` : `slide ${n}`);
+      return page;
+    }
+    matched = true;
+    if (s === 1) return page;
+    if (scale === null) scale = s;
     return {
       ...page,
       strokes: page.strokes.map(st => (st && Array.isArray(st.points) ? {
         ...st,
-        size: Number(st.size) * s,
-        points: st.points.map(p => (Array.isArray(p) ? [p[0] * s, p[1] * s, p[2]] : p)),
+        size: times(st.size, s),
+        points: st.points.map(p => (Array.isArray(p) ? [times(p[0], s), times(p[1], s), p[2]] : p)),
       } : st)),
     } as PageJSON;
   });
-  const deck = { ...data.deck, size: [doc.deck.size[0], doc.deck.size[1]] as Size };
-  return { data: { ...data, deck, pages }, scale: first };
+  // Nothing fits the PDF at all: the size warning says so.
+  const warnings = (first !== null || matched) && unscaled.length
+    ? [`Notes not scaled to the PDF (page aspect ratio differs): ${unscaled.join(', ')}`] : [];
+  if (first === null && scale === null) return { data, scale: null, warnings };
+  // Page 1 fits: its size no longer differs once notes are scaled to it.
+  const deck = first === null ? data.deck : { ...data.deck, size: [doc.deck.size[0], doc.deck.size[1]] as Size };
+  return { data: { ...data, deck, pages }, scale: first !== null && first !== 1 ? first : scale, warnings };
 }
 
 /** Result of loadNotes. */
@@ -157,9 +179,9 @@ export interface LoadResult {
 
 /** Replace the document's content with a parsed notes file (v1 or v2). */
 export function loadNotes(doc: NotesDoc, data: NotesJSON): LoadResult {
-  const { data: fitted, scale } = scaleV1ToPdf(data, doc);
+  const { data: fitted, scale, warnings: scaling } = scaleV1ToPdf(data, doc);
   const { warnings, notices } = doc.load(fitted);
-  return { warnings, notices, scaled: scale };
+  return { warnings: [...warnings, ...scaling], notices, scaled: scale };
 }
 
 /**

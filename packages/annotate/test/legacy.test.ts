@@ -66,6 +66,22 @@ describe('geometry matches legacy geometry.js', () => {
       expect(g.resample(pts, 5)).toEqual(legacyGeometry.resample(pts, 5));
     }
   });
+
+  it('partial erase of long strokes that cross the eraser several times', () => {
+    const rand = rng(9);
+    for (let i = 0; i < 30; i++) {
+      // long segments zigzagging across the eraser
+      const pts: Point[] = Array.from({ length: 2 + (i % 8) }, (_, k) =>
+        [rand() * 400, (k % 2) * 300 + (rand() - 0.5) * 50, rand()]);
+      const stroke = { id: `z${i}`, tool: i % 3 ? 'pen' : 'highlighter', color: '#000', size: 2 + (i % 5) * 4, points: pts } as const;
+      const legacyStroke = { ...stroke, points: pts.map(p => p.slice()) };
+      const a: Point = [rand() * 400, 100 + rand() * 100, 0.5];
+      const b: Point = [a[0] + (rand() - 0.5) * 80, a[1] + (rand() - 0.5) * 80, 0.5];
+      for (const r of [2, 16, 64]) {
+        expect(g.splitByEraser(stroke, a, b, r)).toEqual(legacyGeometry.splitByEraser(legacyStroke, a, b, r));
+      }
+    }
+  });
 });
 
 describe('model matches legacy model.js', () => {
