@@ -102,6 +102,7 @@ type Method = 'down' | 'move' | 'up' | 'cancel' | 'hover' | 'leave';
 export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): InputController {
   let penSeen = false;
   let penLast = -Infinity; // timeStamp of the pen's last event
+  const fingers = new Set<number>(); // touch pointers that are down
   let active: { pointerId: number; pointerType: string; tool: Tool; slide: Surface } | null = null;
 
   /**
@@ -158,6 +159,7 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
   }
 
   function onDown(slide: Surface, e: PointerEvent): void {
+    if (e.pointerType === 'touch') fingers.add(e.pointerId);
     if (!app.enabled) return;
     e.stopPropagation();
     if (e.pointerType === 'pen') { penSeen = true; penLast = e.timeStamp; }
@@ -169,6 +171,8 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
       else if (e.pointerType === active.pointerType) finish(); // stale gesture (lost its pointerup)
       else return;
     }
+    // Another finger is still down (after a second finger dropped the stroke): no stroke either.
+    if (e.pointerType === 'touch' && fingers.size > 1) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     const pt = toSlidePoint(slide.svg, e);
@@ -199,6 +203,7 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
   }
 
   function onUp(e: PointerEvent, cancelled: boolean): void {
+    fingers.delete(e.pointerId);
     if (!active || active.pointerId !== e.pointerId) return;
     e.stopPropagation();
     const { tool, slide } = active;
@@ -207,7 +212,7 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
     end(tool, 'up', slide, cancelled ? null : toSlidePoint(slide.svg, e), e);
   }
 
-  const onBlur = (): void => finish();
+  const onBlur = (): void => { fingers.clear(); finish(); };
   window.addEventListener('blur', onBlur);
 
   // Two-finger swipe changes the page, but only once a pen has been seen:

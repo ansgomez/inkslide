@@ -129,6 +129,19 @@ describe('attachInput', () => {
     expect(pen.down).toHaveBeenCalledTimes(3);
   });
 
+  it('no stroke while other fingers are down: a third or re-landing finger draws nothing', () => {
+    const { fire, pen } = setup();
+    fire('pointerdown', { pointerType: 'touch', pointerId: 5 });
+    fire('pointerdown', { pointerType: 'touch', pointerId: 6 }); // drops 5's stroke
+    fire('pointerdown', { pointerType: 'touch', pointerId: 7 });
+    fire('pointerup', { pointerType: 'touch', pointerId: 5 });
+    fire('pointerdown', { pointerType: 'touch', pointerId: 8 }); // 6 and 7 still down
+    expect(pen.down).toHaveBeenCalledTimes(1);
+    for (const id of [6, 7, 8]) fire('pointerup', { pointerType: 'touch', pointerId: id });
+    fire('pointerdown', { pointerType: 'touch', pointerId: 9 }); // all lifted: one finger draws again
+    expect(pen.down).toHaveBeenCalledTimes(2);
+  });
+
   describe('two-finger swipe', () => {
     const touch = (svg: SVGSVGElement, type: string, xs: number[], timeStamp: number) => {
       const touches = xs.map((x, i) => ({ identifier: i, clientX: x, clientY: 100, target: svg }));
