@@ -28,7 +28,7 @@ import {
 import { NotesDoc, type NotesJSON, type Paper, type Size } from '@inkslide/annotate/model';
 import { loadNotes } from '@inkslide/annotate/io';
 import { PAPER_STYLE } from '@inkslide/annotate/render';
-import { displayMatrix, displaySize, parseColor, rectOp, svgPathOperators, type Box } from './ops';
+import { displayMatrix, displaySize, parseColor, rectOp, svgPathOperators, type Box, type Matrix } from './ops';
 
 /** Highlighter opacity, as `.ann-stroke-hl` in toolbar.css. */
 export const HIGHLIGHTER_OPACITY = 0.35;
@@ -64,6 +64,8 @@ export interface ExportResult {
 interface Frame {
   box: Box;
   rotation: number;
+  /** /UserUnit: user space units per display unit (PDF.js scales the viewport by it). */
+  unit: number;
   size: Size;
 }
 
@@ -80,10 +82,24 @@ function visibleBox(page: PDFPage): Box {
   return x2 > x && y2 > y ? { x, y, width: x2 - x, height: y2 - y } : m;
 }
 
+/** The page's /UserUnit as PDF.js reads it: a number > 0 in the page dict itself, else 1. */
+function userUnit(page: PDFPage): number {
+  const u = page.node.lookup(PDFName.of('UserUnit'));
+  return u instanceof PDFNumber && u.asNumber() > 0 ? u.asNumber() : 1;
+}
+
 function frameOf(page: PDFPage): Frame {
   const box = visibleBox(page);
   const rotation = page.getRotation().angle;
-  return { box, rotation, size: displaySize(box, rotation) };
+  const unit = userUnit(page);
+  const [w, h] = displaySize(box, rotation);
+  return { box, rotation, unit, size: [w * unit, h * unit] };
+}
+
+/** Matrix from display coordinates (display units, so /UserUnit applied) to the page's user space. */
+function frameMatrix({ box, rotation, unit }: Frame): Matrix {
+  const [a, b, c, d, e, f] = displayMatrix(box, rotation);
+  return [a / unit, b / unit, c / unit, d / unit, e, f];
 }
 
 /** Laser strokes are never stored, but drop them quietly if a file has any. */
@@ -140,7 +156,7 @@ export async function exportAnnotatedPdfWithReport(
     } else {
       const size = frames[page.after - 1].size;
       const target = pdf.insertPage(index++, [size[0], size[1]]);
-      const frame: Frame = { box: { x: 0, y: 0, width: size[0], height: size[1] }, rotation: 0, size };
+      const frame: Frame = { box: { x: 0, y: 0, width: size[0], height: size[1] }, rotation: 0, unit: 1, size };
       painter.paint(target, frame, page.paper, page.strokes);
     }
   }
@@ -172,7 +188,7 @@ class Painter {
 
   paint(page: PDFPage, frame: Frame, paper: Paper | null, strokes: readonly Stroke[]): void {
     page.node.normalize(); // wraps the existing content in q/Q
-    const ops: PDFOperator[] = [pushGraphicsState(), concatTransformationMatrix(...displayMatrix(frame.box, frame.rotation))];
+    const ops: PDFOperator[] = [pushGraphicsState(), concatTransformationMatrix(...frameMatrix(frame))];
     if (paper) ops.push(...paperOperators(paper, frame.size));
     // The screen draws all highlighter strokes in a group below the pen group.
     for (const s of strokes) if (s.tool === 'highlighter') ops.push(...this.highlighter(page, s));
