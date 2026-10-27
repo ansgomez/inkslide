@@ -229,8 +229,10 @@ another name finds its notes, because the key is the hash.
 - **Unreadable copy:** notes that exist but cannot be read or parsed are copied as they are to
   `notes/inkslide-notes_<sha256>.notes.unreadable.json` before they are replaced (only where
   OPFS can be written; otherwise the app asks first). An OPFS file that exists but cannot be
-  read is an error, never "no notes".
-- **Cleanup:** both copies go with the PDF's recent-files entry; at startup, those last changed
+  read is an error, never "no notes", unless `localStorage` holds a copy (the notes are written
+  there when OPFS fails), which is then read.
+- **Cleanup:** the backup goes with the PDF's recent-files entry (the unreadable copy stays: it
+  may be the only copy of real notes); at startup, backups and unreadable copies last changed
   more than 90 days ago are deleted (notes files never are).
 
 ### iPad and Android (Tauri)

@@ -196,8 +196,8 @@ Backups and kept unreadable files older than 90 days are deleted when Inkslide s
 browser's storage for the site next to the notes. Instead of a menu, a **Revert to backup**
 button (a clock with an arrow) appears in the File group of the toolbar once the PDF has a
 backup; it asks the same question, and pressing it again undoes the revert. There is no switch
-to turn backups off. The backup and a kept unreadable copy go when the PDF is removed from the
-recent files on the start screen (by you, or because newer PDFs pushed it out); its notes stay.
+to turn backups off. The backup goes when the PDF is removed from the recent files on the start
+screen (by you, or because newer PDFs pushed it out); its notes and a kept unreadable copy stay.
 Like on the desktop, backups and kept copies older than 90 days are deleted when Inkslide
 starts. If a backup that has gone is still offered, pressing the button says there is none and
 hides it. Clearing the site data

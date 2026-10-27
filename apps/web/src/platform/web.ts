@@ -20,8 +20,8 @@
  * backup that can not be written never fails the save (it is written after
  * the notes). Saved notes that can not be read are copied as they are to
  * "<notes file>.notes.unreadable.json" before they are replaced. A PDF
- * dropped from the recent files loses both copies (its notes stay); copies
- * older than 90 days go at startup.
+ * dropped from the recent files loses its backup (its notes and unreadable
+ * copy stay); backups and unreadable copies older than 90 days go at startup.
  */
 import type { NotesBackup, PdfFile, PlatformAdapter } from '@inkslide/annotate';
 import {
@@ -90,8 +90,22 @@ async function opfsRemove(key: string): Promise<void> {
   } catch (_) { /* not there */ }
 }
 
-/** The saved notes: OPFS first, then localStorage. Rejects if the OPFS file can not be read. */
-const readSaved = async (key: string): Promise<string | null> => (await opfsRead(key)) ?? storedItem(key);
+/**
+ * The saved notes: OPFS first, then localStorage. If the OPFS file can not be
+ * read, a localStorage copy is the newer notes (writeSaved puts them there when
+ * OPFS fails, and removes it after an OPFS write); rejects only without one.
+ */
+async function readSaved(key: string): Promise<string | null> {
+  let text: string | null;
+  try {
+    text = await opfsRead(key);
+  } catch (e) {
+    const stored = storedItem(key);
+    if (stored !== null) return stored;
+    throw e;
+  }
+  return text ?? storedItem(key);
+}
 
 /** Write the notes: OPFS, else localStorage (throws when full). */
 async function writeSaved(key: string, text: string): Promise<void> {
@@ -138,12 +152,14 @@ async function readBackupOf(key: string): Promise<NotesBackup | null> {
   }
 }
 
-/** Delete the backup and the kept unreadable copy, quietly. */
-async function removeCopiesOf(key: string): Promise<void> {
+/**
+ * Delete the backup, quietly. Not the kept unreadable copy: it may be the
+ * only copy of real notes (e.g. from a newer Inkslide); the startup sweep
+ * deletes it after OLD_COPIES_MAX_AGE_DAYS.
+ */
+async function removeBackupOf(key: string): Promise<void> {
   const dir = await opfsDir(OPFS_DIR);
-  if (!dir) return;
-  await dir.removeEntry(backupName(key)).catch(() => {});
-  await dir.removeEntry(unreadableName(key)).catch(() => {});
+  if (dir) await dir.removeEntry(backupName(key)).catch(() => {});
 }
 
 /**
@@ -229,9 +245,11 @@ async function keepUnreadableOf(key: string): Promise<string | null> {
 
 /**
  * At startup: delete backups and kept unreadable copies older than
- * OLD_COPIES_MAX_AGE_DAYS (those of PDFs dropped from the recent files are
+ * OLD_COPIES_MAX_AGE_DAYS (backups of PDFs dropped from the recent files are
  * already gone; this catches the others). Returns the names deleted.
- * Nothing where the directory can not be listed.
+ * Nothing where the directory can not be listed. Each file's time is read
+ * again just before it is deleted: a save may have rewritten it since the
+ * listing.
  */
 export async function cleanupNotesStore(now = Date.now()): Promise<string[]> {
   const dir = await opfsDir(OPFS_DIR);
@@ -244,8 +262,15 @@ export async function cleanupNotesStore(now = Date.now()): Promise<string[]> {
     if ((await (h as FileSystemFileHandle).getFile()).lastModified < before) old.push(h.name);
   }
   // Removed after the listing: changing a directory while it is listed is not well defined.
-  for (const name of old) await dir.removeEntry(name).catch(() => {});
-  return old;
+  const removed: string[] = [];
+  for (const name of old) {
+    try {
+      if ((await (await dir.getFileHandle(name)).getFile()).lastModified >= before) continue; // written since
+      await dir.removeEntry(name);
+      removed.push(name);
+    } catch (_) { /* gone already, or busy: next time */ }
+  }
+  return removed;
 }
 
 /** Let the user pick one file; null if cancelled. */
@@ -328,13 +353,13 @@ async function share(bytes: Uint8Array, name: string): Promise<boolean | null> {
 /** The platform adapter of the browser build. */
 export function createWebAdapter(): WebAdapter {
   // A PDF dropped from the recent files (evicted, or removed by the user) loses
-  // its backup and kept unreadable copy; old ones of other PDFs go at startup.
+  // its backup; old backups of other PDFs and old unreadable copies go at startup.
   const storage = createRecentStorage();
   const recent = createRecentFiles({
     ...storage,
     async remove(id) {
       await storage.remove(id);
-      await removeCopiesOf(NOTES_KEY_PREFIX + id);
+      await removeBackupOf(NOTES_KEY_PREFIX + id);
     },
   });
   void cleanupNotesStore().catch(e => console.warn('Cleaning up old notes backups failed', e));

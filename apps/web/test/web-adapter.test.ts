@@ -29,7 +29,8 @@ const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
  * them, those of files matching `failNames`, or where `failWrite(name)` says
  * so), and whose reads of files matching `failReads` fail. Files keep their
  * write time (`times`); `writes` lists the files written, in order, and
- * `textReads` counts the reads of each file's content.
+ * `textReads` counts the reads of each file's content. `afterList` runs once
+ * a listing (values()) has returned every file.
  */
 function fakeOpfs() {
   const files = new Map<string, string>();
@@ -39,6 +40,7 @@ function fakeOpfs() {
   const state = {
     failWrites: false, failNames: null as RegExp | null, failReads: null as RegExp | null,
     failWrite: null as ((name: string) => boolean) | null,
+    afterList: null as (() => void) | null,
   };
   const fileHandle = (name: string) => ({
     kind: 'file' as const, name,
@@ -77,6 +79,7 @@ function fakeOpfs() {
     },
     async *values() {
       for (const name of [...files.keys()]) yield fileHandle(name);
+      state.afterList?.();
     },
   };
   const root = { getDirectoryHandle: async () => dir };
@@ -256,7 +259,7 @@ describe('web adapter notes backup', () => {
     expect((await a.readBackup!(pdf, 'abc'))?.text).toBe(notes(1));
   });
 
-  it('a PDF dropped from the recent files loses its backup and kept unreadable copy, not its notes', async () => {
+  it('a PDF dropped from the recent files loses its backup, not its notes or kept unreadable copy', async () => {
     const { opfs, a } = backupSetup();
     const file: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array([1]) };
     await a.opened(file, { sha256: 'abc', pages: 1 });
@@ -267,8 +270,23 @@ describe('web adapter notes backup', () => {
     expect(opfs.files.has(unreadableFile('abc'))).toBe(true);
     await a.recent.remove('abc');
     expect(opfs.files.has(backupFile('abc'))).toBe(false);
-    expect(opfs.files.has(unreadableFile('abc'))).toBe(false);
+    // The unreadable copy may be the only copy of real notes: only the 90-day sweep deletes it.
+    expect(opfs.files.has(unreadableFile('abc'))).toBe(true);
     expect(await a.readNotes(file, 'abc')).toBe(notes(2));
+  });
+
+  it('evicted from the recent files (LRU), a PDF keeps its kept unreadable copy', async () => {
+    const { opfs, a } = backupSetup();
+    const first: PdfFile = { path: null, name: 'first.pdf', bytes: new Uint8Array([0]) };
+    await a.opened(first, { sha256: 'first', pages: 1 });
+    await a.writeNotes(first, '{"format":"marp-notes","version":99}', 'first');
+    await a.keepUnreadableNotes!(first, 'first');
+    for (let i = 1; i <= 12; i++) {
+      vi.setSystemTime(Date.now() + 1000);
+      await a.opened({ path: null, name: `${i}.pdf`, bytes: new Uint8Array([i]) }, { sha256: `n${i}`, pages: 1 });
+    }
+    expect((await a.recent.list()).map(e => e.id)).not.toContain('first');
+    expect(opfs.files.get(unreadableFile('first'))).toBe('{"format":"marp-notes","version":99}');
   });
 
   // Review findings on the first version (regressions).
@@ -304,6 +322,19 @@ describe('web adapter notes backup', () => {
     await a.writeNotes(pdf, notes(1), 'abc');
     opfs.state.failReads = /abc\.json$/;
     await expect(a.readNotes(pdf, 'abc')).rejects.toThrow();
+  });
+
+  it('an OPFS notes file that can not be read gives way to a localStorage copy (the newer notes)', async () => {
+    const { opfs, a } = backupSetup();
+    await a.writeNotes(pdf, notes(1), 'abc');
+    // OPFS failed once: the notes went to localStorage, and the older OPFS file could not be removed.
+    localStorage.setItem(notesKey(pdf, 'abc'), notes(2));
+    opfs.state.failReads = /abc\.json$/;
+    expect(await a.readNotes(pdf, 'abc')).toBe(notes(2));
+    // So does a save, for the backup: the notes it replaces are those of localStorage.
+    await a.writeNotes(pdf, notes(3), 'abc');
+    opfs.state.failReads = null;
+    expect((await a.readBackup!(pdf, 'abc'))?.text).toBe(notes(2));
   });
 
   it('a revert whose saved notes can not be read changes nothing', async () => {
@@ -368,6 +399,20 @@ describe('web adapter notes backup', () => {
     for (const name of opfs.files.keys()) if (name.includes('_old')) opfs.times.set(name, longAgo);
     expect((await cleanupNotesStore()).sort()).toEqual([backupFile('old'), unreadableFile('old')]);
     expect([...opfs.files.keys()].sort()).toEqual(['inkslide-notes_new.json', backupFile('new'), 'inkslide-notes_old.json'].sort());
+  });
+
+  it('the startup sweep spares a copy written again after it listed the files', async () => {
+    const { opfs, a } = backupSetup();
+    await a.writeNotes(pdf, notes(1), 'abc');
+    await a.writeNotes(pdf, notes(2), 'abc');
+    await a.keepUnreadableNotes!(pdf, 'abc');
+    const longAgo = Date.now() - (OLD_COPIES_MAX_AGE_DAYS + 1) * 24 * 60 * 60_000;
+    opfs.times.set(backupFile('abc'), longAgo);
+    opfs.times.set(unreadableFile('abc'), longAgo);
+    // Between the listing and the deletes, a save rewrites the backup (here: its time).
+    opfs.state.afterList = () => opfs.times.set(backupFile('abc'), Date.now());
+    expect(await cleanupNotesStore()).toEqual([unreadableFile('abc')]);
+    expect(opfs.files.get(backupFile('abc'))).toBe(notes(1));
   });
 });
 

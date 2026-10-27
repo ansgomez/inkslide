@@ -179,13 +179,16 @@ themselves fall back to.
   notes, and only then the backup, so near the quota the backup never takes the room the
   notes need. A failed backup read or write is logged and never fails the save.
 - An OPFS notes file that exists but cannot be read rejects (only `NotFoundError` means "no
-  notes"), so `readNotes` reports it and `revertToBackup` stops without changing anything.
+  notes"), so `readNotes` reports it and `revertToBackup` stops without changing anything;
+  but if `localStorage` holds the key (where a failed OPFS write put the newer notes), that
+  copy is read.
   If writing the reverted notes fails and putting the backup back fails too, the error says so.
 - `keepUnreadableNotes` copies the text as it is to `….notes.unreadable.json` and returns
   where; it rejects if it cannot (the viewer then asks).
 - The adapter wraps the recent files' storage so that a PDF dropped from them (evicted or
-  removed) loses its backup and unreadable copy; `cleanupNotesStore`, run when the adapter is
-  made, deletes those older than 90 days (catches PDFs never kept in the recent files).
+  removed) loses its backup, not its unreadable copy (maybe the only copy of real notes);
+  `cleanupNotesStore`, run when the adapter is made, deletes backups and unreadable copies
+  older than 90 days, reading each file's time again just before deleting it.
 - The viewer shows a Revert to Backup button in the toolbar's File group (hidden while there
   is none, via the item's `hidden()`) for adapters with `revertToBackup` that are not
   Electron, which has the menu. It asks `readBackup` when a PDF opens, after each save until
