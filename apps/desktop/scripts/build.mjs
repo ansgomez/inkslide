@@ -2,7 +2,8 @@
 // @inkslide/annotate is TypeScript source, so it is bundled in as well.
 // INKSLIDE_TEST_BUILD=1: a packaged app built from this still honors the test
 // environment variables (INKSLIDE_PAGE, INKSLIDE_SMOKE, ...; main.ts), so the
-// smoke test can run against the package. Release builds leave it unset.
+// smoke test can run against the package. scripts/dist.mjs sets it only with
+// --test-build (and refuses it from the shell otherwise).
 import { build } from 'esbuild';
 import { rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';

@@ -271,4 +271,5 @@ startup bundle. The adapter then saves the bytes.
   of old copies, switching backups off, printing, a second instance
   and a desktop entry). Its environment variables (`INKSLIDE_PAGE`, `INKSLIDE_SMOKE`,
   `INKSLIDE_USER_DATA`, `INKSLIDE_PRINT_TO_PDF`) are ignored by packaged builds unless they
-  were packaged with `INKSLIDE_TEST_BUILD=1`, so a release cannot be pointed at another page.
+  were packaged as test builds (`dist.mjs --test-build`, packages named `*-TEST*`), so a
+  release cannot be pointed at another page.

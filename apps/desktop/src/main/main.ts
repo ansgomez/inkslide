@@ -9,7 +9,7 @@
  *   INKSLIDE_DEV_URL    load this URL (Vite dev server) instead of apps/web/dist
  *   INKSLIDE_DESKTOP_NAME  development only: desktop file id, and so the window's app id
  *                       (the dev desktop entry sets inkslide-dev.desktop)
- * Tests only (packaged builds ignore them unless built with INKSLIDE_TEST_BUILD=1; paths.ts testEnv):
+ * Tests only (packaged builds ignore them unless built with dist.mjs --test-build; paths.ts testEnv):
  *   INKSLIDE_PAGE       load this HTML file instead (tests)
  *   INKSLIDE_USER_DATA  use this userData directory (tests)
  *   INKSLIDE_SMOKE      smoke test mode: run window.inkslideSmoke(), print, quit
@@ -40,7 +40,7 @@ import { printPdf } from './print';
 import { RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
 
-/** true in a test build (scripts/build.mjs, INKSLIDE_TEST_BUILD=1): packaged, it still takes the test variables. */
+/** true in a test build (dist.mjs --test-build, via build.mjs): packaged, it still takes the test variables. */
 declare const INKSLIDE_TEST_BUILD: boolean;
 
 const MAX_PDF_BYTES = 2 ** 31 - 1;

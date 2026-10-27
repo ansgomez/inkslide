@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dataHome, devDesktopEntry, devEntryPaths, quoteExecArg } from '../scripts/desktop-entry.mjs';
 import { encodeIcns, encodeIco, ICNS_TYPES } from '../scripts/icon-formats.mjs';
-import { DEFAULT_LINUX_TARGETS, linuxTargets, missingForRpm } from '../scripts/preflight.mjs';
+import { DEFAULT_LINUX_TARGETS, linuxTargets, missingForRpm, testArtifactOverrides, testBuildOptions } from '../scripts/preflight.mjs';
 
 /**
  * Split an Exec value back into arguments, as a launcher does: undo the
@@ -113,6 +113,25 @@ describe('icon formats', () => {
     const types: string[] = [];
     for (let o = 8; o < icns.length; o += icns.readUInt32BE(o + 4)) types.push(icns.subarray(o, o + 4).toString());
     expect(types).toEqual(ICNS_TYPES.map(([t]) => t));
+  });
+});
+
+describe('test builds', () => {
+  it('only with --test-build; INKSLIDE_TEST_BUILD from the shell alone is refused', () => {
+    expect(testBuildOptions(['--linux', 'AppImage'], {})).toEqual({ args: ['--linux', 'AppImage'], testBuild: false, error: null });
+    expect(testBuildOptions(['--linux', 'AppImage'], { INKSLIDE_TEST_BUILD: '1' }).error).toMatch(/--test-build/);
+    expect(testBuildOptions(['--linux', '--test-build', 'dir'], { INKSLIDE_TEST_BUILD: '1' }))
+      .toEqual({ args: ['--linux', 'dir'], testBuild: true, error: null });
+  });
+
+  it('names every package of a test build *-TEST*', () => {
+    const yml = readFileSync(new URL('../electron-builder.yml', import.meta.url), 'utf8');
+    const overrides = testArtifactOverrides(yml);
+    const sections = [...yml.matchAll(/^(\w+):\n(?:(?: {2}.*)?\n)*? {2}artifactName:/gm)].map(m => m[1]);
+    expect(overrides.map(o => /^-c\.(\w+)\./.exec(o)?.[1])).toEqual(sections);
+    expect(overrides.length).toBe((yml.match(/^ {2}artifactName:/gm) ?? []).length);
+    for (const o of overrides) expect(o).toMatch(/-TEST\.\$\{ext\}$/);
+    expect(overrides).toContain('-c.linux.artifactName=${productName}-${version}-${arch}-TEST.${ext}');
   });
 });
 

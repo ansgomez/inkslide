@@ -59,7 +59,7 @@ export interface TestEnv {
 
 /**
  * The test-only environment variables, when `allowed`: in development, and
- * in a packaged test build (INKSLIDE_TEST_BUILD=1 at build time, for the
+ * in a packaged test build (scripts/dist.mjs --test-build, for the
  * smoke test against a package). A release build ignores them all: they
  * would load another page with the preload bridge, or move userData.
  */
