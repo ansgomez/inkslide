@@ -39,8 +39,10 @@ desktop app uses Electron.
   undo step per paste. Ctrl+D duplicates.
 - **Backups beyond the desktop:** the browser, PWA and Tauri apps keep no notes backup; revisit
   for Tauri after the device tests.
-- **Presenter mode:** try it with a real projector on Linux (Wayland places windows itself, so
-  the audience window may open on the app's display), Windows and macOS. Mirror erasing and
+- **Presenter mode:** try it with a real projector on Linux, Windows and macOS. On Wayland the
+  audience window opens as a window for the user to move and make full screen (F11), since
+  the compositor places windows itself; going full screen on its own once it is shown on
+  another display than the app window's would save that step. Mirror erasing and
   moving while they happen; a browser and PWA version (`BroadcastChannel` and `window.open`).
 - **Later:** opening Marp HTML decks directly.
 

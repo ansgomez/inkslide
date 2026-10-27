@@ -305,7 +305,8 @@ function start(): void {
   function openAudience(): void {
     if (!win || audience) return;
     const appWin = win;
-    const place = audiencePlacement(screen.getAllDisplays(), screen.getDisplayMatching(appWin.getBounds()).id);
+    // Wayland: no window positions, so no full screen that could land on the app window's display.
+    const place = audiencePlacement(screen.getAllDisplays(), screen.getDisplayMatching(appWin.getBounds()).id, !onWayland);
     const a = new BrowserWindow({
       ...place.bounds,
       title: 'Inkslide audience',

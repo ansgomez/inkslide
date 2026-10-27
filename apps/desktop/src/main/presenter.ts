@@ -31,10 +31,15 @@ export const AUDIENCE_SIZE = { width: 960, height: 540 };
  * The audience window's place: full screen on a display other than the app
  * window's (the first one listed, usually the projector); with a single
  * display, a 960×540 window in the middle of its work area (to be moved and
- * made full screen by the user).
+ * made full screen by the user, F11).
+ *
+ * `canPlace` false (Wayland): the compositor ignores window positions and the
+ * app window's display is not known reliably, so a full-screen window could
+ * cover the app window on its own display. Then it is always the window, for
+ * the user to move to the projector.
  */
-export function audiencePlacement(displays: readonly DisplayInfo[], appDisplayId: number): AudiencePlacement {
-  const other = displays.find(d => d.id !== appDisplayId);
+export function audiencePlacement(displays: readonly DisplayInfo[], appDisplayId: number, canPlace = true): AudiencePlacement {
+  const other = canPlace ? displays.find(d => d.id !== appDisplayId) : undefined;
   if (other) return { bounds: { ...other.bounds }, fullScreen: true };
   const area = (displays.find(d => d.id === appDisplayId) || displays[0])?.workArea ?? { x: 0, y: 0, ...AUDIENCE_SIZE };
   const width = Math.min(AUDIENCE_SIZE.width, area.width), height = Math.min(AUDIENCE_SIZE.height, area.height);

@@ -10,6 +10,11 @@ describe('audiencePlacement', () => {
     expect(audiencePlacement([laptop, projector], 1)).toEqual({ bounds: projector.bounds, fullScreen: true });
     expect(audiencePlacement([laptop, projector], 2)).toEqual({ bounds: laptop.bounds, fullScreen: true });
   });
+  it('opens a window, never full screen, where windows cannot be placed (Wayland)', () => {
+    expect(audiencePlacement([laptop, projector], 1, false)).toEqual({
+      bounds: { x: 480, y: 32 + 314, ...AUDIENCE_SIZE }, fullScreen: false,
+    });
+  });
   it('opens a window in the middle of the only display', () => {
     expect(audiencePlacement([laptop], 1)).toEqual({
       bounds: { x: 480, y: 32 + 314, ...AUDIENCE_SIZE }, fullScreen: false,

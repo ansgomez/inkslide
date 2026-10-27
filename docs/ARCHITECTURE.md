@@ -129,7 +129,9 @@ except fullscreen.
 
 View → Presenter Mode (F5, desktop only) opens a second window, the audience window, for a
 projector: full screen on a display other than the app window's, else a 960×540 window
-(`apps/desktop/src/main/presenter.ts`, `audiencePlacement`). It loads `audience.html` of the
+(`apps/desktop/src/main/presenter.ts`, `audiencePlacement`). On Wayland it is always the
+window: the compositor ignores positions, so a full-screen window could cover the app window
+on its own display. It loads `audience.html` of the
 same front end build (a second Vite entry, `apps/web/src/audience.ts`) with the same
 webPreferences and preload. Main answers none of its bridge calls (every handler checks that
 the sender is the app window), so it reads no files; it only receives.
