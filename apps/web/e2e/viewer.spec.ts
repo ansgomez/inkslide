@@ -167,6 +167,18 @@ test('the paper for new blank pages is remembered', async ({ page }) => {
   await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageLined');
   await page.keyboard.press('b');
   await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'lined');
+  // Undoing a blank page's paper change also takes back the paper for new blank pages.
+  await page.locator('.ann-bar [data-id="page-paper"]').click();
+  await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'grid');
+  await page.keyboard.press('Control+z');
+  await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'lined');
+  await page.keyboard.press('ArrowLeft'); // the PDF page: the button shows the paper for new pages
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageLined');
+  await page.keyboard.press('Control+Shift+z'); // redo: grid again, for this page and new ones
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageGrid');
+  await page.reload();
+  await openPdf(page);
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageGrid');
 });
 
 test('− and + next to the counter zoom around the middle; Ctrl+= and Ctrl+− too', async ({ page }) => {
@@ -191,6 +203,23 @@ test('− and + next to the counter zoom around the middle; Ctrl+= and Ctrl+− 
   await expect(page.locator('.ann-bar [data-id="fit-width"]')).toHaveClass(/is-active/);
   expect(await transform()).toBe('');
   await expect(zin).toBeEnabled();
+  // A page turn starts at the fit; zooming to the same step as before still updates the bar.
+  await zin.click();
+  await page.keyboard.press('ArrowRight');
+  await expect(out).toBeDisabled();
+  await zin.click();
+  expect(await transform()).toContain('scale(1.25)');
+  await expect(out).toBeEnabled();
+  await expect(out).toHaveAttribute('title', /now 125% of fit width/);
+  // With a toolbar button focused the keys still zoom the page (capture phase).
+  await zin.focus();
+  await page.keyboard.press('Control+Equal');
+  expect(await transform()).toContain('scale(1.5)');
+  // Not the page behind the open overview.
+  await page.locator('.ann-bar [data-id="page-label"]').click();
+  await expect(page.locator('#ann-ov')).toBeVisible();
+  await page.keyboard.press('Control+Equal');
+  expect(await transform()).toContain('scale(1.5)');
 });
 
 test('a file that is not a PDF shows an error; no PDF.js worker stays behind', async ({ page }) => {

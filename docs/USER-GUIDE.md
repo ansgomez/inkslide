@@ -129,7 +129,8 @@ the fit again.
   current paper.
 - Paper: **plain**, **lined** (with a margin line) or **grid**. The paper button cycles plain →
   lined → grid → plain, and its icon shows the current paper. On a blank page it changes that
-  page (undoable) and the paper for new ones; on a PDF page it sets the paper for new ones.
+  page and the paper for new ones (undo takes back both); on a PDF page it sets the paper for
+  new ones.
   The paper for new blank pages is remembered.
 - The delete button removes the current blank page with its ink (undoable). PDF pages cannot be
   deleted.

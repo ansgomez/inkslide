@@ -339,9 +339,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     }
   }
 
+  /** Back to the fit, unzoomed (page turn, W); the caller refreshes the toolbar. */
+  function resetView(): void {
+    view = { zoom: 1, tx: 0, ty: 0 };
+    barZoom = 1;
+  }
+
   /** − / + next to the page counter: the next zoom step, around the middle of the view. */
   function zoomBy(dir: -1 | 1): void {
-    if (!s || !fit || s.app.input.busy) return; // the page must not move under a stroke
+    // The page must not move under a stroke, nor behind the open overview.
+    if (!s || !fit || s.app.input.busy || s.overview.isOpen()) return;
     const zoom = zoomStep(view.zoom, dir);
     if (zoom === null) return;
     const [tx, ty] = zoomAround(view, zoom, vis.width / 2, vis.height / 2);
@@ -391,7 +398,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     fitMode = mode;
     storeItem(FIT_KEY, mode);
     if (!s) return;
-    view = { zoom: 1, tx: 0, ty: 0 };
+    resetView();
     layout();
     paint();
     prefetch();
@@ -455,7 +462,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     if (!surface) return;
     const turned = prev !== surface;
     s.current = pageId;
-    if (turned) view = { zoom: 1, tx: 0, ty: 0 };
+    if (turned) resetView();
     layout();
     if (prev && turned) prev.svg.remove();
     if (!surface.svg.isConnected) pageEl.insertBefore(surface.svg, liveCanvas);
@@ -514,9 +521,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
         return page && page.kind === 'blank' ? page.paper : ses.defaultPaper;
       },
       setPaper(paper) {
-        ses.defaultPaper = paper;
-        storeItem(PAPER_KEY, paper);
-        if (onBlank()) doc.setPaper(ses.current, paper);
+        const before = ses.defaultPaper;
+        const remember = (p: Paper): void => { ses.defaultPaper = p; storeItem(PAPER_KEY, p); };
+        remember(paper);
+        const cmd = onBlank() ? doc.setPaper(ses.current, paper) : null;
+        if (cmd) {
+          // Undo and redo of the blank page's paper take the paper for new blank pages along.
+          const { do: redo, undo } = cmd;
+          cmd.undo = () => { remember(before); undo(); };
+          cmd.do = () => { remember(paper); redo(); };
+        }
         ses.app.refresh();
       },
       deleteCurrent() {
@@ -887,12 +901,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     } else if (mod && e.code === 'KeyP' && s) {
       e.preventDefault(); // the document, not the browser's print of the screen
       void viewer.print();
-    } else if (s && (e.ctrlKey || e.metaKey) && !e.altKey && /^(=|\+|-)$/.test(e.key)) {
-      // Ctrl/Cmd+= (or +, also with Shift) and Ctrl/Cmd+−: the page, not the browser's zoom of the whole app.
-      e.preventDefault();
-      zoomBy(e.key === '-' ? -1 : 1);
     }
   });
+  // Ctrl/Cmd+= (or +, also with Shift) and Ctrl/Cmd+−: the page, not the browser's zoom of the
+  // whole app. Capture phase: a focused toolbar button stops keys from bubbling up to window.
+  window.addEventListener('keydown', e => {
+    if (!s || typeof e.key !== 'string' || e.isComposing || isTyping(e.target)) return;
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || !/^(=|\+|-)$/.test(e.key)) return;
+    e.preventDefault();
+    zoomBy(e.key === '-' ? -1 : 1);
+  }, true);
 
   return viewer;
 }
