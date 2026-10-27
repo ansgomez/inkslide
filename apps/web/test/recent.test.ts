@@ -6,7 +6,7 @@ function fakeBackend() {
   const records = new Map<string, RecentRecord>();
   const copies = new Map<string, Uint8Array>();
   /** quota: bytes the copies may take in all (QuotaExceededError past it); failRemoves: removeCopy rejects. */
-  const state = { failCopies: false, failPuts: false, failRemoves: false, writes: 0, quota: Infinity };
+  const state = { failCopies: false, copyError: 'QuotaExceededError', failPuts: false, failRemoves: false, writes: 0, quota: Infinity };
   const backend: RecentBackend = {
     all: async () => [...records.values()].map(r => ({ ...r })),
     put: async rec => {
@@ -16,7 +16,7 @@ function fakeBackend() {
     remove: async id => { records.delete(id); },
     writeCopy: async (id, bytes) => {
       state.writes++;
-      if (state.failCopies) throw new DOMException('full', 'QuotaExceededError');
+      if (state.failCopies) throw new DOMException('copy failed', state.copyError);
       const used = [...copies.values()].reduce((n, c) => n + c.byteLength, 0);
       if (used + bytes.byteLength > state.quota) throw new DOMException('full', 'QuotaExceededError');
       copies.set(id, bytes.slice());
@@ -212,6 +212,18 @@ describe('recent files near the storage quota', () => {
     expect(await r.remember({ id: 'c', name: 'c.pdf', size: 40 }, { bytes: bytes(40) })).toBe(true);
     expect([...records.keys()].sort()).toEqual(['b', 'c']);
     expect([...copies.keys()].sort()).toEqual(['b', 'c']);
+  });
+
+  it('a copy that fails for another reason than the quota drops nothing (not even past the entry limit)', async () => {
+    const { backend, records, copies, state } = fakeBackend();
+    const r = createRecentFiles(backend, { limit: 2, bytesLimit: 1000, ...clock() });
+    await r.remember({ id: 'a', name: 'a.pdf', size: 10 }, { bytes: bytes(10) });
+    await r.remember({ id: 'b', name: 'b.pdf', size: 10 }, { bytes: bytes(10) });
+    state.failCopies = true;
+    state.copyError = 'NotReadableError';
+    expect(await r.remember({ id: 'c', name: 'c.pdf', size: 10 }, { bytes: bytes(10) })).toBe(false);
+    expect([...records.keys()].sort()).toEqual(['a', 'b']);
+    expect([...copies.keys()].sort()).toEqual(['a', 'b']);
   });
 
   it('an entry whose copy can not be removed stays listed (its bytes still count)', async () => {

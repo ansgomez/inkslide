@@ -9,10 +9,9 @@
  *     drag and drop, ?pdf= links) the PDF's bytes are kept in app storage.
  * At most RECENT_LIMIT entries are kept, and the copies together take at
  * most COPY_BYTES_LIMIT: past that, the least recently opened copies are
- * dropped (LRU), before a new copy is written (near the storage quota the
- * room they free is what the new copy needs; if the write still exceeds the
- * quota, the oldest copy left goes too and the write is tried once more).
- * A PDF larger than the limit is not kept at all. An entry whose copy could
+ * dropped (LRU) after the new copy is written. If that write exceeds the
+ * browser's storage quota, the copies the limits would drop go first (else
+ * the oldest one) and the write is tried once more. A PDF larger than the limit is not kept at all. An entry whose copy could
  * not be removed stays listed (its bytes still count) and goes next time.
  *
  * The storage itself (IndexedDB, OPFS) is a RecentBackend
@@ -157,18 +156,18 @@ export function createRecentFiles(backend: RecentBackend, opts: { limit?: number
       } else {
         if (info.size > bytesLimit) return false;
         rec = { ...entry, source: 'copy' };
-        // Make room first, counting the new copy.
-        const evicted = new Set(planEviction([...all, rec], limit, bytesLimit));
-        await evict(all.filter(r => evicted.has(r.id)));
-        const left = (await backend.all()).filter(r => r.source === 'copy').sort((a, b) => a.openedAt - b.openedAt);
         try {
           try {
             await backend.writeCopy(info.id, from.bytes);
           } catch (e) {
-            // Over the storage quota: the oldest copy left goes too, and once more.
-            if (!isQuota(e) || !left.length) throw e;
+            // Over the storage quota: make room (the copies the limits drop with
+            // this one counted, else the oldest copy) and write once more.
+            const copies = all.filter(r => r.source === 'copy');
+            if (!isQuota(e) || !copies.length) throw e;
             await backend.removeCopy(info.id).catch(() => {});
-            await drop(left[0]);
+            const planned = new Set(planEviction([...copies, rec], limit, bytesLimit));
+            const room = copies.filter(r => planned.has(r.id));
+            await Promise.all((room.length ? room : [copies.sort(newestFirst)[copies.length - 1]]).map(drop));
             await backend.writeCopy(info.id, from.bytes);
           }
         } catch (_) {
