@@ -80,6 +80,22 @@ export function parseNotes(text: string): NotesJSON {
   return data;
 }
 
+/** PDF pages and blank pages with at least one stroke in a notes file (recent files list); none if it cannot be read. */
+export function inkedPages(text: string): { pages: number; blank: number } {
+  const counts = { pages: 0, blank: 0 };
+  try {
+    const { pages } = parseNotes(text);
+    for (const p of Array.isArray(pages) ? pages : []) {
+      if (!p || !Array.isArray(p.strokes) || !p.strokes.length) continue;
+      if (p.kind === 'blank') counts.blank++;
+      else counts.pages++;
+    }
+  } catch (_) {
+    // not a notes file: nothing to count
+  }
+  return counts;
+}
+
 const ASPECT_TOLERANCE = 0.01;
 
 /**

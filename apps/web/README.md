@@ -40,7 +40,7 @@ picks another preview port than 4173.
 | `dom.ts` | `localStorage` access that survives blocked storage (`isTyping()` is the toolbar's, `@inkslide/annotate/toolbar`). |
 | `platform/` | Adapter choice: `window.inkslide` (Electron), `tauri.ts` (Tauri on iPad and Android: plugins, notes in the app data directory) or `web.ts` (open dialog or file input, OPFS / `localStorage`, save picker, share sheet or download); `recent-storage.ts` stores the recent files (IndexedDB, OPFS); `opfs.ts` holds the shared OPFS helpers. |
 | `pwa.ts` | Browser build only: service worker registration and "Reload to update", `launchQueue`, the recent files list. |
-| `recent.ts`, `recent-list.ts` | Recent files: handles or kept copies, size limit and LRU (pure, over a storage backend); the list on the start screen. |
+| `recent.ts`, `recent-list.ts` | Recent files: handles or kept copies, size limit and LRU (pure, over a storage backend); the list on the start screen, fed by the browser's remembered files or the desktop's recent files. |
 
 The page structure and the rendering pipeline are described in
 [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  deckFromPdf, loadNotes, loadNotesText, notesPathFor, parseNotes, scaleV1ToPdf, serializeNotes, sha256Hex, slug,
+  deckFromPdf, inkedPages, loadNotes, loadNotesText, notesPathFor, parseNotes, scaleV1ToPdf, serializeNotes, sha256Hex, slug,
 } from '../src/io';
 import { NotesDoc, createStroke, type BlankPage, type NotesJSON } from '../src/model';
 
@@ -41,6 +41,18 @@ describe('helpers', () => {
   it('sha256Hex', async () => {
     expect(await sha256Hex(new TextEncoder().encode('abc'))).toBe(
       'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  });
+});
+
+describe('inkedPages', () => {
+  it('counts the PDF pages and blank pages with strokes', () => {
+    expect(inkedPages(JSON.stringify(v1File()))).toEqual({ pages: 1, blank: 1 });
+    const doc = new NotesDoc(pdfDeck());
+    expect(inkedPages(serializeNotes(doc))).toEqual({ pages: 0, blank: 0 });
+  });
+  it('counts nothing in a file that cannot be read', () => {
+    expect(inkedPages('{ not json')).toEqual({ pages: 0, blank: 0 });
+    expect(inkedPages('{"format":"other"}')).toEqual({ pages: 0, blank: 0 });
   });
 });
 
