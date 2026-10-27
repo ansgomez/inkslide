@@ -10,6 +10,7 @@
  * preload only.
  */
 import type { PdfFile, PlatformAdapter } from '@inkslide/annotate/io';
+import type { PresenterMessage } from '@inkslide/annotate/presenter';
 
 /** Commands from the native menu that the front end carries out. */
 export type MenuCommand = 'export' | 'import-notes' | 'print' | 'revert-backup';
@@ -59,6 +60,15 @@ export interface InkslideBridge extends Required<PlatformAdapter> {
    * window closes at once. Returns unsubscribe.
    */
   onCloseRequest(handler: () => Promise<boolean>): () => void;
+  /**
+   * Presenter mode, app window: the audience window has loaded (true; send it
+   * everything) or closed (false). A late subscriber gets the current state. Returns unsubscribe.
+   */
+  onPresenter(handler: (on: boolean) => void): () => void;
+  /** Presenter mode, app window: a message for the audience window (dropped while there is none). */
+  presenterSend(message: PresenterMessage): void;
+  /** Presenter mode, audience window: the presenter's messages, as main relays them. Returns unsubscribe. */
+  onAudience(handler: (message: unknown) => void): () => void;
 }
 
 declare global {
@@ -67,7 +77,7 @@ declare global {
   }
 }
 
-export type { PdfFile, PlatformAdapter };
+export type { PdfFile, PlatformAdapter, PresenterMessage };
 
 /** IPC channels (main <-> preload). */
 export const IPC = {
@@ -96,6 +106,12 @@ export const IPC = {
   /** main -> renderer: the window wants to close; renderer -> main: closeReply(ok). */
   closeRequest: 'inkslide:close-request',
   closeReply: 'inkslide:close-reply',
+  /** main -> app window: the audience window loaded (true) or closed (false). */
+  presenterState: 'inkslide:presenter-state',
+  /** app window -> main: a presenter message, relayed to the audience window. */
+  presenterSend: 'inkslide:presenter-send',
+  /** main -> audience window: a presenter message. */
+  audience: 'inkslide:audience',
 } as const;
 
 /** What preload sends for a PdfFile: no bytes unless main needs them for the hash. */

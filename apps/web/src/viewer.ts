@@ -26,6 +26,7 @@ import {
 import { deckFromPdf, loadNotesText, sha256Hex } from '@inkslide/annotate/io';
 import { pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
 import * as render from '@inkslide/annotate/render';
+import type { ToolRenderer } from '@inkslide/annotate/tools';
 import { ICONS, isTyping, registerGroup, type ToolbarHost } from '@inkslide/annotate/toolbar';
 import { banner } from './banner';
 import { pageCounter, pdfPageNumber, sourceStep } from './counter';
@@ -41,6 +42,7 @@ import { bitmapKey, createPageBitmaps } from './page-bitmaps';
 import { openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
 import { flushSave, pageTurned, saveState, scheduleSave, setSaveTarget } from './persist';
 import type { AppAdapter } from './platform';
+import type { ViewerMirror } from './presenter';
 import { printPageImages } from './print';
 
 /** Gap around the fitted page, CSS px. */
@@ -136,8 +138,12 @@ export interface Viewer {
   revertToBackup(): Promise<void>;
 }
 
-/** The viewer in `els`; also installs its keys, gestures and toolbar groups. */
-export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
+/**
+ * The viewer in `els`; also installs its keys, gestures and toolbar groups.
+ * `mirror` hears of the opened PDF, the page shown, the stroke being written
+ * and the laser (presenter mode, presenter.ts).
+ */
+export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: ViewerMirror | null = null): Viewer {
   const { stage, page: pageEl, pdfCanvas, liveCanvas } = els;
   const pdfCtx = pdfCanvas.getContext('2d', { alpha: false })!;
   const bitmaps = createPageBitmaps(CACHE_LIMIT);
@@ -447,6 +453,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     pageEl.classList.toggle('is-blank', !!surface.blank);
     pageEl.dataset.pageId = pageId;
     paint();
+    mirror?.shown(pageId);
     if (turned) {
       s.app.pageChanged(prev);
       pageTurned(); // save on page turn
@@ -654,8 +661,17 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     }
   }
 
+  /** The live ink renderer; with a mirror, the stroke being written is also mirrored. */
+  const renderer: ToolRenderer = mirror
+    ? {
+      ...liveInk.renderer,
+      liveStroke: (layer, tool) => mirror.liveStroke(layer.svg.dataset.pageId || '', tool, liveInk.renderer.liveStroke(layer, tool)),
+    }
+    : liveInk.renderer;
+
   function startSession(file: PdfFile, sha256: string, pdf: PdfDoc, doc: NotesDoc): void {
-    const app = createAnnotator({ doc, activeSurface: () => currentSurface(), renderer: liveInk.renderer });
+    const app = createAnnotator({ doc, activeSurface: () => currentSurface(), renderer });
+    app.sync = mirror;
     const ses: Session = {
       file, sha256, pdf, doc, app, current: 'p1', defaultPaper: 'plain', hasBackup: false,
       overview: null as unknown as Overview, pages: null as unknown as ViewerPages, unbind: () => {},
@@ -701,6 +717,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     stage.hidden = false;
     document.body.classList.add('has-doc');
     app.toggle(true); // a PDF opens ready to write on; A switches to plain viewing
+    mirror?.opened(file, doc);
     show('p1');
   }
 

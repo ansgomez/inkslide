@@ -13,6 +13,7 @@ desktop app uses Electron.
 | Pages: blank pages with plain, lined or grid paper | Done |
 | Notes: sidecar file, autosave, backup on the desktop and in the browser | Done |
 | Export to an annotated PDF, print | Done |
+| Presenter mode: page, ink and laser mirrored in a second window (desktop) | Done, not yet tried with a projector |
 | Desktop on Linux (AppImage) | Done |
 | Web app and PWA (installable, offline) | Done |
 | Desktop on Windows and macOS | Configured, not yet built or tested there |
@@ -36,8 +37,12 @@ desktop app uses Electron.
   (OPFS); the iPad and Android apps still keep none. Revisit after the device tests (the
   backup could sit next to the notes in the app data directory, with a toolbar button as in
   the browser).
-- **Later:** a presenter mode that mirrors page, ink and laser on a second window; opening Marp
-  HTML decks directly.
+- **Presenter mode:** try it with a real projector on Linux, Windows and macOS. On Wayland the
+  audience window opens as a window for the user to move and make full screen (F11), since
+  the compositor places windows itself; going full screen on its own once it is shown on
+  another display than the app window's would save that step. Mirror erasing and
+  moving while they happen; a browser and PWA version (`BroadcastChannel` and `window.open`).
+- **Later:** opening Marp HTML decks directly.
 
 ## Why Electron on the desktop
 

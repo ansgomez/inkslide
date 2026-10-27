@@ -1,8 +1,9 @@
 /* Inkslide desktop - locking down windows: no Node, no navigation, no permissions
  *
- * Used by the app window and the hidden print window. Pages never navigate
- * or open windows; the only permission granted (asked for or checked) is
- * fullscreen. Without a check handler Electron answers every permission check
+ * Used by the app window, the audience window of presenter mode and the
+ * hidden print window. Pages never navigate or open windows (only the app
+ * window passes http(s) links on to the system browser); the only permission
+ * granted (asked for or checked) is fullscreen. Without a check handler Electron answers every permission check
  * (navigator.permissions, clipboard, ...) with "granted".
  */
 import type { Session, WebContents, WebPreferences } from 'electron';

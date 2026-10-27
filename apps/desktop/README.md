@@ -28,13 +28,15 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 | `src/main/paths.ts` | Front end location (dev, packaged, override), the PDF in a command line, the app-storage notes path. |
 | `src/main/recent.ts`, `windowState.ts`, `preferences.ts`, `jsonStore.ts` | Recent files (with the hash and page count, for the start screen list), window state and preferences (backups on or off) in `userData`. |
 | `src/main/print.ts` | Printing: the exported PDF in a hidden window, Chromium's PDF viewer, the system print dialog. |
-| `src/main/harden.ts` | Window lockdown shared by both windows: webPreferences, no navigation, permissions (fullscreen only). |
-| `src/main/menu.ts` | File and View menus (Revert to Backup…, Keep a Backup of the Notes; Reload only in development builds). |
+| `src/main/harden.ts` | Window lockdown shared by all windows: webPreferences, no navigation, permissions (fullscreen only). |
+| `src/main/menu.ts` | File and View menus (Revert to Backup…, Keep a Backup of the Notes; Presenter Mode, F5; Reload only in development builds). |
+| `src/main/presenter.ts` | Presenter mode: where the audience window opens (full screen on another display), its page (`audience.html`), its keys (Esc ends, F11 full screen). Main relays the app window's presenter messages to it, checked by `parsePresenterMessage`. |
 | `src/preload/preload.ts` | Sandboxed preload: exposes `window.inkslide`. |
 | `src/shared/bridge.ts` | `InkslideBridge` type and IPC channel names; imported by the front end as `@inkslide/desktop/bridge`. |
 
 The bridge implements `PlatformAdapter` from `@inkslide/annotate` plus `initialPath`,
-`pathForFile`, `onMenuCommand` and `onCloseRequest`. Every handler checks that the call comes
+`pathForFile`, `onMenuCommand`, `onCloseRequest` and, for presenter mode, `onPresenter`,
+`presenterSend` and `onAudience`. Every handler checks that the call comes
 from the app's window and that PDF paths were granted (open dialog, command line, OS open
 request, recent files, a dropped `.pdf` file). See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 

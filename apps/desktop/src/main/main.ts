@@ -3,6 +3,8 @@
  * One window with the shared front end (apps/web), file access over IPC for
  * the preload bridge (window.inkslide), single instance, recent files, window
  * state, preferences and a small native menu. No rendering happens here.
+ * Presenter mode adds a second, read-only window (the audience window) that
+ * gets the app window's presenter messages through main (presenter.ts).
  *
  * Environment:
  *   INKSLIDE_DEV_URL    load this URL (Vite dev server) instead of apps/web/dist
@@ -20,6 +22,7 @@ import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, screen, sessi
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
+import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 import { checkDroppedPdf, checkPath, PathGrants } from './access';
 import { sameFile, writeFileAtomic } from './fsutil';
@@ -30,8 +33,9 @@ import {
   writeNotesFor, type NotesTarget,
 } from './notes';
 import { OpenRequests } from './openRequests';
-import { isSha256, pdfFromArgv, resolveWebEntry } from './paths';
+import { isSha256, pdfFromArgv, resolveWebEntry, type WebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
+import { audienceEntry, audienceKey, audiencePlacement } from './presenter';
 import { printPdf } from './print';
 import { RECENT_MAX, recentInfo, RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
@@ -144,6 +148,9 @@ function start(): void {
       menuHidden: () => state.menuHidden,
       backups: () => prefs.backups,
       canRevert: () => canRevert,
+      togglePresenter: () => togglePresenter(),
+      presenting: () => !!audience,
+      canPresent: () => !!win,
     }, !app.isPackaged));
   }
 
@@ -215,6 +222,7 @@ function start(): void {
       webPreferences: { ...SAFE_WEB_PREFERENCES, preload: join(__dirname, 'preload.js') },
     });
     applyMenuBar();
+    refreshMenu(); // Presenter Mode is enabled with a window
     const w = win;
     const wc = w.webContents;
     closeAsked = closeOk = false;
@@ -245,9 +253,11 @@ function start(): void {
       wc.send(IPC.closeRequest);
     });
     w.on('closed', () => {
+      audience?.close(); // presenter mode ends with the app window
       win = null;
       loaded = false;
       opens.newPage();
+      refreshMenu(); // Presenter Mode needs a window
     });
 
     // The page never navigates or opens windows; links go to the browser.
@@ -267,6 +277,7 @@ function start(): void {
     });
     wc.on('did-finish-load', () => {
       loaded = true;
+      if (audienceLoaded) wc.send(IPC.presenterState, true); // a reloaded page presents again
       opens.takeQueued().forEach(p => wc.send(IPC.openRequest, p));
       if (remoteAtStart) refuseRemote(remoteAtStart);
       remoteAtStart = null;
@@ -274,17 +285,89 @@ function start(): void {
       if (smokeMode) void runSmoke(w, smokeMode === 'backupsoff' ? toggleBackups : undefined);
     });
 
-    const entry = resolveWebEntry({
+    const entry = webEntry();
+    if (entry.kind === 'url') void w.loadURL(entry.url);
+    else if (!existsSync(entry.file)) {
+      void w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
+    } else void w.loadFile(entry.file, smokeMode ? { hash: `smoke=${encodeURIComponent(smokeMode)}` } : {});
+  }
+
+  function webEntry(): WebEntry {
+    return resolveWebEntry({
       devUrl: process.env.INKSLIDE_DEV_URL,
       pageOverride: process.env.INKSLIDE_PAGE,
       isPackaged: app.isPackaged,
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath,
     });
-    if (entry.kind === 'url') void w.loadURL(entry.url);
+  }
+
+  // ── Presenter mode ───────────────────────────────────────────
+
+  /** The audience window (View → Presenter Mode), and whether its page has loaded. */
+  let audience: BrowserWindow | null = null;
+  let audienceLoaded = false;
+
+  function togglePresenter(): void {
+    if (audience) audience.close();
+    else openAudience();
+  }
+
+  /** Open the audience window: full screen on another display if there is one; the app window keeps the focus. */
+  function openAudience(): void {
+    if (!win || audience) {
+      refreshMenu(); // the checkbox has toggled itself
+      return;
+    }
+    const appWin = win;
+    // Wayland: no window positions, so no full screen that could land on the app window's display.
+    const place = audiencePlacement(screen.getAllDisplays(), screen.getDisplayMatching(appWin.getBounds()).id, !onWayland);
+    const a = new BrowserWindow({
+      ...place.bounds,
+      title: 'Inkslide audience',
+      backgroundColor: '#000000',
+      show: false,
+      autoHideMenuBar: true,
+      ...(!app.isPackaged && process.platform === 'linux' ? { icon: join(app.getAppPath(), 'build', 'icons', '512x512.png') } : {}),
+      webPreferences: { ...SAFE_WEB_PREFERENCES, preload: join(__dirname, 'preload.js') },
+    });
+    audience = a;
+    audienceLoaded = false;
+    if (process.platform !== 'darwin') a.setMenu(null);
+    const wc = a.webContents;
+    lockNavigation(wc);
+    // No menu there: Escape (or F5 again) ends presenter mode, F11 toggles full screen.
+    wc.on('before-input-event', (e, input) => {
+      const action = audienceKey(input);
+      if (!action) return;
+      e.preventDefault();
+      if (action === 'exit') a.close();
+      else a.setFullScreen(!a.isFullScreen());
+    });
+    a.once('ready-to-show', () => {
+      a.showInactive();
+      if (place.fullScreen) a.setFullScreen(true);
+      if (win && !win.isDestroyed()) win.focus();
+    });
+    wc.on('did-start-loading', () => { audienceLoaded = false; });
+    wc.on('did-finish-load', () => {
+      audienceLoaded = true;
+      if (win && loaded) win.webContents.send(IPC.presenterState, true); // the app window sends everything
+    });
+    wc.on('render-process-gone', () => { if (!a.isDestroyed()) a.close(); });
+    a.on('closed', () => {
+      if (audience !== a) return;
+      audience = null;
+      audienceLoaded = false;
+      if (win && loaded) win.webContents.send(IPC.presenterState, false);
+      refreshMenu();
+    });
+    const entry = audienceEntry(webEntry());
+    if (entry.kind === 'url') void a.loadURL(entry.url);
     else if (!existsSync(entry.file)) {
-      void w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
-    } else void w.loadFile(entry.file, smokeMode ? { hash: `smoke=${encodeURIComponent(smokeMode)}` } : {});
+      void a.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
+    } else void a.loadFile(entry.file);
+    refreshMenu();
   }
 
   // ── IPC ──────────────────────────────────────────────────────
@@ -465,6 +548,22 @@ function start(): void {
       e.returnValue = true;
     } catch (_) {
       e.returnValue = false;
+    }
+  });
+
+  // Presenter mode: checked, rebuilt with only the known fields, and passed to the audience window.
+  ipcMain.on(IPC.presenterSend, (e, message: unknown) => {
+    try {
+      fromOurWindow(e);
+      const m = parsePresenterMessage(message);
+      if (audience && audienceLoaded) audience.webContents.send(IPC.audience, m);
+    } catch (err) {
+      console.warn(`presenter message dropped: ${(err as Error).message}`);
+      // A PDF that cannot be relayed: the audience says so instead of waiting.
+      const open = !!message && typeof message === 'object' && (message as { type?: unknown }).type === 'open';
+      if (open && audience && audienceLoaded && e.sender === win?.webContents) {
+        audience.webContents.send(IPC.audience, { type: 'close', reason: 'failed' });
+      }
     }
   });
 

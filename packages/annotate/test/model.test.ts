@@ -482,3 +482,25 @@ describe('serialization', () => {
     expect(doc.isDirty()).toBe(true);
   });
 });
+
+describe('applyRemoteStrokes keeps the strokes it has', () => {
+  it('reuses a stroke given again as the same object or with the same id and content', () => {
+    const doc = pdfDoc();
+    doc.applyRemoteStrokes('p1', [stroke('a'), stroke('b', { color: '#f00' })]);
+    const [a1, b1] = doc.strokes('p1');
+    // The same object, and the same content from a message (no pressure: 0.5).
+    doc.applyRemoteStrokes('p1', [a1, { id: 'b', tool: 'pen', color: '#f00', size: 4, points: [[0, 0], [10, 10]] }, stroke('c')]);
+    const [a2, b2, c2] = doc.strokes('p1');
+    expect(a2).toBe(a1);
+    expect(b2).toBe(b1);
+    expect(c2.id).toBe('c');
+    // Changed content under the same id: a new stroke.
+    doc.applyRemoteStrokes('p1', [{ ...a1, color: '#00f' }]);
+    expect(doc.strokes('p1')[0]).not.toBe(a1);
+    expect(doc.strokes('p1')[0].color).toBe('#00f');
+  });
+  it('still checks new strokes', () => {
+    const doc = pdfDoc();
+    expect(() => doc.applyRemoteStrokes('p1', [{ id: 'x', tool: 'pen', color: '', size: 1, points: [[NaN, 0]] }])).toThrow(/finite/);
+  });
+});
