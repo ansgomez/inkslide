@@ -159,6 +159,12 @@ its own storage: `notes/<checksum>.notes.unreadable.json` (in `~/.config/Inkslid
 `%APPDATA%\Inkslide\` on Windows, `~/Library/Application Support/Inkslide/` on macOS). A
 message says where. Only the latest such copy per PDF is kept.
 
+The browser and the installed web app (PWA) keep the copy the same way, in the browser's storage
+for the site (`notes/inkslide-notes_<checksum>.notes.unreadable.json` there; the message says
+so). That storage is not a folder you can open: the copy is there for a later Inkslide to
+recover, or through the browser's developer tools (Application → Storage). If the copy cannot
+be made (storage full, or Safari before version 26), Inkslide says so and asks before opening.
+
 **Getting the notes back from that copy:** copy the file somewhere else first. If it was made by
 a newer Inkslide, close this one, copy it over `<name>.pdf.notes.json` next to the PDF and open
 the PDF in the newer version. Otherwise repair it if you can (it is JSON text) and load it with
@@ -190,8 +196,11 @@ Backups and kept unreadable files older than 90 days are deleted when Inkslide s
 browser's storage for the site next to the notes. Instead of a menu, a **Revert to backup**
 button (a clock with an arrow) appears in the File group of the toolbar once the PDF has a
 backup; it asks the same question, and pressing it again undoes the revert. There is no switch
-to turn backups off. The backup goes when the PDF is removed from the recent files on the start
-screen (by you, or because newer PDFs pushed it out); its notes stay. Clearing the site data
+to turn backups off. The backup and a kept unreadable copy go when the PDF is removed from the
+recent files on the start screen (by you, or because newer PDFs pushed it out); its notes stay.
+Like on the desktop, backups and kept copies older than 90 days are deleted when Inkslide
+starts. If a backup that has gone is still offered, pressing the button says there is none and
+hides it. Clearing the site data
 deletes the backup together with the notes, so it guards against unwanted changes, not against
 losing the browser's storage: export a PDF with notes for that. Safari before version 26 keeps
 no backup (it cannot write that storage from the page), and neither do the iPad and Android

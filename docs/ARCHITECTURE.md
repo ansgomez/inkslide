@@ -82,7 +82,7 @@ The front end never touches files itself. It talks to a `PlatformAdapter`
 | `importNotes()`, `confirm()` | native dialogs | file input, `window.confirm` | native dialogs |
 | `onOpenRequest(fn)` | second instance, macOS `open-file`, recent files | – | – |
 | `opened(pdf, info)` | tracks the open PDF (Revert to Backup) | recent files | – |
-| `readBackup`, `revertToBackup`, `keepUnreadableNotes` | backup in app storage, made by `writeNotes`; copy of an unreadable notes file; off in the File menu | backup in OPFS, made by `writeNotes` (no `keepUnreadableNotes`) | – |
+| `readBackup`, `revertToBackup`, `keepUnreadableNotes` | backup in app storage, made by `writeNotes`; copy of an unreadable notes file; off in the File menu | backup and unreadable copy in OPFS; no switch | – |
 
 `apps/web/src/platform/index.ts` picks the adapter: `window.inkslide` if the preload put it
 there, `createTauriAdapter()` when `window.__TAURI_INTERNALS__` exists, else
@@ -168,17 +168,30 @@ copy of the saved notes from before a save, `userData/notes/<sha256>.notes.backu
 - A legacy `<pdf>.notes.backup.json` next to the PDF (development builds) is deleted on open.
 
 The browser adapter (`apps/web/src/platform/web.ts`) keeps a backup with the same rules
-(`isUsableNotes` and `BACKUP_MIN_AGE_MS` are shared from `@inkslide/annotate/io`), as the
-OPFS file `notes/inkslide-notes_<sha256>.notes.backup.json`; its time is the file's
-`lastModified`. Where the page cannot write OPFS (Safari 17-18) there is none: a
-`localStorage` copy would halve the room the notes themselves fall back to. A failed backup
-write is logged and never fails the save. It wraps the recent files' storage so that a PDF
-dropped from them (evicted or removed) loses its backup; there is no age cleanup and no
-switch to turn backups off. The viewer shows a Revert to Backup button in the toolbar's File
-group (hidden while there is none, via the item's `hidden()`) for adapters with
-`revertToBackup` that are not Electron, which has the menu; it asks `readBackup` when a PDF
-opens and after each save until there is one. The Tauri adapter has no backup yet (see
-[NOTES-FORMAT.md](NOTES-FORMAT.md#where-the-file-lives)).
+(`isUsableNotes`, `BACKUP_MIN_AGE_MS`, `UNREADABLE_SUFFIX` and `OLD_COPIES_MAX_AGE_DAYS` are
+shared from `@inkslide/annotate/io`), as the OPFS file
+`notes/inkslide-notes_<sha256>.notes.backup.json`; its time is the file's `lastModified`
+(a save looks at that and the size only, never reads the backup). Where the page cannot write
+OPFS (Safari 17-18) there is none: a `localStorage` copy would halve the room the notes
+themselves fall back to.
+
+- `writeNotes` reads the notes it is about to replace if a backup is due, writes the new
+  notes, and only then the backup, so near the quota the backup never takes the room the
+  notes need. A failed backup read or write is logged and never fails the save.
+- An OPFS notes file that exists but cannot be read rejects (only `NotFoundError` means "no
+  notes"), so `readNotes` reports it and `revertToBackup` stops without changing anything.
+  If writing the reverted notes fails and putting the backup back fails too, the error says so.
+- `keepUnreadableNotes` copies the text as it is to `….notes.unreadable.json` and returns
+  where; it rejects if it cannot (the viewer then asks).
+- The adapter wraps the recent files' storage so that a PDF dropped from them (evicted or
+  removed) loses its backup and unreadable copy; `cleanupNotesStore`, run when the adapter is
+  made, deletes those older than 90 days (catches PDFs never kept in the recent files).
+- The viewer shows a Revert to Backup button in the toolbar's File group (hidden while there
+  is none, via the item's `hidden()`) for adapters with `revertToBackup` that are not
+  Electron, which has the menu. It asks `readBackup` when a PDF opens, after each save until
+  there is one, and when the tab becomes visible again; a click that finds none hides it.
+
+The Tauri adapter has no backup yet (see [NOTES-FORMAT.md](NOTES-FORMAT.md#where-the-file-lives)).
 
 ## Rendering pipeline
 

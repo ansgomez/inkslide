@@ -11,7 +11,8 @@
  * Backup (same format): the saved notes as they were before a save, in app
  * storage: desktop "<sha256>.notes.backup.json" (apps/desktop/src/main/notes.ts),
  * browser OPFS "notes/inkslide-notes_<sha256>.notes.backup.json"
- * (apps/web/src/platform/web.ts).
+ * (apps/web/src/platform/web.ts). A notes file that could not be read is kept
+ * the same way as "….notes.unreadable.json" before it is replaced.
  * v1 files load into a PDF document; their strokes are scaled from the slide
  * size to the PDF page size when both have the same aspect ratio (Marp
  * exports 1280×720 px slides as 960×540 pt pages).
@@ -29,6 +30,12 @@ export const BACKUP_SUFFIX = '.notes.backup.json';
 
 /** The backup is refreshed by a save only when it is at least this old. */
 export const BACKUP_MIN_AGE_MS = 2 * 60_000;
+
+/** Appended like BACKUP_SUFFIX for the kept copy of a notes file that could not be read. */
+export const UNREADABLE_SUFFIX = '.notes.unreadable.json';
+
+/** Backups and kept unreadable copies older than this are deleted at startup. */
+export const OLD_COPIES_MAX_AGE_DAYS = 90;
 
 /** File-name friendly form of a title ("Signals – Übung 1" -> "signals-ubung-1"). */
 export function slug(title: string | null | undefined): string {

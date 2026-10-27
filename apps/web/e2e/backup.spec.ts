@@ -232,3 +232,65 @@ test('browser: a save after a save makes a backup, and the toolbar\'s Revert to 
   await expect(penStrokes(page)).toHaveCount(2);
   await expect(revert).toBeVisible();
 });
+
+/** A file in the browser's OPFS notes directory, from the page: written or removed first if asked; its text ('' if missing). */
+const opfsFile = (page: Page, name: string, op: { write?: string; remove?: boolean } = {}): Promise<string> =>
+  page.evaluate(async ([name, op]) => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('notes', { create: true });
+    if (op.remove) await dir.removeEntry(name);
+    if (op.write !== undefined) {
+      const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await w.write(op.write);
+      await w.close();
+    }
+    return dir.getFileHandle(name).then(h => h.getFile()).then(f => f.text(), () => '');
+  }, [name, op] as const);
+
+test('browser: the Revert to Backup button goes when the backup does (on a click, or back in the tab)', async ({ page }) => {
+  page.on('dialog', d => void d.accept());
+  await page.goto('/');
+  await openPdf(page);
+  const revert = page.locator('.ann-bar [data-id="revert"]');
+  const saved = page.locator('.ann-bar [data-id="save"]:not(.is-unsaved)');
+  const strokeAndSave = async (x: number): Promise<void> => {
+    await penStroke(page, [x, 0.2], [x + 0.1, 0.5]);
+    await page.keyboard.press('Control+s');
+    await expect(saved).toHaveCount(1);
+  };
+  const backup = `inkslide-notes_${sha}.notes.backup.json`;
+  await strokeAndSave(0.2);
+  await strokeAndSave(0.4);
+  await expect(revert).toBeVisible();
+
+  // Deleted behind the page's back (as when the PDF leaves the recent files): a click says so and hides it.
+  await opfsFile(page, backup, { remove: true });
+  await revert.click();
+  await expect(page.locator('.ann-banner-warn')).toContainText('There is no backup of these notes.');
+  await expect(revert).toBeHidden();
+
+  // Made again by the next save; deleted again, coming back to the tab hides it.
+  await strokeAndSave(0.6);
+  await expect(revert).toBeVisible();
+  await opfsFile(page, backup, { remove: true });
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(revert).toBeHidden();
+});
+
+test('browser: notes that cannot be read are kept as they are before "open anyway" replaces them', async ({ page }) => {
+  const questions: string[] = [];
+  page.on('dialog', d => { questions.push(d.message()); void d.accept(); });
+  await page.goto('/');
+  const unreadable = '{"format":"marp-notes","version":99}';
+  const copy = `inkslide-notes_${sha}.notes.unreadable.json`;
+  await opfsFile(page, `inkslide-notes_${sha}.json`, { write: unreadable });
+  await openPdf(page);
+  expect(questions).toHaveLength(1);
+  expect(questions[0]).toContain('Open the PDF anyway?');
+  await expect(page.locator('.ann-banner-warn')).toContainText(`kept as notes/${copy}`);
+  expect(await opfsFile(page, copy)).toBe(unreadable);
+  // Writing now replaces the notes; the copy stays.
+  await penStroke(page, [0.2, 0.2], [0.3, 0.5]);
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('.ann-bar [data-id="save"]:not(.is-unsaved)')).toHaveCount(1);
+  expect(await opfsFile(page, copy)).toBe(unreadable);
+});

@@ -217,7 +217,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
   }
 
   /**
-   * Keep the unreadable notes file before it is replaced (desktop). Resolves
+   * Keep the unreadable notes file before it is replaced (desktop, browser). Resolves
    * with where the copy is ('' without one), or null if the copy failed and
    * the user does not want to go on (then nothing is opened).
    */
@@ -835,7 +835,14 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
         if (!(await saveNow())) return void banner('The notes could not be saved, so they were not reverted.', 'error');
         const backup = await readBackup(ses.file, ses.sha256);
         if (s !== ses) return;
-        if (!backup) return void banner('There is no backup of these notes.', 'warn');
+        if (!backup) {
+          // Gone since the button showed (e.g. the PDF left the recent files): hide it.
+          if (ses.hasBackup) {
+            ses.hasBackup = false;
+            ses.app.refresh();
+          }
+          return void banner('There is no backup of these notes.', 'warn');
+        }
         const when = new Date(backup.time).toLocaleString();
         if (!(await ask(`Replace the current notes with the backup from ${when}?`)) || s !== ses) return;
         if (!(await saveNow())) return void banner('The notes could not be saved, so they were not reverted.', 'error');
@@ -848,11 +855,17 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
           warnings.length ? 'warn' : 'info');
       } catch (e) {
         banner(`Could not revert to the backup: ${(e as Error).message || e}`, 'error');
+        void checkBackup(ses);
       }
     },
 
     saveOrAsk: async question => (await saveNow()) || ask(question),
   };
+
+  // Back in the page: another tab may have added or removed the backup.
+  document.addEventListener('visibilitychange', () => {
+    if (s && document.visibilityState === 'visible') void checkBackup(s);
+  });
 
   // Keys that work with or without a document.
   window.addEventListener('keydown', e => {

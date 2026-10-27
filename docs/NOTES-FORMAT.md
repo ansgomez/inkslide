@@ -222,9 +222,16 @@ another name finds its notes, because the key is the hash.
   older than 2 minutes, by the file's `lastModified`; Revert to Backup swaps). Only where the
   page can write OPFS: there is no `localStorage` backup, because that store is small (about
   5 MB) and shared with the notes that fall back to it, and a full store fails their save. A
-  failed backup write never fails the save. The backup is deleted when the PDF leaves the
+  failed backup write never fails the save; it is written after the notes, so near the quota
+  it never takes the room the notes need. The backup is deleted when the PDF leaves the
   recent files (`apps/web/src/recent.ts`); the notes stay. It lives in the same site storage
   as the notes, so it protects against unwanted changes, not against clearing the site data.
+- **Unreadable copy:** notes that exist but cannot be read or parsed are copied as they are to
+  `notes/inkslide-notes_<sha256>.notes.unreadable.json` before they are replaced (only where
+  OPFS can be written; otherwise the app asks first). An OPFS file that exists but cannot be
+  read is an error, never "no notes".
+- **Cleanup:** both copies go with the PDF's recent-files entry; at startup, those last changed
+  more than 90 days ago are deleted (notes files never are).
 
 ### iPad and Android (Tauri)
 
@@ -247,5 +254,5 @@ data directory once it can be tested on devices).
   version.
 - Content that a reader cannot place (pages beyond the document) is kept, not dropped.
 - Saved notes that cannot be read or parsed are never overwritten silently: the app reads them
-  again, then asks (open the backup instead, or open anyway); the desktop keeps a copy of the
-  unreadable file before replacing it.
+  again, then asks (open the backup instead, or open anyway); the desktop and the browser keep
+  a copy of the unreadable file before replacing it.

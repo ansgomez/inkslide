@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PdfFile } from '@inkslide/annotate';
-import { BACKUP_MIN_AGE_MS } from '@inkslide/annotate/io';
+import { BACKUP_MIN_AGE_MS, OLD_COPIES_MAX_AGE_DAYS } from '@inkslide/annotate/io';
 import type { RecentBackend, RecentRecord } from '../src/recent';
-import { createWebAdapter, notesKey } from '../src/platform/web';
+import { cleanupNotesStore, createWebAdapter, notesKey } from '../src/platform/web';
 import { canWriteOpfs } from '../src/platform/opfs';
 
 // The recent files in memory (the IndexedDB storage has its own tests).
@@ -26,37 +26,63 @@ const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
 
 /**
  * In-memory OPFS "notes" directory whose writes can be made to fail (all of
- * them, or those of files matching `failNames`). Files keep their write time.
+ * them, those of files matching `failNames`, or where `failWrite(name)` says
+ * so), and whose reads of files matching `failReads` fail. Files keep their
+ * write time (`times`); `writes` lists the files written, in order, and
+ * `textReads` counts the reads of each file's content.
  */
 function fakeOpfs() {
   const files = new Map<string, string>();
   const times = new Map<string, number>();
-  const state = { failWrites: false, failNames: null as RegExp | null };
+  const writes: string[] = [];
+  const textReads = new Map<string, number>();
+  const state = {
+    failWrites: false, failNames: null as RegExp | null, failReads: null as RegExp | null,
+    failWrite: null as ((name: string) => boolean) | null,
+  };
+  const fileHandle = (name: string) => ({
+    kind: 'file' as const, name,
+    async getFile() {
+      if (state.failReads?.test(name)) throw new DOMException('busy', 'NotReadableError');
+      const data = files.get(name) ?? '';
+      return {
+        size: data.length,
+        lastModified: times.get(name) ?? Date.now(),
+        text: async () => {
+          textReads.set(name, (textReads.get(name) ?? 0) + 1);
+          return data;
+        },
+      };
+    },
+    async createWritable() {
+      if (state.failWrites || state.failNames?.test(name) || state.failWrite?.(name)) {
+        throw new DOMException('locked', 'NoModificationAllowedError');
+      }
+      let data = '';
+      return {
+        async write(t: string) { data = t; },
+        async close() { files.set(name, data); times.set(name, Date.now()); writes.push(name); },
+      };
+    },
+  });
   const dir = {
     async getFileHandle(name: string, opts?: { create?: boolean }) {
       if (!files.has(name) && !opts?.create) throw new DOMException('missing', 'NotFoundError');
       if (!files.has(name)) files.set(name, '');
-      return {
-        async getFile() { return { text: async () => files.get(name) ?? '', lastModified: times.get(name) ?? Date.now() }; },
-        async createWritable() {
-          if (state.failWrites || state.failNames?.test(name)) throw new DOMException('locked', 'NoModificationAllowedError');
-          let data = '';
-          return {
-            async write(t: string) { data = t; },
-            async close() { files.set(name, data); times.set(name, Date.now()); },
-          };
-        },
-      };
+      return fileHandle(name);
     },
     async removeEntry(name: string) {
       times.delete(name);
       if (!files.delete(name)) throw new DOMException('missing', 'NotFoundError');
     },
+    async *values() {
+      for (const name of [...files.keys()]) yield fileHandle(name);
+    },
   };
   const root = { getDirectoryHandle: async () => dir };
   // The page can write OPFS (createWritable: Chromium, Firefox, Safari 26+).
   vi.stubGlobal('FileSystemFileHandle', class { createWritable() {} });
-  return { files, state, storage: { getDirectory: async () => root } };
+  return { files, times, writes, textReads, state, storage: { getDirectory: async () => root } };
 }
 
 function fakeLocalStorage(opts: { full?: boolean } = {}) {
@@ -139,6 +165,7 @@ const notes = (n: number): string => JSON.stringify({
 });
 
 const backupFile = (sha: string): string => `inkslide-notes_${sha}.notes.backup.json`;
+const unreadableFile = (sha: string): string => `inkslide-notes_${sha}.notes.unreadable.json`;
 
 /** An adapter over a fake OPFS and localStorage, with the clock at `start`. */
 function backupSetup(start = 1_000_000) {
@@ -229,16 +256,118 @@ describe('web adapter notes backup', () => {
     expect((await a.readBackup!(pdf, 'abc'))?.text).toBe(notes(1));
   });
 
-  it('a PDF dropped from the recent files loses its backup, not its notes', async () => {
+  it('a PDF dropped from the recent files loses its backup and kept unreadable copy, not its notes', async () => {
     const { opfs, a } = backupSetup();
     const file: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array([1]) };
     await a.opened(file, { sha256: 'abc', pages: 1 });
     await a.writeNotes(file, notes(1), 'abc');
     await a.writeNotes(file, notes(2), 'abc');
+    await a.keepUnreadableNotes!(file, 'abc');
     expect(opfs.files.has(backupFile('abc'))).toBe(true);
+    expect(opfs.files.has(unreadableFile('abc'))).toBe(true);
     await a.recent.remove('abc');
     expect(opfs.files.has(backupFile('abc'))).toBe(false);
+    expect(opfs.files.has(unreadableFile('abc'))).toBe(false);
     expect(await a.readNotes(file, 'abc')).toBe(notes(2));
+  });
+
+  // Review findings on the first version (regressions).
+
+  it('keeps a copy of unreadable notes before they are replaced, as they are', async () => {
+    const { opfs, a } = backupSetup();
+    expect(await a.keepUnreadableNotes!(pdf, 'abc')).toBeNull(); // no notes: nothing to keep
+    await a.writeNotes(pdf, '{"format":"marp-notes","version":99', 'abc'); // e.g. from a newer build
+    const where = await a.keepUnreadableNotes!(pdf, 'abc');
+    expect(where).toContain(unreadableFile('abc'));
+    expect(opfs.files.get(unreadableFile('abc'))).toBe('{"format":"marp-notes","version":99');
+    // Notes in localStorage (OPFS could not be written then) are kept too.
+    localStorage.setItem(notesKey(pdf, 'b'), '{ broken');
+    await a.keepUnreadableNotes!(pdf, 'b');
+    expect(opfs.files.get(unreadableFile('b'))).toBe('{ broken');
+  });
+
+  it('a copy of unreadable notes that can not be made rejects (the viewer then asks)', async () => {
+    const { opfs, a } = backupSetup();
+    await a.writeNotes(pdf, '{ broken', 'abc');
+    opfs.state.failNames = /unreadable/;
+    await expect(a.keepUnreadableNotes!(pdf, 'abc')).rejects.toThrow(/could not be written/);
+    opfs.state.failNames = null;
+    opfs.state.failReads = /abc\.json$/;
+    await expect(a.keepUnreadableNotes!(pdf, 'abc')).rejects.toThrow();
+    opfs.state.failReads = null;
+    vi.stubGlobal('FileSystemFileHandle', class {}); // Safari 17-18
+    await expect(a.keepUnreadableNotes!(pdf, 'abc')).rejects.toThrow(/can not keep a copy/);
+  });
+
+  it('notes that are there but can not be read are an error, not "no notes"', async () => {
+    const { opfs, a } = backupSetup();
+    await a.writeNotes(pdf, notes(1), 'abc');
+    opfs.state.failReads = /abc\.json$/;
+    await expect(a.readNotes(pdf, 'abc')).rejects.toThrow();
+  });
+
+  it('a revert whose saved notes can not be read changes nothing', async () => {
+    const { opfs, a } = backupSetup();
+    await a.writeNotes(pdf, notes(1), 'abc');
+    await a.writeNotes(pdf, notes(2), 'abc');
+    opfs.state.failReads = /abc\.json$/; // the notes file, not the backup
+    await expect(a.revertToBackup!(pdf, 'abc')).rejects.toThrow();
+    opfs.state.failReads = null;
+    expect(await a.readNotes(pdf, 'abc')).toBe(notes(2));
+    expect((await a.readBackup!(pdf, 'abc'))?.text).toBe(notes(1));
+  });
+
+  it('a revert that can not put the backup back says so', async () => {
+    const { opfs, a } = backupSetup();
+    await a.writeNotes(pdf, notes(1), 'abc');
+    await a.writeNotes(pdf, notes(2), 'abc');
+    let backupWrites = 0;
+    // The notes write fails, then also the write that puts the backup back.
+    opfs.state.failWrite = name => name.endsWith('abc.json') || (name === backupFile('abc') && ++backupWrites > 1);
+    vi.stubGlobal('localStorage', fakeLocalStorage({ full: true }));
+    await expect(a.revertToBackup!(pdf, 'abc')).rejects.toThrow(/the backup could not be put back/);
+    expect(await a.readNotes(pdf, 'abc')).toBe(notes(2));
+  });
+
+  it('writes the backup after the notes, and not at all when the notes write fails', async () => {
+    const { opfs, a, later } = backupSetup();
+    await a.writeNotes(pdf, notes(1), 'abc');
+    opfs.writes.length = 0;
+    await a.writeNotes(pdf, notes(2), 'abc');
+    expect(opfs.writes).toEqual(['inkslide-notes_abc.json', backupFile('abc')]);
+    // Near the quota: the notes can not be written (nor fall back): no new backup either.
+    later(BACKUP_MIN_AGE_MS);
+    opfs.writes.length = 0;
+    opfs.state.failNames = /abc\.json$/;
+    vi.stubGlobal('localStorage', fakeLocalStorage({ full: true }));
+    await expect(a.writeNotes(pdf, notes(3), 'abc')).rejects.toThrow();
+    expect(opfs.writes).toEqual([]);
+    expect((await a.readBackup!(pdf, 'abc'))?.text).toBe(notes(1));
+  });
+
+  it('a save looks at the backup\'s time only, not its content', async () => {
+    const { opfs, a, later } = backupSetup();
+    await a.writeNotes(pdf, notes(1), 'abc');
+    await a.writeNotes(pdf, notes(2), 'abc');
+    for (let i = 3; i < 6; i++) {
+      later(1000);
+      await a.writeNotes(pdf, notes(i), 'abc');
+    }
+    expect(opfs.textReads.get(backupFile('abc')) ?? 0).toBe(0);
+  });
+
+  it(`at startup, deletes backups and unreadable copies older than ${OLD_COPIES_MAX_AGE_DAYS} days, never notes`, async () => {
+    const { opfs, a } = backupSetup();
+    await a.writeNotes(pdf, notes(1), 'old');
+    await a.writeNotes(pdf, notes(2), 'old');
+    await a.keepUnreadableNotes!(pdf, 'old');
+    await a.writeNotes(pdf, notes(1), 'new');
+    await a.writeNotes(pdf, notes(2), 'new');
+    const day = 24 * 60 * 60_000;
+    const longAgo = Date.now() - (OLD_COPIES_MAX_AGE_DAYS + 1) * day;
+    for (const name of opfs.files.keys()) if (name.includes('_old')) opfs.times.set(name, longAgo);
+    expect((await cleanupNotesStore()).sort()).toEqual([backupFile('old'), unreadableFile('old')]);
+    expect([...opfs.files.keys()].sort()).toEqual(['inkslide-notes_new.json', backupFile('new'), 'inkslide-notes_old.json'].sort());
   });
 });
 
