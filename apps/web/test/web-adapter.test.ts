@@ -159,6 +159,40 @@ describe('web adapter export', () => {
   });
 });
 
+describe('web adapter export with the save dialog', () => {
+  it('downloads the PDF when the save dialog is blocked (no recent tap)', async () => {
+    vi.stubGlobal('showSaveFilePicker', vi.fn(async () => { throw new DOMException('must be handling a user gesture', 'SecurityError'); }));
+    vi.stubGlobal('navigator', { maxTouchPoints: 0 });
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:x');
+    try {
+      expect(await createWebAdapter().exportPdf(new Uint8Array([1, 2]), 'a-notes.pdf')).toBe(true);
+      expect(createObjectURL).toHaveBeenCalledTimes(1);
+    } finally {
+      createObjectURL.mockRestore();
+    }
+  });
+
+  it('a cancelled dialog exports nothing; other dialog errors reject', async () => {
+    const picker = vi.fn(async () => { throw new DOMException('cancelled', 'AbortError'); });
+    vi.stubGlobal('showSaveFilePicker', picker);
+    expect(await createWebAdapter().exportPdf(new Uint8Array([1]), 'a.pdf')).toBe(false);
+    picker.mockImplementation(async () => { throw new TypeError('bad options'); });
+    await expect(createWebAdapter().exportPdf(new Uint8Array([1]), 'a.pdf')).rejects.toThrow('bad options');
+  });
+
+  it('a failed write aborts the writable', async () => {
+    const w = {
+      write: vi.fn(async () => { throw new DOMException('disk full', 'QuotaExceededError'); }),
+      close: vi.fn(async () => {}),
+      abort: vi.fn(async () => {}),
+    };
+    vi.stubGlobal('showSaveFilePicker', vi.fn(async () => ({ createWritable: async () => w })));
+    await expect(createWebAdapter().exportPdf(new Uint8Array([1]), 'a.pdf')).rejects.toThrow('disk full');
+    expect(w.abort).toHaveBeenCalledTimes(1);
+    expect(w.close).not.toHaveBeenCalled();
+  });
+});
+
 describe('web adapter links (?pdf=)', () => {
   it('opens only PDFs from the page\'s own site', async () => {
     const fetch = vi.fn(async () => new Response(new Uint8Array([37, 80, 68, 70]), { status: 200 }));

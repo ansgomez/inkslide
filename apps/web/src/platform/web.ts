@@ -220,17 +220,28 @@ export function createWebAdapter(): WebAdapter {
     async exportPdf(bytes, suggestedName) {
       const picker = (window as unknown as { showSaveFilePicker?: SavePicker }).showSaveFilePicker;
       if (typeof picker === 'function') {
-        let handle: FileSystemFileHandle;
+        let handle: FileSystemFileHandle | null = null;
         try {
           handle = await picker({ suggestedName, types: PDF_TYPES });
         } catch (e) {
           if (isAbort(e)) return false;
-          throw e;
+          // Blocked (no recent tap after a long export, cross-origin frame,
+          // permissions policy): share or download as without the dialog.
+          const name = (e as Error | null)?.name;
+          if (name !== 'SecurityError' && name !== 'NotAllowedError') throw e;
+          console.warn('The save dialog is not available, sharing or downloading instead', e);
         }
-        const w = await handle.createWritable();
-        await w.write(bytes as Uint8Array<ArrayBuffer>);
-        await w.close();
-        return true;
+        if (handle) {
+          const w = await handle.createWritable();
+          try {
+            await w.write(bytes as Uint8Array<ArrayBuffer>);
+            await w.close();
+          } catch (e) {
+            await w.abort().catch(() => {}); // leave the file as it was, not locked
+            throw e;
+          }
+          return true;
+        }
       }
       const shared = await share(bytes, suggestedName);
       if (shared !== null) return shared;
