@@ -3,6 +3,8 @@
  * One window with the shared front end (apps/web), file access over IPC for
  * the preload bridge (window.inkslide), single instance, recent files, window
  * state, preferences and a small native menu. No rendering happens here.
+ * Presenter mode adds a second, read-only window (the audience window) that
+ * gets the app window's presenter messages through main (presenter.ts).
  *
  * Environment:
  *   INKSLIDE_DEV_URL    load this URL (Vite dev server) instead of apps/web/dist
@@ -16,10 +18,11 @@
  *   INKSLIDE_PRINT_TO_PDF  smoke test mode only: Print writes this PDF file instead of
  *                       showing the print dialog
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
+import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 import { checkDroppedPdf, checkPath, PathGrants } from './access';
 import { sameFile, writeFileAtomic } from './fsutil';
@@ -30,10 +33,11 @@ import {
   writeNotesFor, type NotesTarget,
 } from './notes';
 import { OpenRequests } from './openRequests';
-import { isSha256, pdfFromArgv, resolveWebEntry } from './paths';
+import { isSha256, pdfFromArgv, resolveWebEntry, type WebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
+import { audienceEntry, audienceKey, audiencePlacement } from './presenter';
 import { printPdf } from './print';
-import { RecentFiles } from './recent';
+import { RECENT_MAX, recentInfo, RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
 
 const MAX_PDF_BYTES = 2 ** 31 - 1;
@@ -42,6 +46,9 @@ const MAX_TEXT_BYTES = 256 * 2 ** 20;
 // Native Wayland when available (pen pressure, tilt and eraser need it).
 app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
 if (process.env.INKSLIDE_USER_DATA) app.setPath('userData', resolve(process.env.INKSLIDE_USER_DATA));
+// Native crashes (main, GPU, renderer) leave a minidump in userData/Crashpad for
+// bug reports; nothing is uploaded. After setPath, so tests keep theirs apart.
+crashReporter.start({ uploadToServer: false });
 // The dev build gets its own app id, so GNOME does not group it with an installed
 // Inkslide. app.setDesktopName is what Electron itself calls with package.json's
 // desktopName; it is not in the typings.
@@ -62,7 +69,7 @@ if (!app.requestSingleInstanceLock()) {
 function start(): void {
   const userData = app.getPath('userData');
   const stateFile = join(userData, 'window-state.json');
-  const recent = new RecentFiles(join(userData, 'recent-files.json'));
+  const recent = new RecentFiles(join(userData, 'recent-files.v2.json'), RECENT_MAX, join(userData, 'recent-files.json'));
   const prefsFile = join(userData, 'preferences.json');
   const prefs = loadPreferences(prefsFile);
   /** The PDF the front end has open (opened()), and whether it has a backup (File → Revert to Backup…). */
@@ -108,6 +115,12 @@ function start(): void {
     else opens.add(p);
   }
 
+  /** The recent files changed: rebuild the menu and tell the start screen. */
+  function recentChanged(): void {
+    refreshMenu();
+    if (win && loaded) win.webContents.send(IPC.recentChanged);
+  }
+
   function refreshMenu(): void {
     Menu.setApplicationMenu(buildMenu({
       open: () => { void showOpenDialog().then(p => p && requestOpen(p)); },
@@ -115,14 +128,14 @@ function start(): void {
         if (existsSync(p)) requestOpen(p);
         else {
           recent.remove(p);
-          refreshMenu();
+          recentChanged();
           void dialog.showMessageBox({ type: 'warning', message: `${basename(p)} no longer exists.`, detail: p });
         }
       },
       clearRecent: () => {
         recent.clear();
         app.clearRecentDocuments();
-        refreshMenu();
+        recentChanged();
       },
       command: (c: MenuCommand) => win?.webContents.send(IPC.menuCommand, c),
       toggleMenuBar: () => {
@@ -135,6 +148,9 @@ function start(): void {
       menuHidden: () => state.menuHidden,
       backups: () => prefs.backups,
       canRevert: () => canRevert,
+      togglePresenter: () => togglePresenter(),
+      presenting: () => !!audience,
+      canPresent: () => !!win,
     }, !app.isPackaged));
   }
 
@@ -206,6 +222,7 @@ function start(): void {
       webPreferences: { ...SAFE_WEB_PREFERENCES, preload: join(__dirname, 'preload.js') },
     });
     applyMenuBar();
+    refreshMenu(); // Presenter Mode is enabled with a window
     const w = win;
     const wc = w.webContents;
     closeAsked = closeOk = false;
@@ -236,9 +253,11 @@ function start(): void {
       wc.send(IPC.closeRequest);
     });
     w.on('closed', () => {
+      audience?.close(); // presenter mode ends with the app window
       win = null;
       loaded = false;
       opens.newPage();
+      refreshMenu(); // Presenter Mode needs a window
     });
 
     // The page never navigates or opens windows; links go to the browser.
@@ -258,6 +277,7 @@ function start(): void {
     });
     wc.on('did-finish-load', () => {
       loaded = true;
+      if (audienceLoaded) wc.send(IPC.presenterState, true); // a reloaded page presents again
       opens.takeQueued().forEach(p => wc.send(IPC.openRequest, p));
       if (remoteAtStart) refuseRemote(remoteAtStart);
       remoteAtStart = null;
@@ -265,17 +285,89 @@ function start(): void {
       if (smokeMode) void runSmoke(w, smokeMode === 'backupsoff' ? toggleBackups : undefined);
     });
 
-    const entry = resolveWebEntry({
+    const entry = webEntry();
+    if (entry.kind === 'url') void w.loadURL(entry.url);
+    else if (!existsSync(entry.file)) {
+      void w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
+    } else void w.loadFile(entry.file, smokeMode ? { hash: `smoke=${encodeURIComponent(smokeMode)}` } : {});
+  }
+
+  function webEntry(): WebEntry {
+    return resolveWebEntry({
       devUrl: process.env.INKSLIDE_DEV_URL,
       pageOverride: process.env.INKSLIDE_PAGE,
       isPackaged: app.isPackaged,
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath,
     });
-    if (entry.kind === 'url') void w.loadURL(entry.url);
+  }
+
+  // ── Presenter mode ───────────────────────────────────────────
+
+  /** The audience window (View → Presenter Mode), and whether its page has loaded. */
+  let audience: BrowserWindow | null = null;
+  let audienceLoaded = false;
+
+  function togglePresenter(): void {
+    if (audience) audience.close();
+    else openAudience();
+  }
+
+  /** Open the audience window: full screen on another display if there is one; the app window keeps the focus. */
+  function openAudience(): void {
+    if (!win || audience) {
+      refreshMenu(); // the checkbox has toggled itself
+      return;
+    }
+    const appWin = win;
+    // Wayland: no window positions, so no full screen that could land on the app window's display.
+    const place = audiencePlacement(screen.getAllDisplays(), screen.getDisplayMatching(appWin.getBounds()).id, !onWayland);
+    const a = new BrowserWindow({
+      ...place.bounds,
+      title: 'Inkslide audience',
+      backgroundColor: '#000000',
+      show: false,
+      autoHideMenuBar: true,
+      ...(!app.isPackaged && process.platform === 'linux' ? { icon: join(app.getAppPath(), 'build', 'icons', '512x512.png') } : {}),
+      webPreferences: { ...SAFE_WEB_PREFERENCES, preload: join(__dirname, 'preload.js') },
+    });
+    audience = a;
+    audienceLoaded = false;
+    if (process.platform !== 'darwin') a.setMenu(null);
+    const wc = a.webContents;
+    lockNavigation(wc);
+    // No menu there: Escape (or F5 again) ends presenter mode, F11 toggles full screen.
+    wc.on('before-input-event', (e, input) => {
+      const action = audienceKey(input);
+      if (!action) return;
+      e.preventDefault();
+      if (action === 'exit') a.close();
+      else a.setFullScreen(!a.isFullScreen());
+    });
+    a.once('ready-to-show', () => {
+      a.showInactive();
+      if (place.fullScreen) a.setFullScreen(true);
+      if (win && !win.isDestroyed()) win.focus();
+    });
+    wc.on('did-start-loading', () => { audienceLoaded = false; });
+    wc.on('did-finish-load', () => {
+      audienceLoaded = true;
+      if (win && loaded) win.webContents.send(IPC.presenterState, true); // the app window sends everything
+    });
+    wc.on('render-process-gone', () => { if (!a.isDestroyed()) a.close(); });
+    a.on('closed', () => {
+      if (audience !== a) return;
+      audience = null;
+      audienceLoaded = false;
+      if (win && loaded) win.webContents.send(IPC.presenterState, false);
+      refreshMenu();
+    });
+    const entry = audienceEntry(webEntry());
+    if (entry.kind === 'url') void a.loadURL(entry.url);
     else if (!existsSync(entry.file)) {
-      void w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
-    } else void w.loadFile(entry.file, smokeMode ? { hash: `smoke=${encodeURIComponent(smokeMode)}` } : {});
+      void a.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
+    } else void a.loadFile(entry.file);
+    refreshMenu();
   }
 
   // ── IPC ──────────────────────────────────────────────────────
@@ -324,7 +416,23 @@ function start(): void {
       p = resolve(checkPath(path));
       if (!grants.allows(p)) throw new Error('Inkslide only opens files chosen by the user');
     }
-    if (!p) return null;
+    return p ? readPdf(p) : null;
+  });
+
+  /** Start screen: a recent file, or null (and dropped from the list) if it is gone or no longer listed. */
+  handle(IPC.openRecent, async (path: unknown): Promise<PdfFile | null> => {
+    const p = resolve(checkPath(path));
+    const st = recent.has(p) ? await stat(p).catch(() => null) : null;
+    if (!st?.isFile()) {
+      if (recent.has(p)) recent.remove(p);
+      recentChanged();
+      return null;
+    }
+    return readPdf(p);
+  });
+
+  /** Read a granted PDF and make it the current and most recent file. */
+  async function readPdf(p: string): Promise<PdfFile> {
     const st = await stat(p);
     if (!st.isFile()) throw new Error(`${basename(p)} is not a file`);
     if (st.size > MAX_PDF_BYTES) throw new Error(`${basename(p)} is too large`);
@@ -332,11 +440,11 @@ function start(): void {
     grants.grant(p); // also a recent file: its notes stay writable after Clear Recent
     void removeLegacyBackup(p);
     current = p;
-    recent.add(p);
+    recent.add(p, { size: st.size, mtimeMs: st.mtimeMs });
     app.addRecentDocument(p);
-    refreshMenu();
+    recentChanged();
     return { path: p, name: basename(p), bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) };
-  });
+  }
 
   handle(IPC.readNotes, (ref: unknown, sha256?: unknown) =>
     readNotesFor(checkTarget(ref, sha256), userData));
@@ -344,8 +452,9 @@ function start(): void {
   handle(IPC.keepUnreadableNotes, (ref: unknown, sha256?: unknown): Promise<string | null> =>
     tracked(keepUnreadableFor(checkTarget(ref, sha256), userData)));
 
-  handle(IPC.opened, (ref: unknown, sha256: unknown): void => {
+  handle(IPC.opened, (ref: unknown, sha256: unknown, pages?: unknown): void => {
     notesTarget = checkTarget(ref, sha256);
+    if (notesTarget.path) recent.describe(notesTarget.path, { sha256: notesTarget.sha256, pages: typeof pages === 'number' ? pages : undefined });
     void updateRevert();
   });
 
@@ -424,6 +533,13 @@ function start(): void {
 
   handle(IPC.initialPath, (): string | null => opens.takeInitial());
 
+  handle(IPC.recentFiles, () => recentInfo(recent.records(), userData));
+
+  handle(IPC.removeRecent, (path: unknown): void => {
+    recent.remove(checkPath(path));
+    recentChanged();
+  });
+
   // Synchronous: preload's pathForFile grants a dropped PDF before openPdf.
   ipcMain.on(IPC.grantPath, (e, path: unknown) => {
     try {
@@ -432,6 +548,22 @@ function start(): void {
       e.returnValue = true;
     } catch (_) {
       e.returnValue = false;
+    }
+  });
+
+  // Presenter mode: checked, rebuilt with only the known fields, and passed to the audience window.
+  ipcMain.on(IPC.presenterSend, (e, message: unknown) => {
+    try {
+      fromOurWindow(e);
+      const m = parsePresenterMessage(message);
+      if (audience && audienceLoaded) audience.webContents.send(IPC.audience, m);
+    } catch (err) {
+      console.warn(`presenter message dropped: ${(err as Error).message}`);
+      // A PDF that cannot be relayed: the audience says so instead of waiting.
+      const open = !!message && typeof message === 'object' && (message as { type?: unknown }).type === 'open';
+      if (open && audience && audienceLoaded && e.sender === win?.webContents) {
+        audience.webContents.send(IPC.audience, { type: 'close', reason: 'failed' });
+      }
     }
   });
 

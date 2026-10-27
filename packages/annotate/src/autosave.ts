@@ -126,11 +126,9 @@ export function createAutosave(opts: AutosaveOptions): Autosave {
     if (state !== 'error' || timer === null) schedule(delayMs);
   }
 
-  if (doc) {
-    doc.onChange((_pageId: string | null, kind: ChangeKind) => {
-      if (kind !== 'saved') markDirty();
-    });
-  }
+  const unsubscribe = doc ? doc.onChange((_pageId: string | null, kind: ChangeKind) => {
+    if (kind !== 'saved') markDirty();
+  }) : null;
 
   return {
     markDirty,
@@ -139,6 +137,7 @@ export function createAutosave(opts: AutosaveOptions): Autosave {
     dispose() {
       disposed = true;
       clearTimer();
+      if (unsubscribe) unsubscribe();
     },
     get state() { return state; },
     get failures() { return failures; },

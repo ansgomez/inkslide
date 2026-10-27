@@ -107,6 +107,13 @@ export default defineConfig(({ mode }) => ({
     outDir: 'dist',
     emptyOutDir: true,
     chunkSizeWarningLimit: 2000,
+    // audience.html: the audience window of presenter mode (desktop), src/audience.ts.
+    rollupOptions: {
+      input: {
+        index: fileURLToPath(new URL('./index.html', import.meta.url)),
+        audience: fileURLToPath(new URL('./audience.html', import.meta.url)),
+      },
+    },
   },
   worker: { format: 'es' },
 }));

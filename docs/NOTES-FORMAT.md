@@ -49,9 +49,9 @@ does). Readers must not depend on the layout.
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | `"marp-notes"` | Required. Any other value is rejected ("Not a marp-notes file"). |
-| `version` | number | `1` or `2`. Files with a version above 2, or without a numeric version, are rejected ("Unsupported notes version"), so a newer Inkslide never has its files silently misread. |
+| `version` | number | `1` or `2`. Files with a version above 2, any other number (0, negative, fractional) or no numeric version are rejected ("Unsupported notes version"), so a newer Inkslide never has its files silently misread. |
 | `deck` | object | What the notes were made for (see below). |
-| `pages` | array | Pages that have notes (see below). |
+| `pages` | array | Pages that have notes (see below). A `pages` that is not an array is skipped with a warning; the file loads without pages. |
 
 ## `deck`
 
@@ -74,8 +74,9 @@ shows warnings, but loads the notes anyway:
 - the `sha256` differs ("made for a different version of this PDF");
 - the `title` differs, unless both `sha256` are equal (a renamed copy of the same PDF);
 - `slides` differs;
-- page 1's `size` differs;
-- other entries of `pageSizes` differ (counted in one warning).
+- page 1's `size` differs (a `size` that is not an array counts as missing);
+- other entries of `pageSizes` differ (counted in one warning; a `pageSizes` that is not an
+  array is ignored).
 
 ## `pages`
 
@@ -88,7 +89,7 @@ Each entry is a slide page (a page of the source document) or a blank page.
 | `slide` | yes | – | 1-based number of the source page. |
 | `after` | – | yes | Number of the source page the blank page follows. |
 | `paper` | – | yes | `"plain"`, `"lined"` or `"grid"`. Unknown values load as `"plain"`. |
-| `strokes` | yes | yes | Strokes, bottom to top. |
+| `strokes` | yes | yes | Strokes, bottom to top. A `strokes` that is not an array is skipped with a warning; the page loads without strokes. |
 
 Writing:
 
@@ -126,7 +127,7 @@ on the next save.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | string | Unique within the file. A missing or duplicate id gets a new one on load. |
+| `id` | string | Unique within the file. A missing, non-string or duplicate id gets a new one on load. |
 | `tool` | `"pen"` or `"highlighter"` | The laser is never stored. Other tools make the stroke invalid. |
 | `color` | string | CSS color, e.g. `#be1e3c`. |
 | `size` | number, 0 < size ≤ 10⁶ | Pen: ink width at pressure 0.5. Highlighter: line width. In page units. |
@@ -134,9 +135,9 @@ on the next save.
 
 Coordinates are rounded to 2 decimals, pressure to 3, when saved. Points are already smoothed
 (they are not the raw pointer positions). A pen stroke's width at pressure `p` is
-`size × (1 − 1.2 × (0.5 − p))`, at least 0.5 units. A stroke with a bad tool, a size out of
-range, no points, non-finite numbers or coordinates beyond ±10⁶ is skipped with a warning; the
-rest of the page loads. (Such numbers would overflow when rounded for saving, or end up as
+`size × (1 − 1.2 × (0.5 − p))`, at least 0.5 units. A stroke with a bad tool, a size that is
+not a number or out of range, no points, non-finite or non-numeric coordinates, or coordinates
+beyond ±10⁶ is skipped with a warning; the rest of the page loads. (Such numbers would overflow when rounded for saving, or end up as
 `Infinity` in an exported PDF.) The same check applies to every new or changed stroke, so the
 app never writes one.
 
@@ -163,11 +164,19 @@ PDF exported from that deck. Its strokes are in slide px; the PDF is in points. 
 `scaleV1ToPdf` scales them:
 
 - per page, `s = pageWidth / deck.size[0]`, but only if the aspect ratio matches within 1 %
-  (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays;
-- a page whose aspect ratio differs is left unscaled;
+  (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays.
+  Only numbers are scaled: other values are left as they are, so the stroke is skipped as
+  invalid on load;
+- a page with strokes whose aspect ratio differs is left unscaled; when page 1 or another
+  page fits, one warning names the pages left unscaled ("Notes not scaled to the PDF …");
 - pages beyond the PDF (kept, see above) are scaled with the size of page 1, since they are
   saved as v2 too;
-- if page 1 does not match (or `s` is 1), nothing is scaled and the size warning stays.
+- the deck's `size` counts as matching whenever PDF page 1 fits, whether or not any page has
+  strokes (no size warning then); if page 1 does not fit, the size warning stays even when
+  other pages are scaled;
+- the scale reported (and shown in the banner) is page 1's if it fits and is not 1, else that
+  of the first page scaled, else none;
+- if no page fits, nothing is scaled and only the size warning is shown.
 
 Marp exports 1280×720 px slides as 960×540 pt pages, so the usual scale is 0.75. The app says
 so in a banner. Once saved, the notes are a v2 file.
@@ -197,7 +206,7 @@ so in a banner. Once saved, the notes are a v2 file.
   or older than 2 minutes by its modification time. File → Revert to Backup… swaps the notes
   and the backup. For a notes file that cannot be read or parsed (also on a second try a
   second later), the app offers to open the backup instead (see
-  [USER-GUIDE.md](USER-GUIDE.md#backup-desktop)). Off with File → Keep a Backup of the Notes
+  [USER-GUIDE.md](USER-GUIDE.md#backup)). Off with File → Keep a Backup of the Notes
   (`<userData>/preferences.json`, `{"backups": false}`), which deletes every backup in
   `<userData>/notes`. A `<pdf path>.notes.backup.json` next to a PDF (written by development
   builds before 2026-10-27) is deleted when the PDF is opened.
@@ -217,8 +226,25 @@ There are no file paths. Notes are kept in the site's storage, keyed by the PDF'
 - else `localStorage`, key `inkslide-notes:<sha256>`.
 
 Clearing the site data deletes the notes. The same PDF opened from another folder or under
-another name finds its notes, because the key is the hash. No backup is kept: a copy in the
-same site storage would be lost together with the notes.
+another name finds its notes, because the key is the hash.
+
+- **Backup:** OPFS file `notes/inkslide-notes_<sha256>.notes.backup.json`, same format and
+  same rules as the desktop's (copied before a save if usable and the backup is missing or
+  older than 2 minutes, by the file's `lastModified`; Revert to Backup swaps). Only where the
+  page can write OPFS: there is no `localStorage` backup, because that store is small (about
+  5 MB) and shared with the notes that fall back to it, and a full store fails their save. A
+  failed backup write never fails the save; it is written after the notes, so near the quota
+  it never takes the room the notes need. The backup is deleted when the PDF leaves the
+  recent files (`apps/web/src/recent.ts`); the notes stay. It lives in the same site storage
+  as the notes, so it protects against unwanted changes, not against clearing the site data.
+- **Unreadable copy:** notes that exist but cannot be read or parsed are copied as they are to
+  `notes/inkslide-notes_<sha256>.notes.unreadable.json` before they are replaced (only where
+  OPFS can be written; otherwise the app asks first). An OPFS file that exists but cannot be
+  read is an error, never "no notes", unless `localStorage` holds a copy (the notes are written
+  there when OPFS fails), which is then read.
+- **Cleanup:** the backup goes with the PDF's recent-files entry (the unreadable copy stays: it
+  may be the only copy of real notes); at startup, backups and unreadable copies last changed
+  more than 90 days ago are deleted (notes files never are).
 
 ### iPad and Android (Tauri)
 
@@ -241,5 +267,5 @@ data directory once it can be tested on devices).
   version.
 - Content that a reader cannot place (pages beyond the document) is kept, not dropped.
 - Saved notes that cannot be read or parsed are never overwritten silently: the app reads them
-  again, then asks (open the backup instead, or open anyway); the desktop keeps a copy of the
-  unreadable file before replacing it.
+  again, then asks (open the backup instead, or open anyway); the desktop and the browser keep
+  a copy of the unreadable file before replacing it.

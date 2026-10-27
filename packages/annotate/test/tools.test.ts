@@ -174,6 +174,37 @@ describe('erasers', () => {
     expect(doc.calls[1].args[0]).toEqual([]); // a slide page: radius 8 reaches it
   });
 
+  it('commits only what it erased: page changes made mid-gesture stay', () => {
+    const d = mk('d', [[0, 200, 0.5]]);
+    doc.pages.set('p1', [hline('a', 0), hline('b', 50), hline('c', 100), d]);
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [50, -30, 0.5]);
+    eraser.move!(surface, [50, 60, 0.5]); // crosses a and b
+    // meanwhile (Delete selection, restyle, a new stroke from another window): c deleted, b restyled, e added
+    const [a] = doc.strokes('p1');
+    const b2 = { ...hline('b', 50), color: '#f00' };
+    doc.pages.set('p1', [a, b2, d, hline('e', 300)]);
+    eraser.up!(surface, null);
+    // a erased; b changed meanwhile, so kept as it is now; c stays deleted; d and e kept
+    expect((doc.calls[0].args[0] as Stroke[]).map(s => s.id)).toEqual(['b', 'd', 'e']);
+    expect((doc.calls[0].args[0] as Stroke[])[0].color).toBe('#f00');
+  });
+
+  it('partial eraser: pieces replace their stroke in the page as it is on release', () => {
+    doc.pages.set('p1', [hline('a', 0), hline('b', 50)]);
+    app.prefs.partial.size = 0; // radius 8
+    const { partial } = createTools(app, R.r);
+    partial.down!(surface, [30, 0, 0.5]);
+    partial.move!(surface, [70, 0, 0.5]);
+    doc.pages.set('p1', [hline('z', 9), ...doc.strokes('p1')]); // added meanwhile, below
+    partial.up!(surface, null);
+    const after = doc.calls[0].args[0] as Stroke[];
+    expect(after.map(s => s.id).slice(0, 1)).toEqual(['z']);
+    expect(after.at(-1)!.id).toBe('b');
+    expect(after.length).toBe(4); // z, two pieces of a, b
+    expect(after.slice(1, 3).every(s => s.id !== 'a' && s.points.every(p => p[0] < 30 || p[0] > 70))).toBe(true);
+  });
+
   it('cancel restores the page and commits nothing', () => {
     doc.pages.set('p1', [hline('a', 0)]);
     const { eraser } = createTools(app, R.r);
@@ -211,6 +242,21 @@ describe('selector', () => {
     selector.up!(surface, [60, 70, 0.5]);
     expect(R.log).toContain('marquee:off');
     expect(app.selection!.ids).toEqual(['a', 'b']);
+  });
+
+  it('redraws the marquee once per frame, lasso or rectangle by the running path length', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => frames.push(fn));
+    const { selector } = createTools(app, R.r);
+    selector.down!(surface, [0, 0, 0.5]);
+    for (let i = 1; i <= 2000; i++) selector.move!(surface, [i % 2 ? 100 : 0, i / 100, 0.5]); // zigzag: a lasso
+    expect(frames).toHaveLength(1);
+    frames.shift()!(0);
+    expect(R.log.filter(l => l.startsWith('marquee:'))).toEqual(['marquee:2001']);
+    selector.move!(surface, [0, 21, 0.5]);
+    selector.cancel!(surface);
+    frames.shift()!(0); // a frame after cancel draws nothing
+    expect(R.log.filter(l => l.startsWith('marquee:'))).toEqual(['marquee:2001', 'marquee:off']);
   });
 
   it('a circle selects with a lasso', () => {

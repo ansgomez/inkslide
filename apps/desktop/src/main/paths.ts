@@ -1,7 +1,7 @@
 /* Inkslide desktop - where the front end lives, PDF arguments (no Electron) */
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BACKUP_SUFFIX, NOTES_SUFFIX } from '@inkslide/annotate/io';
+import { BACKUP_SUFFIX, NOTES_SUFFIX, UNREADABLE_SUFFIX } from '@inkslide/annotate/io';
 
 /** What the window loads: a URL (dev server) or an HTML file. */
 export type WebEntry = { kind: 'url'; url: string } | { kind: 'file'; file: string };
@@ -110,8 +110,8 @@ export const sidecarStatePath = (userData: string, sha256: string): string => st
 /** App-storage notes backup of a PDF: userData/notes/<sha256>.notes.backup.json. */
 export const fallbackBackupPath = (userData: string, sha256: string): string => storagePath(userData, sha256, BACKUP_SUFFIX);
 
-/** Appended to the PDF's SHA-256 for the kept copy of a notes file that could not be read. */
-export const UNREADABLE_SUFFIX = '.notes.unreadable.json';
+/** Appended to the PDF's SHA-256 for the kept copy of a notes file that could not be read (shared with the browser). */
+export { UNREADABLE_SUFFIX };
 
 /** The kept copy of an unreadable notes file: userData/notes/<sha256>.notes.unreadable.json. */
 export const unreadableNotesPath = (userData: string, sha256: string): string => storagePath(userData, sha256, UNREADABLE_SUFFIX);

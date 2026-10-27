@@ -10,6 +10,7 @@ export * as tools from './tools';
 export * as toolbar from './toolbar';
 export * as pages from './pages';
 export * as io from './io';
+export * as clipboard from './clipboard';
 export * as app from './app';
 
 export type { Point, Vec2, XY, Stroke, StrokeTool, BBox, OutlineEngine } from './geometry';
@@ -21,6 +22,7 @@ export type { InputHost, InputController, PenButton } from './input';
 export type { ToolbarHost, ToolbarGroup, ToolbarItem, Shortcut, Toolbar } from './toolbar';
 export type { PagesController, PagesHost } from './pages';
 export type { PlatformAdapter, PdfFile, PdfInfo, LoadResult, NotesBackup } from './io';
+export type { Clip } from './clipboard';
 export { createAnnotator } from './app';
 export type { Annotator, AnnotatorOptions } from './app';
 export { createAutosave, type Autosave, type AutosaveOptions, type AutosaveState } from './autosave';
