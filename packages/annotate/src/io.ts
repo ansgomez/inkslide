@@ -8,6 +8,7 @@
  *   v1 (Marp HTML decks): deck { title, slides, size }, pages s<n> / blank.
  *   v2 (PDF): deck { source: "pdf", title, slides, size, pageSizes, sha256 },
  *      pages p<n> / blank. Sidecar "<name>.pdf.notes.json".
+ *   v3: v1 or v2 with page images (snapshots); written only when there are any.
  * Backup (same format, desktop only): app storage "<sha256>.notes.backup.json",
  * the saved notes as they were before a save (apps/desktop/src/main/notes.ts).
  * v1 files load into a PDF document; their strokes are scaled from the slide

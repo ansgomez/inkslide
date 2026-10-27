@@ -189,10 +189,11 @@ export async function writeNotesFor(t: NotesTarget, text: string, userData: stri
 /** The backup is refreshed by a save only when it is at least this old. */
 export const BACKUP_MIN_AGE_MS = 2 * 60_000;
 
-/** Whether `text` is a notes file that loads and has something in it (strokes or blank pages). */
+/** Whether `text` is a notes file that loads and has something in it (strokes, images or blank pages). */
 export function isUsableNotes(text: string): boolean {
+  const some = (list: unknown): boolean => Array.isArray(list) && list.length > 0;
   try {
-    return parseNotes(text).pages.some(p => !!p && (p.kind === 'blank' || (Array.isArray(p.strokes) && p.strokes.length > 0)));
+    return parseNotes(text).pages.some(p => !!p && (p.kind === 'blank' || some(p.strokes) || some(p.images)));
   } catch (_) {
     return false;
   }

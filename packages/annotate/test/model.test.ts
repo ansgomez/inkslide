@@ -394,10 +394,11 @@ describe('serialization', () => {
   it('checkFormat rejects other files and newer versions', () => {
     expect(() => checkFormat(null)).toThrow(/format mismatch/);
     expect(() => checkFormat({ format: 'x', version: 1 })).toThrow(/format mismatch/);
-    expect(() => checkFormat({ format: 'marp-notes', version: 3 })).toThrow(/Unsupported notes version: 3/);
+    expect(() => checkFormat({ format: 'marp-notes', version: 4 })).toThrow(/Unsupported notes version: 4/);
     expect(() => checkFormat({ format: 'marp-notes', version: '2' })).toThrow(/Unsupported notes version/);
     expect(() => checkFormat({ format: 'marp-notes' })).toThrow(/Unsupported notes version/);
     expect(() => checkFormat({ format: 'marp-notes', version: 2 })).not.toThrow();
+    expect(() => checkFormat({ format: 'marp-notes', version: 3 })).not.toThrow(); // images
   });
 
   it('deckWarnings for PDFs: checksum wins over the title', () => {
