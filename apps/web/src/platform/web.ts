@@ -8,12 +8,29 @@
  * remembered for the start screen (../recent.ts). Exports go through the
  * save dialog of the File System Access API where there is one, else the
  * share sheet on touch devices (iPad: "Save to Files"), else a download.
+ *
+ * The notes backup works as on the desktop (apps/desktop/src/main/notes.ts):
+ * before a save replaces the notes, the saved notes are copied to the backup
+ * if they are usable (not empty, they load) and the backup is missing or
+ * older than 2 minutes; Revert to Backup swaps the two, so a second revert
+ * undoes the first. The backup is an OPFS file next to the notes,
+ * "<notes file>.notes.backup.json", and exists only where the page can write
+ * OPFS: localStorage (about 5 MB, shared with the notes that fall back to it)
+ * would fill up twice as fast, and there a full store fails the save. A
+ * backup that can not be written never fails the save (it is written after
+ * the notes). Saved notes that can not be read are copied as they are to
+ * "<notes file>.notes.unreadable.json" before they are replaced. A PDF
+ * dropped from the recent files loses its backup (its notes and unreadable
+ * copy stay); backups and unreadable copies older than 90 days go at startup.
  */
-import type { PdfFile, PlatformAdapter } from '@inkslide/annotate';
+import type { NotesBackup, PdfFile, PlatformAdapter } from '@inkslide/annotate';
+import {
+  BACKUP_MIN_AGE_MS, BACKUP_SUFFIX, isUsableNotes, OLD_COPIES_MAX_AGE_DAYS, UNREADABLE_SUFFIX,
+} from '@inkslide/annotate/io';
 import { banner } from '../banner';
 import { storedItem, storeItem } from '../dom';
 import { createRecentFiles, type RecentFiles } from '../recent';
-import { canWriteOpfs, opfsDir, safeFileName, writeOpfsFile } from './opfs';
+import { canWriteOpfs, isNotFound, opfsDir, readOpfsFile, safeFileName, writeOpfsFile } from './opfs';
 import { createRecentStorage } from './recent-storage';
 
 /** localStorage key prefix of notes. */
@@ -47,15 +64,8 @@ const fileName = (key: string): string => safeFileName(key, '.json');
  * "no notes", the first autosave would replace them.
  */
 async function opfsRead(key: string): Promise<string | null> {
-  const dir = await opfsDir(OPFS_DIR, true);
-  if (!dir) return null;
-  try {
-    const handle = await dir.getFileHandle(fileName(key));
-    return (await (await handle.getFile()).text()) || null;
-  } catch (e) {
-    if ((e as Error | null)?.name === 'NotFoundError') return null;
-    throw e;
-  }
+  const file = await readOpfsFile(OPFS_DIR, fileName(key));
+  return file ? (await file.text()) || null : null;
 }
 
 async function opfsWrite(key: string, text: string): Promise<boolean> {
@@ -69,6 +79,182 @@ async function opfsRemove(key: string): Promise<void> {
   try {
     await dir.removeEntry(fileName(key));
   } catch (_) { /* not there */ }
+}
+
+/**
+ * The saved notes: OPFS first, then localStorage. If the OPFS file can not be
+ * read, a localStorage copy is the newer notes (writeSaved puts them there when
+ * OPFS fails, and removes it after an OPFS write); rejects only without one.
+ */
+async function readSaved(key: string): Promise<string | null> {
+  let text: string | null;
+  try {
+    text = await opfsRead(key);
+  } catch (e) {
+    const stored = storedItem(key);
+    if (stored !== null) return stored;
+    throw e;
+  }
+  return text ?? storedItem(key);
+}
+
+/** Write the notes: OPFS, else localStorage (throws when full). */
+async function writeSaved(key: string, text: string): Promise<void> {
+  if (await opfsWrite(key, text)) storeItem(key, null); // do not leave an older copy behind
+  else {
+    localStorage.setItem(key, text); // throws when full: autosave reports it and retries
+    if (canWriteOpfs()) await opfsRemove(key); // an older OPFS copy would be read first
+  }
+}
+
+// ── Backup and kept unreadable notes ───────────────────────────
+
+const backupName = (key: string): string => safeFileName(key, BACKUP_SUFFIX);
+const unreadableName = (key: string): string => safeFileName(key, UNREADABLE_SUFFIX);
+
+/** The notes directory where the page can write it, else null (no backups there). */
+const writableDir = async (): Promise<FileSystemDirectoryHandle | null> => (canWriteOpfs() ? opfsDir(OPFS_DIR) : null);
+
+/**
+ * Modification time of file `name` in `dir`, without reading it; -1 if it is
+ * missing or empty (a failed write). Rejects on other errors.
+ */
+async function fileTime(dir: FileSystemDirectoryHandle, name: string): Promise<number> {
+  try {
+    const file = await (await dir.getFileHandle(name)).getFile();
+    return file.size > 0 ? file.lastModified : -1;
+  } catch (e) {
+    if (isNotFound(e)) return -1;
+    throw e;
+  }
+}
+
+/** The backup with its modification time; null if there is none (an empty file is a failed write). */
+async function readBackupOf(key: string): Promise<NotesBackup | null> {
+  const file = await readOpfsFile(OPFS_DIR, backupName(key));
+  const text = file ? await file.text() : '';
+  return file && text ? { text, time: file.lastModified } : null;
+}
+
+/**
+ * Delete the backup, quietly. Not the kept unreadable copy: it may be the
+ * only copy of real notes (e.g. from a newer Inkslide); the startup sweep
+ * deletes it after OLD_COPIES_MAX_AGE_DAYS.
+ */
+async function removeBackupOf(key: string): Promise<void> {
+  const dir = await opfsDir(OPFS_DIR);
+  if (dir) await dir.removeEntry(backupName(key)).catch(() => {});
+}
+
+/**
+ * What a save should copy to the backup: the saved notes, if they are usable
+ * (isUsableNotes) and the backup is missing or older than BACKUP_MIN_AGE_MS
+ * (by its time only: the backup itself is not read). Else null; always null
+ * where the page can not write OPFS.
+ */
+async function backupDue(key: string, now = Date.now()): Promise<string | null> {
+  const dir = await writableDir();
+  if (!dir) return null;
+  const time = await fileTime(dir, backupName(key));
+  if (time >= 0 && now - time < BACKUP_MIN_AGE_MS) return null;
+  const saved = await readSaved(key);
+  return saved !== null && isUsableNotes(saved) ? saved : null;
+}
+
+/** Write the backup; false if it could not be written. */
+async function writeBackup(key: string, text: string): Promise<boolean> {
+  const dir = await writableDir();
+  return !!dir && writeOpfsFile(dir, backupName(key), text);
+}
+
+/**
+ * Save `text` as the notes, copying the notes it replaces to the backup when
+ * one is due (backupDue). The backup is written after the notes, so near the
+ * quota it never takes the room the notes need; a backup that can not be
+ * read or written is logged and does not fail the save.
+ */
+async function saveWithBackup(key: string, text: string): Promise<void> {
+  const before = await backupDue(key).catch(e => {
+    console.warn('The notes backup failed', e);
+    return null;
+  });
+  await writeSaved(key, text);
+  if (before !== null && !(await writeBackup(key, before))) console.warn('The notes backup could not be written');
+}
+
+/**
+ * Revert to Backup: the backup becomes the notes and the saved notes become
+ * the backup (when usable), so a second revert undoes the first. Returns the
+ * notes text now saved. Throws if there is no usable backup, or if the saved
+ * notes can not be read (they would be lost). The saved notes go to the
+ * backup first: if writing the notes then fails, they are still the notes,
+ * and the backup is put back.
+ */
+async function revertToBackupOf(key: string): Promise<string> {
+  const backup = (await readBackupOf(key))?.text ?? null;
+  if (backup === null || !isUsableNotes(backup)) throw new Error('there is no usable backup of these notes');
+  const dir = await writableDir();
+  if (!dir) throw new Error('this browser can not write the backup');
+  const saved = await readSaved(key);
+  const swap = saved !== null && saved !== backup && isUsableNotes(saved);
+  if (swap && !(await writeOpfsFile(dir, backupName(key), saved))) {
+    throw new Error('the current notes could not be kept as the backup (storage full?)');
+  }
+  try {
+    await writeSaved(key, backup);
+  } catch (err) {
+    if (swap && !(await writeOpfsFile(dir, backupName(key), backup))) {
+      throw new Error(`${(err as Error).message || err}; the backup could not be put back (it now holds the current notes)`);
+    }
+    throw err;
+  }
+  return backup;
+}
+
+/**
+ * The saved notes could not be read or loaded and are about to be replaced:
+ * copy their text as it is to "<notes file>.notes.unreadable.json" (only the
+ * latest copy is kept). Resolves with where it is, or null if there are no
+ * notes; rejects if they can not be read or the copy can not be written.
+ */
+async function keepUnreadableOf(key: string): Promise<string | null> {
+  const text = await readSaved(key);
+  if (text === null) return null;
+  const dir = await writableDir();
+  if (!dir) throw new Error('this browser can not keep a copy');
+  const name = unreadableName(key);
+  if (!(await writeOpfsFile(dir, name, text))) throw new Error('the copy could not be written (storage full?)');
+  return `${OPFS_DIR}/${name} in the browser's storage for this site`;
+}
+
+/**
+ * At startup: delete backups and kept unreadable copies older than
+ * OLD_COPIES_MAX_AGE_DAYS (backups of PDFs dropped from the recent files are
+ * already gone; this catches the others). Returns the names deleted.
+ * Nothing where the directory can not be listed. Each file's time is read
+ * again just before it is deleted: a save may have rewritten it since the
+ * listing.
+ */
+export async function cleanupNotesStore(now = Date.now()): Promise<string[]> {
+  const dir = await opfsDir(OPFS_DIR);
+  const values = (dir as { values?(): AsyncIterable<FileSystemHandle> } | null)?.values;
+  if (!dir || typeof values !== 'function') return [];
+  const before = now - OLD_COPIES_MAX_AGE_DAYS * 24 * 60 * 60_000;
+  const old: string[] = [];
+  for await (const h of values.call(dir)) {
+    if (h.kind !== 'file' || !(h.name.endsWith(BACKUP_SUFFIX) || h.name.endsWith(UNREADABLE_SUFFIX))) continue;
+    if ((await (h as FileSystemFileHandle).getFile()).lastModified < before) old.push(h.name);
+  }
+  // Removed after the listing: changing a directory while it is listed is not well defined.
+  const removed: string[] = [];
+  for (const name of old) {
+    try {
+      if ((await (await dir.getFileHandle(name)).getFile()).lastModified >= before) continue; // written since
+      await dir.removeEntry(name);
+      removed.push(name);
+    } catch (_) { /* gone already, or busy: next time */ }
+  }
+  return removed;
 }
 
 /** Let the user pick one file; null if cancelled. */
@@ -150,7 +336,17 @@ async function share(bytes: Uint8Array, name: string): Promise<boolean | null> {
 
 /** The platform adapter of the browser build. */
 export function createWebAdapter(): WebAdapter {
-  const recent = createRecentFiles(createRecentStorage());
+  // A PDF dropped from the recent files (evicted, or removed by the user) loses
+  // its backup; old backups of other PDFs and old unreadable copies go at startup.
+  const storage = createRecentStorage();
+  const recent = createRecentFiles({
+    ...storage,
+    async remove(id) {
+      await storage.remove(id);
+      await removeBackupOf(NOTES_KEY_PREFIX + id);
+    },
+  });
+  void cleanupNotesStore().catch(e => console.warn('Cleaning up old notes backups failed', e));
 
   async function fromHandle(handle: FileSystemFileHandle): Promise<WebPdfFile> {
     return { ...(await fromFile(await handle.getFile())), handle };
@@ -203,19 +399,15 @@ export function createWebAdapter(): WebAdapter {
       return file ? fromFile(file) : null;
     },
 
-    async readNotes(pdf, sha256) {
-      const key = notesKey(pdf, sha256);
-      return (await opfsRead(key)) ?? storedItem(key);
-    },
+    readNotes: (pdf, sha256) => readSaved(notesKey(pdf, sha256)),
 
-    async writeNotes(pdf, text, sha256) {
-      const key = notesKey(pdf, sha256);
-      if (await opfsWrite(key, text)) storeItem(key, null); // do not leave an older copy behind
-      else {
-        localStorage.setItem(key, text); // throws when full: autosave reports it and retries
-        if (canWriteOpfs()) await opfsRemove(key); // an older OPFS copy would be read first
-      }
-    },
+    writeNotes: (pdf, text, sha256) => saveWithBackup(notesKey(pdf, sha256), text),
+
+    readBackup: (pdf, sha256) => readBackupOf(notesKey(pdf, sha256)),
+
+    revertToBackup: (pdf, sha256) => revertToBackupOf(notesKey(pdf, sha256)),
+
+    keepUnreadableNotes: (pdf, sha256) => keepUnreadableOf(notesKey(pdf, sha256)),
 
     async exportPdf(bytes, suggestedName) {
       const picker = (window as unknown as { showSaveFilePicker?: SavePicker }).showSaveFilePicker;

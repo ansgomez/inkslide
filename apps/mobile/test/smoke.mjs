@@ -1,9 +1,9 @@
 // Smoke test of the Tauri shell on the desktop (Linux, WebKitGTK): builds
 // src-tauri with the web build plus a test script as its frontend, runs it
 // with a temporary XDG_DATA_HOME and checks that the Tauri adapter reads and
-// writes notes in the app data directory through the real plugins, scope and
-// CSP. Dialogs, export, share and print need a person (and the mobile ones a
-// device), so they are not covered. Run after `pnpm --filter @inkslide/web build:tauri`;
+// writes notes in the app data directory through the real plugins, the app's
+// write_notes command, the capabilities and the CSP. Dialogs, export, share
+// and print need a person (and the mobile ones a device), so they are not covered. Run after `pnpm --filter @inkslide/web build:tauri`;
 // a window may flash briefly. The first run compiles for a few minutes.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -42,10 +42,9 @@ const SEEDED = {
 // In the web view: open PDF1 (its seeded notes must load: readNotes), then
 // PDF2, import notes with a blank page and save them (writeNotes).
 const PAGE_SCRIPT = `
-// A failure is written to notes/smoke-error.txt (AppData = BaseDirectory 14),
-// also when a step hangs (e.g. on a dialog).
-const report = msg => window.__TAURI_INTERNALS__.invoke('plugin:fs|write_text_file', new TextEncoder().encode(msg),
-  { headers: { path: encodeURIComponent('notes/smoke-error.txt'), options: JSON.stringify({ baseDir: 14 }) } });
+// A failure is written to notes/smoke-error.notes.json (through write_notes:
+// the page has no fs write permission), also when a step hangs (e.g. on a dialog).
+const report = msg => window.__TAURI_INTERNALS__.invoke('write_notes', { key: 'smoke-error', text: msg });
 let step = 'start';
 const watchdog = setTimeout(() => void report('hangs at: ' + step + '\\n' + document.body.innerText.slice(0, 500)), 30000);
 const wait = async (ok, what) => {
@@ -134,7 +133,7 @@ try {
   mkdirSync(notesDir, { recursive: true });
   writeFileSync(join(notesDir, `${sha(PDF1)}.notes.json`), JSON.stringify(SEEDED));
   const written = join(notesDir, `${sha(PDF2)}.notes.json`);
-  const error = join(notesDir, 'smoke-error.txt');
+  const error = join(notesDir, 'smoke-error.notes.json');
   await runUntil({ XDG_DATA_HOME: data }, () => existsSync(written) || existsSync(error));
   if (existsSync(error)) throw new Error(`in the page: ${readFileSync(error, 'utf8')}`);
   const notes = JSON.parse(readFileSync(written, 'utf8'));

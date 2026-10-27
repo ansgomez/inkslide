@@ -1,10 +1,13 @@
 // @vitest-environment happy-dom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PAPER_STYLE, createLayer, createPageSurface, setSelectionBox, syncLayer, viewBoxSize } from '../src/render';
 import { createToolbar, defaultKeymap, isTyping, registerGroup } from '../src/toolbar';
 import { formatLabel, pagesGroup, parseSlideNumber, type PagesController } from '../src/pages';
 import { createAnnotator } from '../src/app';
 import { NotesDoc, createStroke } from '../src/model';
+import { getClip, makeClip, serializeClip, setClip } from '../src/clipboard';
 import { deckFromPdf } from '../src/io';
 import type { Stroke } from '../src/geometry';
 
@@ -125,7 +128,7 @@ describe('annotator, toolbar and keys', () => {
     const groups = [...bar.querySelectorAll('.ann-group')].map(g => g.className);
     expect(groups).toEqual([
       'ann-group ann-group-mode', 'ann-group ann-group-tools', 'ann-group ann-group-colors',
-      'ann-group ann-group-sizes', 'ann-group ann-group-history',
+      'ann-group ann-group-sizes', 'ann-group ann-group-history', 'ann-group ann-group-edit',
       'ann-group ann-group-pages ann-placeholder', 'ann-group ann-group-file ann-placeholder',
     ]);
     expect(bar.querySelectorAll('.ann-swatch').length).toBe(8);
@@ -187,6 +190,22 @@ describe('annotator, toolbar and keys', () => {
     expect(doc.strokes('p1')).toEqual([]);
   });
 
+  it('a save (autosave) during a selection drag leaves the box where it is dragged', () => {
+    const { app, doc, surface, layer } = setup();
+    doc.addStroke('p1', stroke('a'));
+    app.setTool('selector');
+    app.select({ pageId: 'p1', ids: ['a'] });
+    const box = () => layer.ui.querySelector('.ann-selection')!.getAttribute('x');
+    const x0 = Number(box());
+    app.tools.selector.down!(surface, [5, 5, 0.5], null);
+    app.tools.selector.move!(surface, [45, 5, 0.5], null);
+    expect(Number(box())).toBe(x0 + 40);
+    doc.markSaved();
+    expect(Number(box())).toBe(x0 + 40);
+    app.tools.selector.up!(surface, [45, 5, 0.5], null);
+    expect(doc.strokes('p1')[0].points[0][0]).toBe(40);
+  });
+
   it('restyling a selection uses the page-scaled sizes', () => {
     const { app, doc, layer } = setup();
     expect(layer.unit).toBeCloseTo(0.75); // 960×540 pt
@@ -229,6 +248,325 @@ describe('annotator, toolbar and keys', () => {
     expect(press({ code: 'KeyQ', key: 'q' })).toBe(false);
   });
 
+  describe('copy and paste', () => {
+    const tick = () => new Promise(r => setTimeout(r, 0));
+    /** A system clipboard the paste button and the key fallback can read (or not). */
+    const fakeSystemClipboard = (read: () => Promise<string>, write: (t: string) => Promise<void> = () => Promise.reject(new Error('denied'))) => {
+      const spy = vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue(
+        { readText: read, writeText: write } as unknown as Clipboard);
+      cleanup.push(() => spy.mockRestore());
+    };
+    beforeEach(() => {
+      setClip(null);
+      let text = ''; // an empty system clipboard per test
+      fakeSystemClipboard(async () => text, async t => { text = t; });
+    });
+    const twoPages = () => {
+      const t = setup();
+      const { svg, layer } = createPageSurface(t.doc.pageSize('p2'));
+      const p2 = { pageId: 'p2', svg, layer, n: 2 };
+      t.app.surfaces.set('p2', p2);
+      return { ...t, p2 };
+    };
+
+    it('copy, paste on the same page (offset), and the paste is the selection', async () => {
+      const { app, doc } = setup();
+      app.mount();
+      app.toggle(true);
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      const bar = document.querySelector('.ann-bar')!;
+      const btn = (id: string) => bar.querySelector(`[data-id="${id}"]`) as HTMLButtonElement;
+      expect(btn('copy').hidden).toBe(true);
+      expect((bar.querySelector('.ann-group-edit') as HTMLElement).hidden).toBe(true);
+      app.select({ pageId: 'p1', ids: ['a'] });
+      expect(btn('copy').hidden).toBe(false);
+      expect(btn('paste').hidden).toBe(true);
+      btn('copy').click();
+      expect(getClip()!.strokes.map(s => s.id)).toEqual(['a']);
+      expect(btn('paste').hidden).toBe(false);
+      btn('paste').click();
+      await tick();
+      const [a, b] = doc.strokes('p1');
+      expect(b.id).not.toBe('a');
+      expect(b.points[0][0]).toBeGreaterThan(a.points[0][0]); // offset
+      expect(app.selection!.ids).toEqual([b.id]);
+      app.undo();
+      expect(doc.strokes('p1').map(s => s.id)).toEqual(['a']);
+      expect(app.selection).toBeNull();
+    });
+
+    it('paste switches to the select tool and pastes on the shown page; cut is one undo step', async () => {
+      const { app, doc } = setup();
+      doc.addStroke('p1', stroke('a'));
+      doc.addStroke('p1', stroke('b'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a', 'b'] });
+      app.cutSelection();
+      expect(doc.strokes('p1')).toEqual([]);
+      expect(doc.history.top()!.label).toBe('cut');
+      app.setTool('pen');
+      await app.paste();
+      expect(app.tool).toBe('selector');
+      expect(doc.strokes('p1').length).toBe(2);
+      // The cut strokes are gone: no offset, only the clamp that keeps the ink (radius 2) on the page.
+      expect(doc.strokes('p1')[0].points[0]).toEqual([2, 2, 0.5]);
+      expect(app.selection!.ids).toEqual(doc.strokes('p1').map(s => s.id));
+      app.undo();
+      expect(doc.strokes('p1')).toEqual([]);
+      app.undo();
+      expect(doc.strokes('p1').map(s => s.id)).toEqual(['a', 'b']);
+    });
+
+    it('a clip from another page size is scaled', async () => {
+      const { app, doc } = setup();
+      setClip(makeClip([createStroke({ tool: 'pen', color: '#000', size: 8, points: [[100, 100], [200, 200]] })], [1920, 1080]));
+      await app.paste();
+      const [s] = doc.strokes('p1'); // 960×540: half
+      expect(s.size).toBe(4);
+      expect(s.points[0].slice(0, 2)).toEqual([50, 50]);
+    });
+
+    it('duplicate pastes in place, offset, and leaves the clip alone', () => {
+      const { app, doc } = setup();
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      const keymap = defaultKeymap(app);
+      const e = new KeyboardEvent('keydown', { code: 'KeyD', key: 'd', ctrlKey: true });
+      keymap.find(k => k.test(e))!.run(e);
+      keymap.find(k => k.test(e))!.run(e); // the duplicate is selected: duplicate it again
+      const xs = doc.strokes('p1').map(s => s.points[0][0]);
+      expect(xs.length).toBe(3);
+      expect(xs[1]).toBeGreaterThan(xs[0]);
+      expect(xs[2]).toBeGreaterThan(xs[1]);
+      expect(getClip()).toBeNull();
+      expect(doc.history.top()!.label).toBe('duplicate');
+    });
+
+    it('Ctrl+C and Ctrl+V go through the browser clipboard events when they come', () => {
+      const { app, doc } = twoPages();
+      app.mount();
+      app.toggle(true);
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      const copy = new KeyboardEvent('keydown', { code: 'KeyC', key: 'c', ctrlKey: true, cancelable: true });
+      window.dispatchEvent(copy);
+      expect(copy.defaultPrevented).toBe(false); // left to the browser, which fires 'copy'
+      const data = new Map<string, string>();
+      const clipboardData = { setData: (t: string, v: string) => data.set(t, v), getData: (t: string) => data.get(t) || '' };
+      const fire = (type: string) => {
+        const ev = new Event(type, { cancelable: true });
+        Object.defineProperty(ev, 'clipboardData', { value: clipboardData });
+        document.body.dispatchEvent(ev);
+        return ev;
+      };
+      expect(fire('copy').defaultPrevented).toBe(true);
+      expect(JSON.parse(data.get('text/plain')!).strokes[0].id).toBe('a');
+      // A clip copied in another window arrives with the paste event.
+      data.set('text/plain', serializeClip(makeClip([stroke('far')], [960, 540])!));
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true }));
+      fire('paste');
+      expect(doc.strokes('p1').length).toBe(2);
+      expect(doc.strokes('p1')[1].id).not.toBe('far');
+      // A copy or paste event not started by our keys is left alone.
+      expect(fire('copy').defaultPrevented).toBe(false);
+    });
+
+    it('without a browser event the keys use the window clip', async () => {
+      const { app, doc } = setup();
+      app.mount();
+      app.toggle(true);
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyX', key: 'x', metaKey: true }));
+      await new Promise(r => setTimeout(r, 0));
+      expect(doc.strokes('p1')).toEqual([]);
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', metaKey: true }));
+      await new Promise(r => setTimeout(r, 0));
+      expect(doc.strokes('p1').length).toBe(1);
+      expect(app.selection!.ids).toEqual([doc.strokes('p1')[0].id]);
+    });
+
+    it('a paste event with other text pastes nothing once the clip reached the system clipboard', () => {
+      const { app, doc } = setup();
+      app.mount();
+      app.toggle(true);
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      let text = '';
+      const clipboardData = { setData: (_t: string, v: string) => { text = v; }, getData: () => text };
+      const fire = (type: string) => {
+        const ev = new Event(type, { cancelable: true });
+        Object.defineProperty(ev, 'clipboardData', { value: clipboardData });
+        document.body.dispatchEvent(ev);
+      };
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', key: 'c', ctrlKey: true }));
+      fire('copy');
+      text = 'some text copied in another program';
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true }));
+      fire('paste');
+      expect(doc.strokes('p1').length).toBe(1);
+      text = ''; // an empty clipboard: the window's clip
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true }));
+      fire('paste');
+      expect(doc.strokes('p1').length).toBe(2);
+    });
+
+    it('a clip copied with the button pastes even if the platform refused the system clipboard', async () => {
+      fakeSystemClipboard(async () => 'older text');
+      const { app, doc } = setup();
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      app.copySelection(); // writeText is refused
+      await tick();
+      await app.paste();
+      expect(doc.strokes('p1').length).toBe(2);
+    });
+
+    it('the paste button and the key fallback read a clip from another window', async () => {
+      const other = serializeClip(makeClip([stroke('far')], [960, 540])!);
+      fakeSystemClipboard(async () => other);
+      const { app, doc } = setup();
+      app.mount();
+      app.toggle(true);
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', metaKey: true })); // no paste event follows
+      await tick();
+      await tick();
+      expect(doc.strokes('p1').length).toBe(1);
+      expect(getClip()).not.toBeNull();
+      (document.querySelector('[data-id="paste"]') as HTMLButtonElement).click();
+      await tick();
+      expect(doc.strokes('p1').length).toBe(2);
+    });
+
+    it('a paste event with only an image after a synced copy pastes nothing', () => {
+      const { app, doc } = setup();
+      app.mount();
+      app.toggle(true);
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      let types: string[] = [];
+      let text = '';
+      const clipboardData = {
+        setData: (_t: string, v: string) => { text = v; types = ['text/plain']; },
+        getData: () => text,
+        get types() { return types; },
+      };
+      const fire = (type: string) => {
+        const ev = new Event(type, { cancelable: true });
+        Object.defineProperty(ev, 'clipboardData', { value: clipboardData });
+        document.body.dispatchEvent(ev);
+      };
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', key: 'c', ctrlKey: true }));
+      fire('copy');
+      text = ''; types = ['image/png']; // a screenshot
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true }));
+      fire('paste');
+      expect(doc.strokes('p1').length).toBe(1);
+      types = []; // empty clipboard: the window's clip
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true }));
+      fire('paste');
+      expect(doc.strokes('p1').length).toBe(2);
+    });
+
+    it('a paste waiting for the clipboard is dropped after a page turn or a new stroke', async () => {
+      let release: (t: string) => void = () => {};
+      fakeSystemClipboard(() => new Promise<string>(r => { release = r; }));
+      const doc = new NotesDoc(deckFromPdf({ title: 't.pdf', pageSizes: [[960, 540], [960, 540]] }));
+      const surfaces = ['p1', 'p2'].map(pageId => ({ pageId, ...createPageSurface(doc.pageSize(pageId)) }));
+      let shown = surfaces[0];
+      const app = createAnnotator({ doc, activeSurface: () => shown, storage: null });
+      surfaces.forEach(s => app.surfaces.set(s.pageId, s));
+      cleanup.push(() => app.input.destroy());
+      setClip(makeClip([stroke('a')], [960, 540]));
+      const turned = app.paste();
+      shown = surfaces[1];
+      release('');
+      await turned;
+      expect(doc.strokes('p1')).toEqual([]);
+      expect(doc.strokes('p2')).toEqual([]);
+      let busy = false;
+      const spy = vi.spyOn(app.input, 'busy', 'get').mockImplementation(() => busy);
+      cleanup.push(() => spy.mockRestore());
+      const drawing = app.paste();
+      busy = true; // a stroke started while the browser asked
+      release('');
+      await drawing;
+      expect(doc.strokes('p2')).toEqual([]);
+      busy = false;
+      const ok = app.paste();
+      release('');
+      await ok;
+      expect(doc.strokes('p2').length).toBe(1);
+    });
+
+    it('a denied clipboard read falls back to the window clip', async () => {
+      fakeSystemClipboard(() => Promise.reject(new Error('denied')));
+      const { app, doc } = setup();
+      setClip(makeClip([stroke('a')], [960, 540]));
+      await app.paste();
+      expect(doc.strokes('p1').length).toBe(1);
+    });
+
+    it('a crafted clip that scales out of range pastes nothing and does not throw', async () => {
+      const { app, doc } = setup();
+      setClip(makeClip([stroke('a')], [1e-6, 1e-6]));
+      await expect(app.paste()).resolves.toBeUndefined();
+      expect(doc.strokes('p1')).toEqual([]);
+    });
+
+    it('copy, cut, paste and duplicate keys are off while the overview is open', () => {
+      const { app, doc } = setup();
+      let open = true;
+      app.overview = { open: () => {}, isOpen: () => open };
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      const keymap = defaultKeymap(app);
+      const hit = (code: string, key: string) =>
+        keymap.some(k => k.test(new KeyboardEvent('keydown', { code, key, ctrlKey: true })));
+      expect(['C', 'X', 'V', 'D'].map(k => hit(`Key${k}`, k.toLowerCase()))).toEqual([false, false, false, false]);
+      open = false;
+      expect(['C', 'X', 'V', 'D'].map(k => hit(`Key${k}`, k.toLowerCase()))).toEqual([true, true, true, true]);
+    });
+
+    it('hidden edit buttons keep their place', () => {
+      const style = document.createElement('style');
+      style.textContent = readFileSync(resolve(process.cwd(), 'src/toolbar.css'), 'utf8');
+      document.head.appendChild(style);
+      cleanup.push(() => style.remove());
+      const { app } = setup();
+      app.mount();
+      app.toggle(true);
+      const group = document.querySelector('.ann-group-edit') as HTMLElement;
+      expect(group.hidden).toBe(true);
+      expect(getComputedStyle(group).visibility).toBe('hidden');
+      expect(getComputedStyle(group).display).not.toBe('none');
+    });
+
+    it('keys typed into a text field are not taken', async () => {
+      const { app, doc } = setup();
+      app.mount();
+      app.toggle(true);
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      input.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', key: 'd', ctrlKey: true, bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', key: 'c', ctrlKey: true, bubbles: true }));
+      await new Promise(r => setTimeout(r, 0));
+      expect(doc.strokes('p1').length).toBe(1);
+      expect(getClip()).toBeNull();
+    });
+  });
+
   it('A toggles annotate mode through bindKeys', () => {
     const { app } = setup();
     const unbind = app.mount();
@@ -239,6 +577,32 @@ describe('annotator, toolbar and keys', () => {
     unbind();
     window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyA', key: 'a' }));
     expect(app.enabled).toBe(true);
+  });
+
+  it('toolbar destroy removes the bar and stops watching its size', () => {
+    const observers: { disconnect: ReturnType<typeof vi.fn> }[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      disconnect = vi.fn();
+      constructor() { observers.push(this); }
+      observe() {}
+    });
+    try {
+      const { app } = setup();
+      app.mount();
+      const bar = app.toolbar!;
+      expect(observers).toHaveLength(1);
+      bar.destroy();
+      expect(observers[0].disconnect).toHaveBeenCalled();
+      expect(bar.el.isConnected).toBe(false);
+      // a late refresh (an autosave's 'saved') leaves the next session's bar size alone
+      const style = document.documentElement.style;
+      style.setProperty('--ann-bar-h', '48px');
+      app.refresh();
+      app.doc.markSaved();
+      expect(style.getPropertyValue('--ann-bar-h')).toBe('48px');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('a registered pages group replaces the placeholder', () => {

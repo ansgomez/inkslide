@@ -4,7 +4,7 @@
  * The bar is built from groups in GROUP_ORDER. Each group builder is
  * registered with registerGroup(id, builder) and returns { id, label, items }
  * where an item is { id, title, icon | swatch | dot | text, onClick, active(),
- * disabled() }. The app registers its own builders for 'pages' (pages.ts
+ * disabled(), hidden() }. The app registers its own builders for 'pages' (pages.ts
  * pagesGroup) and 'file'; otherwise the disabled placeholders below are used.
  */
 import type { NotesDoc } from './model';
@@ -45,6 +45,9 @@ export const ICONS: Record<string, string> = {
   // Export: a page with an arrow out of it.
   pdf: '<path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/><path d="M9 14h7M13.5 11.5L16 14l-2.5 2.5"/>',
   print: '<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/>',
+  copy: '<rect x="8" y="8" width="12" height="13" rx="1.5"/><path d="M16 8V4.5A1.5 1.5 0 0014.5 3h-9A1.5 1.5 0 004 4.5v11A1.5 1.5 0 005.5 17H8"/>',
+  cut: '<circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.2 15.8L19 3M15.8 15.8L5 3"/>',
+  paste: '<path d="M9 4H6.5A1.5 1.5 0 005 5.5v14A1.5 1.5 0 006.5 21h11a1.5 1.5 0 001.5-1.5v-14A1.5 1.5 0 0017.5 4H15"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M9 12h6M9 16h4"/>',
 };
 
 /** Inline SVG markup of icon `name`. */
@@ -73,6 +76,8 @@ export interface ToolbarItem {
   onClick?: () => void;
   active?: () => boolean;
   disabled?: () => boolean;
+  /** Hide the button, keeping its place (a group whose buttons are all hidden is hidden too). */
+  hidden?: () => boolean;
 }
 
 /** A group of toolbar items. */
@@ -89,7 +94,7 @@ export interface ToolbarHost {
   tool: ToolId;
   doc: NotesDoc;
   selection: unknown;
-  overview?: { open(): void } | null;
+  overview?: { open(): void; isOpen?(): boolean } | null;
   toggle(on?: boolean): void;
   refresh(): void;
   setTool(id: ToolId): void;
@@ -103,6 +108,14 @@ export interface ToolbarHost {
   activeStrokes(): readonly Stroke[];
   deleteSelection(): void;
   select(sel: null): void;
+  copySelection(): void;
+  cutSelection(): void;
+  paste(): unknown;
+  duplicateSelection(): void;
+  /** Whether this window has strokes to paste. */
+  canPaste(): boolean;
+  /** Ctrl/Cmd+C, X or V; false leaves the key to the browser (see Annotator.clipboardKey). */
+  clipboardKey(kind: 'copy' | 'cut' | 'paste'): boolean;
 }
 
 /** Builds a group for an app; called once by createToolbar. */
@@ -111,7 +124,7 @@ export type GroupBuilder<A = ToolbarHost> = (app: A) => ToolbarGroup;
 // ── Groups ─────────────────────────────────────────────────────
 
 /** Toolbar groups, in bar order. */
-export const GROUP_ORDER = ['mode', 'tools', 'colors', 'sizes', 'history', 'pages', 'file'] as const;
+export const GROUP_ORDER = ['mode', 'tools', 'colors', 'sizes', 'history', 'edit', 'pages', 'file'] as const;
 const groups: Record<string, GroupBuilder<any>> = {};
 
 /** Register (or replace) the builder of a toolbar group. */
@@ -194,6 +207,16 @@ registerGroup('history', app => ({
   ],
 }));
 
+// Shown only when there is something to copy or paste, for writing with the pen alone.
+registerGroup('edit', app => ({
+  id: 'edit', label: 'Edit',
+  items: [
+    { id: 'copy', title: 'Copy (Ctrl/Cmd+C)', icon: 'copy', onClick: () => app.copySelection(), hidden: () => !app.selection },
+    { id: 'cut', title: 'Cut (Ctrl/Cmd+X)', icon: 'cut', onClick: () => app.cutSelection(), hidden: () => !app.selection },
+    { id: 'paste', title: 'Paste (Ctrl/Cmd+V)', icon: 'paste', onClick: () => void app.paste(), hidden: () => !app.canPaste() },
+  ],
+}));
+
 // Placeholders: replaced when the pages / file groups are registered.
 const soon = (id: string, title: string, iconName: string): ToolbarItem =>
   ({ id, title: `${title} (coming soon)`, icon: iconName, disabled: () => true });
@@ -265,6 +288,8 @@ function buildButton(item: ToolbarItem, extraClass?: string): HTMLElement {
 export interface Toolbar {
   el: HTMLDivElement;
   update(): void;
+  /** Remove the bar and stop watching its size. */
+  destroy(): void;
 }
 
 /** Build the toolbar from the registered groups (in GROUP_ORDER) and add it to `parent`. */
@@ -274,6 +299,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
   bar.setAttribute('role', 'toolbar');
   bar.setAttribute('aria-label', 'Lecture notes');
   const entries: { item: ToolbarItem; btn: HTMLElement }[] = [];
+  const hiding = new Set<HTMLElement>(); // groups with buttons that hide
   // Previous/next page sit large at the two ends of the bar, easy to hit
   // on a tablet; every other button stays in its group.
   const edge = {} as Record<'start' | 'end', HTMLDivElement>;
@@ -297,6 +323,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
       const btn = buildButton(item);
       (item.edge ? edge[item.edge] : g).appendChild(btn);
       entries.push({ item, btn });
+      if (item.hidden && !item.edge) hiding.add(g);
     }
     bar.appendChild(g);
   }
@@ -313,10 +340,13 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
     style.setProperty('--ann-bar-w', `${bar.offsetWidth}px`);
   };
   if (!document.body.dataset.annDock) document.body.dataset.annDock = loadDock();
-  if ('ResizeObserver' in window) new ResizeObserver(setOffset).observe(bar);
+  const resize = 'ResizeObserver' in window ? new ResizeObserver(setOffset) : null;
+  if (resize) resize.observe(bar);
   setOffset();
 
+  let destroyed = false;
   function update(): void {
+    if (destroyed) return; // a detached bar would set the bar size to 0 for the next one
     for (const { item, btn } of entries) {
       if (item.text) {
         const t = item.text();
@@ -338,11 +368,21 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
       btn.classList.toggle('is-active', on);
       if (item.active) btn.setAttribute('aria-pressed', String(on));
       (btn as HTMLButtonElement).disabled = item.disabled ? !!item.disabled() : false;
+      if (item.hidden) btn.hidden = !!item.hidden(); // keeps its place (toolbar.css): the bar does not reflow
     }
+    for (const g of hiding) g.hidden = [...g.children].every(b => (b as HTMLElement).hidden);
     setOffset();
   }
   update();
-  return { el: bar, update };
+  return {
+    el: bar,
+    update,
+    destroy() {
+      destroyed = true;
+      if (resize) resize.disconnect();
+      bar.remove();
+    },
+  };
 }
 
 // ── Keyboard ───────────────────────────────────────────────────
@@ -370,9 +410,12 @@ export const letter = (e: KeyboardEvent, k: string): boolean => e.code === `Key$
 const labelOrCode = (e: KeyboardEvent, k: string): boolean =>
   e.key.toLowerCase() === k || (!/^[a-z]$/i.test(e.key) && letter(e, k));
 
-/** Shortcuts of annotate mode: tools, sizes 1–4, undo/redo, delete or drop the selection. */
+/** Shortcuts of annotate mode: tools, sizes 1–4, undo/redo, copy/cut/paste/duplicate, delete or drop the selection. */
 export function defaultKeymap(app: ToolbarHost): Shortcut[] {
   const mod = (e: KeyboardEvent): boolean => (e.ctrlKey || e.metaKey) && !e.altKey;
+  // Copy, cut, paste and duplicate act on the shown page: not while the overview covers it.
+  const edit = (e: KeyboardEvent, k: string): boolean => mod(e) && labelOrCode(e, k) && !e.shiftKey &&
+    !(app.overview && app.overview.isOpen && app.overview.isOpen());
   const tool = (k: string, id: ToolId, shift = false): Shortcut => ({
     test: e => letter(e, k) && noMods(e) && e.shiftKey === shift,
     run: () => app.setTool(id),
@@ -380,6 +423,10 @@ export function defaultKeymap(app: ToolbarHost): Shortcut[] {
   return [
     { test: e => mod(e) && labelOrCode(e, 'z') && !e.shiftKey, run: () => app.undo() },
     { test: e => mod(e) && ((labelOrCode(e, 'z') && e.shiftKey) || labelOrCode(e, 'y')), run: () => app.redo() },
+    { test: e => edit(e, 'c') && !!app.selection, run: () => app.clipboardKey('copy') },
+    { test: e => edit(e, 'x') && !!app.selection, run: () => app.clipboardKey('cut') },
+    { test: e => edit(e, 'v'), run: () => app.clipboardKey('paste') },
+    { test: e => edit(e, 'd') && !!app.selection, run: () => app.duplicateSelection() },
     tool('p', 'pen'), tool('h', 'highlighter'), tool('s', 'selector'),
     tool('l', 'laser'), tool('e', 'eraser'), tool('e', 'partial', true),
     ...[0, 1, 2, 3].map((i): Shortcut => ({

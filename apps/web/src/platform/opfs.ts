@@ -19,6 +19,25 @@ export async function opfsDir(name: string, strict = false): Promise<FileSystemD
   }
 }
 
+/** A file or directory that is not there (any other error is a real failure). */
+export const isNotFound = (e: unknown): boolean => (e as Error | null)?.name === 'NotFoundError';
+
+/**
+ * File `name` in OPFS directory `dirName`, to read: null if there is no OPFS
+ * here (opfsDir strict) or no such file. Rejects on any other failure: the
+ * file may be there and unreadable for now, which must not pass for "none".
+ */
+export async function readOpfsFile(dirName: string, name: string): Promise<File | null> {
+  const dir = await opfsDir(dirName, true);
+  if (!dir) return null;
+  try {
+    return await (await dir.getFileHandle(name)).getFile();
+  } catch (e) {
+    if (isNotFound(e)) return null;
+    throw e;
+  }
+}
+
 /**
  * Whether the page can write OPFS files (createWritable: Chromium, Firefox,
  * Safari 26+; Safari 17-18 has OPFS but can write it only from a worker).

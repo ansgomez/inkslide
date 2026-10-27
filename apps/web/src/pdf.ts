@@ -14,7 +14,7 @@
  * page.cleanup() once the page is not among the last few rendered.
  *
  * The legacy build: the modern one uses Map.getOrInsertComputed, which
- * Electron 39 (Chromium 142) and older iPad Safari versions lack.
+ * older iPad Safari versions lack (Electron 43 has it).
  */
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';

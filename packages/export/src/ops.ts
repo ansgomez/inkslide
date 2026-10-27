@@ -22,10 +22,13 @@ export interface Box {
   height: number;
 }
 
-/** Page rotation normalized to 0, 90, 180 or 270 (PDF allows any multiple of 90, also negative). */
+/**
+ * Page rotation normalized to 0, 90, 180 or 270 (PDF allows any multiple of 90, also negative).
+ * Like PDF.js, a /Rotate that is no multiple of 90 counts as 0 (it is not rounded).
+ */
 export function normalizeRotation(angle: number): 0 | 90 | 180 | 270 {
-  const r = ((Math.round(angle / 90) * 90) % 360 + 360) % 360;
-  return r as 0 | 90 | 180 | 270;
+  if (!Number.isFinite(angle) || angle % 90 !== 0) return 0;
+  return ((angle % 360 + 360) % 360) as 0 | 90 | 180 | 270;
 }
 
 /** Size of a page as a viewer shows it (the box, rotated). */

@@ -3,19 +3,25 @@ import '@inkslide/annotate/toolbar.css';
 import './style.css';
 import { banner } from './banner';
 import { getAdapter, isWebAdapter } from './platform';
+import { createPresenter } from './presenter';
 import { setupPwa } from './pwa';
+import { desktopRecentSource, mountRecentList } from './recent-list';
 import { createViewer } from './viewer';
 
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
 
 const adapter = getAdapter();
+// Presenter mode (desktop): the audience window mirrors this one (presenter.ts, audience.ts).
+const bridge = window.inkslide;
+const presenter = bridge && typeof bridge.onPresenter === 'function' ? createPresenter(m => bridge.presenterSend(m)) : null;
+if (presenter) bridge!.onPresenter(on => presenter.setActive(on));
 const viewer = createViewer({
   stage: $('.ink-stage'),
   page: $('.ink-page'),
   pdfCanvas: $('canvas.ink-pdf'),
   liveCanvas: $('canvas.ink-live'),
   empty: $('.ink-empty'),
-}, adapter);
+}, adapter, presenter);
 
 document.body.dataset.platform = adapter.platform;
 $('.ink-open').addEventListener('click', () => void viewer.openFrom());
@@ -69,6 +75,11 @@ void (async () => {
     else if (url && adapter.platform === 'web') await viewer.openFrom(url);
   } catch (e) {
     banner(`Could not open the file: ${(e as Error).message || e}`, 'error');
+  }
+  // Desktop: the recent files on the start screen, only if it is still shown
+  // (reading their notes is wasted work when a PDF was opened at start).
+  if (window.inkslide && !viewer.session) {
+    void mountRecentList($('.ink-empty'), { source: desktopRecentSource(window.inkslide), open: file => viewer.open(file) });
   }
 })();
 

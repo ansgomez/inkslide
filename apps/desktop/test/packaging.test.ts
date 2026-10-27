@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -142,5 +143,18 @@ describe('dist preflight', () => {
     ]);
     expect(missingForRpm({ has: () => true, libs: `${libs}\tlibcrypt.so.1 (libc6,x86-64) => /lib64/libcrypt.so.1\n` })).toEqual([]);
     expect(missingForRpm({ has: () => true, libs: null })).toEqual([]);
+  });
+});
+
+describe('electron version', () => {
+  // Electron 39-41 (Chromium 142-146) dereference a null window in the main
+  // process when a touchpad hold gesture starts while no Inkslide window has
+  // pointer focus (ui::WaylandEventSource::OnHoldEvent, native Wayland): the
+  // app crashes with SIGSEGV. Chromium 148 (Electron 42) checks for it.
+  it('is at least 42 (Wayland hold-gesture crash fixed)', () => {
+    // The installed package, not the spec in package.json (package.json only, so
+    // this does not download the Electron binary).
+    const { version } = createRequire(import.meta.url)('electron/package.json') as { version: string };
+    expect(Number(version.split('.')[0])).toBeGreaterThanOrEqual(42);
   });
 });

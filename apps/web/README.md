@@ -35,12 +35,14 @@ picks another preview port than 4173.
 | `persist.ts` | One autosave controller per open document (`@inkslide/annotate/autosave`). |
 | `export.ts` | Lazy import of `@inkslide/export`. |
 | `print.ts` | Browser print: the export rendered to page images (200 dpi), one `@page` size per page. |
+| `presenter.ts` | Presenter mode (desktop), the app window's side: the viewer's page, ink, stroke being written and laser as presenter messages for the audience window. |
+| `audience.ts` | Entry of `audience.html`: presenter mode's audience window, read-only (the page fitted whole, the ink, the live stroke, the laser). |
 | `counter.ts` | Page counter text and PDF-page steps (pure). |
 | `banner.ts` | Message banners, optionally with an action button. |
 | `dom.ts` | `localStorage` access that survives blocked storage (`isTyping()` is the toolbar's, `@inkslide/annotate/toolbar`). |
 | `platform/` | Adapter choice: `window.inkslide` (Electron), `tauri.ts` (Tauri on iPad and Android: plugins, notes in the app data directory) or `web.ts` (open dialog or file input, OPFS / `localStorage`, save picker, share sheet or download); `recent-storage.ts` stores the recent files (IndexedDB, OPFS); `opfs.ts` holds the shared OPFS helpers. |
 | `pwa.ts` | Browser build only: service worker registration and "Reload to update", `launchQueue`, the recent files list. |
-| `recent.ts`, `recent-list.ts` | Recent files: handles or kept copies, size limit and LRU (pure, over a storage backend); the list on the start screen. |
+| `recent.ts`, `recent-list.ts` | Recent files: handles or kept copies, size limit and LRU (pure, over a storage backend); the list on the start screen, fed by the browser's remembered files or the desktop's recent files. |
 
 The page structure and the rendering pipeline are described in
 [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
@@ -91,7 +93,7 @@ Playwright's file chooser does not handle `showOpenFilePicker`.
   CDN, so it works offline. `connect-src` allows no other sites (the same page runs in
   Electron), so `?pdf=` opens PDFs of the page's own site only.
 - PDF.js is the legacy build, because the modern one needs `Map.getOrInsertComputed`, which
-  Electron 39 and older iPad Safari lack.
+  older iPad Safari lacks (Electron 43 has it).
 - `window.inkslideViewer` is exposed for tests and debugging.
 - `plugins/notices.ts` copies the repository's `THIRD_PARTY_NOTICES.md` into `dist/` and fails
   the build when a bundled npm package is not listed there (`pnpm notices` updates it).
