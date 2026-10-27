@@ -121,9 +121,9 @@ requests that come before the page has loaded wait in `OpenRequests` (the first 
 builds only, since it skips the save before closing.
 
 All windows (the app, the audience window of presenter mode and the hidden print window) are
-locked down by `harden.ts`: context isolation, sandbox, no Node; no navigation, no new windows
-(http(s) links open in the system browser); every permission request and check is refused
-except fullscreen.
+locked down by `harden.ts`: context isolation, sandbox, no Node; no navigation, no new windows;
+every permission request and check is refused except fullscreen. Only the app window hands
+http(s) links to the system browser; in the audience and print windows they are only refused.
 
 ## Presenter mode
 
