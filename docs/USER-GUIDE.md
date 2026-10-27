@@ -234,6 +234,7 @@ the main window; the audience window takes no input.
 - **F5** again, View → Presenter Mode, or **Esc** in the audience window ends presenter mode,
   as does closing the audience window. Closing the main window closes it too.
 - Many presenter remotes send F5 for their "start presentation" button.
+- PDFs larger than 256 MB are not mirrored; the audience window says so.
 
 The browser and the iPad and Android apps have no presenter mode yet.
 

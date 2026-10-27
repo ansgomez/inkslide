@@ -6,9 +6,12 @@
  *
  * - the audience opening (or loading again) gets everything: the PDF, the
  *   notes, the page shown;
- * - a finished edit sends the strokes of its page, collected until the end
- *   of the task (one message per page, however many changes);
+ * - a finished edit sends its page's changes at the end of the task (one
+ *   message per page, however many changes): all strokes the first time,
+ *   then a delta of the new and changed strokes plus the order of the ids
+ *   (strokes are immutable, so a changed stroke is a new object);
  * - page changes and blank pages (insert, delete, paper) go at once;
+ * - a PDF over PRESENTER_LIMITS.pdfBytes is not mirrored: the audience says so;
  * - the stroke being written and the laser go at most every LIVE_MS, the
  *   stroke only with the points that changed since the last message.
  *
@@ -17,7 +20,7 @@
  */
 import type { NotesDoc, PdfFile, Point, Stroke, StrokeTool } from '@inkslide/annotate';
 import { serializeStroke } from '@inkslide/annotate/model';
-import { commonPrefix, type PresenterMessage } from '@inkslide/annotate/presenter';
+import { commonPrefix, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import type { LiveStroke } from '@inkslide/annotate/render';
 
 /** Shortest time between two messages of the stroke being written or the laser, ms. */
@@ -65,25 +68,56 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
   /** Pages whose strokes changed, sent at the end of the task. */
   const dirty = new Set<string>();
   let flushQueued = false;
+  /** The strokes the audience has, per page it got them for (by id; the objects tell what changed). */
+  const sent = new Map<string, Map<string, Stroke>>();
+  /** All notes went out in this task: the 'pages' event of the same load needs nothing more. */
+  let notesSent = false;
   /** The stroke being written: what the audience has, and what it should get. */
   let live: { page: string; tool: StrokeTool; stroke: Stroke | null; sent: readonly Point[]; ended: boolean } | null = null;
   let laser: { page: string; points: [number, number][] } | null = null;
   let timer: unknown = null;
 
-  const post = (m: PresenterMessage): void => {
+  const post = (m: PresenterMessage): boolean => {
     try {
       send(m);
+      return true;
     } catch (e) {
       console.error('Presenter mode: a message could not be sent', e);
+      return false;
     }
   };
+
+  /** A page's strokes for the audience: all of them the first time, else what changed. */
+  function sendPage(d: NotesDoc, id: string): void {
+    const strokes = d.strokes(id);
+    const had = sent.get(id);
+    if (!had) {
+      post({ type: 'strokes', page: id, strokes: strokes.map(serializeStroke) });
+    } else {
+      const changed = strokes.filter(s => had.get(s.id) !== s);
+      const same = !changed.length && strokes.length === had.size;
+      if (same) return; // e.g. an edit undone in the same task
+      post({ type: 'delta', page: id, order: strokes.map(s => s.id), strokes: changed.map(serializeStroke) });
+    }
+    sent.set(id, new Map(strokes.map(s => [s.id, s])));
+  }
+
+  /** The audience gets all notes: no page has a known state there any more. */
+  function postNotes(d: NotesDoc): void {
+    dirty.clear();
+    sent.clear();
+    post({ type: 'notes', notes: JSON.stringify(d.toJSON()) });
+    notesSent = true;
+    timers.queueMicrotask(() => { notesSent = false; });
+  }
 
   /** Strokes of the pages that changed, then the end of a live stroke (so the audience never shows neither). */
   function flush(): void {
     flushQueued = false;
     if (active && doc) {
       for (const id of dirty) {
-        if (doc.hasPage(id)) post({ type: 'strokes', page: id, strokes: doc.strokes(id).map(serializeStroke) });
+        if (doc.hasPage(id)) sendPage(doc, id);
+        else sent.delete(id); // a deleted blank page
       }
     }
     dirty.clear();
@@ -129,13 +163,21 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
   }
 
   function sendAll(): void {
+    sent.clear();
     if (!active) return;
     if (!file || !doc) {
       post({ type: 'close' });
       return;
     }
-    post({ type: 'open', pdf: file.bytes, title: doc.deck.title || file.name });
-    post({ type: 'notes', notes: JSON.stringify(doc.toJSON()) });
+    if (file.bytes.byteLength > PRESENTER_LIMITS.pdfBytes) {
+      post({ type: 'close', reason: 'too-large' });
+      return;
+    }
+    if (!post({ type: 'open', pdf: file.bytes, title: doc.deck.title || file.name })) {
+      post({ type: 'close', reason: 'failed' });
+      return;
+    }
+    postNotes(doc);
     if (page) post({ type: 'page', page });
   }
 
@@ -143,16 +185,17 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
     d.onChange((pageId, kind) => {
       if (d !== doc || !active || kind === 'saved') return;
       if (kind === 'pages') {
+        if (pageId === null && notesSent) return; // a load: the notes just sent have the blank pages
         post({ type: 'blanks', blanks: d.blankMeta() });
         // An undone delete brings its strokes back with it.
-        d.blankOrder.forEach(id => dirty.add(id));
+        if (pageId) dirty.add(pageId);
+        else d.blankOrder.forEach(id => dirty.add(id));
         queueFlush();
       } else if (pageId) {
         dirty.add(pageId);
         queueFlush();
       } else {
-        dirty.clear(); // everything (load, import, revert)
-        post({ type: 'notes', notes: JSON.stringify(d.toJSON()) });
+        postNotes(d); // everything (load, import, revert)
       }
     });
   }

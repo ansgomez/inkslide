@@ -17,9 +17,10 @@ import '@inkslide/annotate/toolbar.css';
 import './style.css';
 import { NotesDoc, type Paper, type Point } from '@inkslide/annotate';
 import { deckFromPdf } from '@inkslide/annotate/io';
-import { parsePresenterMessage, type PresenterMessage } from '@inkslide/annotate/presenter';
+import { parsePresenterMessage, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import * as render from '@inkslide/annotate/render';
 import type { StrokeTool } from '@inkslide/annotate/geometry';
+import type { StrokeInput } from '@inkslide/annotate/model';
 import { pdfPageNumber } from './counter';
 import { fitTo, renderScale, type FitRect } from './fit';
 import { bitmapKey, createPageBitmaps } from './page-bitmaps';
@@ -244,7 +245,8 @@ async function handle(m: PresenterMessage): Promise<void> {
       return;
     case 'close':
       closeDoc();
-      setWaiting('No PDF is open.');
+      setWaiting(m.reason === 'too-large' ? `Could not mirror this PDF: it is larger than ${PRESENTER_LIMITS.pdfBytes / 2 ** 20} MB.`
+        : m.reason === 'failed' ? 'Could not mirror this PDF.' : 'No PDF is open.');
       return;
     case 'page':
       show(m.page);
@@ -266,6 +268,11 @@ async function handle(m: PresenterMessage): Promise<void> {
     doc.load(JSON.parse(m.notes));
   } else if (m.type === 'strokes') {
     doc.applyRemoteStrokes(m.page, m.strokes);
+  } else if (m.type === 'delta') {
+    // Known strokes go back as the same objects: their SVG nodes stay (applyRemoteStrokes).
+    const known = new Map<string, StrokeInput>(doc.strokes(m.page).map(s => [s.id, s]));
+    for (const s of m.strokes) known.set(s.id, s);
+    doc.applyRemoteStrokes(m.page, m.order.flatMap(id => known.get(id) ?? []));
   } else if (m.type === 'blanks') {
     const listed = new Set(m.blanks.map(b => b.id));
     doc.applyRemoteBlanks(m.blanks, doc.blankOrder.filter(id => !listed.has(id)));
@@ -286,7 +293,7 @@ function receive(value: unknown): void {
     console.error('Presenter mode: a message could not be shown', e);
     if (m.type === 'open') {
       closeDoc();
-      setWaiting('The PDF could not be shown.');
+      setWaiting('Could not mirror this PDF.');
     }
   });
 }

@@ -10,9 +10,11 @@
  *
  *   open      the PDF (its bytes) and its title; a new document
  *   notes     all notes, as a notes file (after open, import, revert)
- *   close     no document any more
+ *   close     no document any more (`reason`: the PDF is too large to mirror, or failed)
  *   page      the page shown (p<n> or a blank page id)
- *   strokes   all strokes of one page (after any finished edit)
+ *   strokes   all strokes of one page (its first change after open, notes or a reload)
+ *   delta     a page's later changes: the ids of all its strokes in order, and only
+ *             the strokes that are new or changed (the others are known by id)
  *   blanks    every blank page: id, the page it follows, its paper
  *   live      the stroke being written: points from index `from` on
  *   live-end  the stroke being written is gone (finished or dropped)
@@ -32,9 +34,10 @@ export interface BlankMeta {
 export type PresenterMessage =
   | { type: 'open'; pdf: Uint8Array; title: string }
   | { type: 'notes'; notes: string }
-  | { type: 'close' }
+  | { type: 'close'; reason?: 'too-large' | 'failed' }
   | { type: 'page'; page: string }
   | { type: 'strokes'; page: string; strokes: StrokeJSON[] }
+  | { type: 'delta'; page: string; order: string[]; strokes: StrokeJSON[] }
   | { type: 'blanks'; blanks: BlankMeta[] }
   | { type: 'live'; page: string; tool: StrokeTool; color: string; size: number; from: number; points: Point[] }
   | { type: 'live-end' }
@@ -42,7 +45,12 @@ export type PresenterMessage =
 
 /** Size limits of the messages. */
 export const PRESENTER_LIMITS = Object.freeze({
-  pdfBytes: 2 ** 31 - 1,
+  /**
+   * Largest PDF mirrored. The bytes cross IPC twice (app window → main →
+   * audience) each time presenter mode starts or a window reloads; larger
+   * PDFs are not mirrored (`close` with reason 'too-large').
+   */
+  pdfBytes: 256 * 2 ** 20,
   /** Characters of the notes text (as the desktop app's notes files). */
   notesChars: 256 * 2 ** 20,
   title: 1000,
@@ -113,6 +121,8 @@ export function parsePresenterMessage(value: unknown): PresenterMessage {
     case 'notes':
       return { type: 'notes', notes: text(v.notes, PRESENTER_LIMITS.notesChars, 'notes') };
     case 'close':
+      if (v.reason !== undefined && v.reason !== 'too-large' && v.reason !== 'failed') fail('close reason');
+      return v.reason === undefined ? { type: 'close' } : { type: 'close', reason: v.reason as 'too-large' | 'failed' };
     case 'live-end':
       return { type: v.type };
     case 'page':
@@ -120,6 +130,14 @@ export function parsePresenterMessage(value: unknown): PresenterMessage {
     case 'strokes': {
       const budget = { left: PRESENTER_LIMITS.points };
       return { type: 'strokes', page: page(), strokes: list(v.strokes, PRESENTER_LIMITS.strokes, 'strokes').map(s => stroke(s, budget)) };
+    }
+    case 'delta': {
+      const budget = { left: PRESENTER_LIMITS.points };
+      return {
+        type: 'delta', page: page(),
+        order: list(v.order, PRESENTER_LIMITS.strokes, 'order').map(id => text(id, PRESENTER_LIMITS.id, 'stroke id')),
+        strokes: list(v.strokes, PRESENTER_LIMITS.strokes, 'strokes').map(s => stroke(s, budget)),
+      };
     }
     case 'blanks':
       return {

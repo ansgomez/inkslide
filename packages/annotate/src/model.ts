@@ -509,11 +509,20 @@ export class NotesDoc {
     });
   }
 
-  /** Returns false if the page is unknown here (e.g. its blank page has not arrived yet). */
+  /**
+   * Returns false if the page is unknown here (e.g. its blank page has not arrived yet).
+   * A stroke the page already has (the same object, or the same id and content) is
+   * kept as it is, so the SVG keeps its node (render.syncLayer).
+   */
   applyRemoteStrokes(pageId: string, strokes: readonly StrokeInput[]): boolean {
     const page = this.pages.get(pageId) || this.pageOnDemand(pageId);
     if (!page) return false;
-    page.strokes = strokes.map(createStroke);
+    const had = new Map(page.strokes.map(s => [s.id, s]));
+    page.strokes = strokes.map(input => {
+      const old = input.id ? had.get(input.id) : undefined;
+      if (old && (old === input || sameStroke(old, input))) return old;
+      return createStroke(input);
+    });
     this.remoteDirty = true;
     this.emit(pageId);
     return true;
@@ -672,6 +681,16 @@ function strokeDelta(before: readonly Stroke[], after: readonly Stroke[]): {
 
 function checkPaper(paper: string): void {
   if (!PAPERS.includes(paper as Paper)) throw new Error(`Unknown paper: ${paper}`);
+}
+
+/** Whether unchecked stroke data has the same tool, color, size and points as `s` (missing pressure is 0.5). */
+export function sameStroke(s: Stroke, input: StrokeInput): boolean {
+  if (input.tool !== s.tool || input.color !== s.color || input.size !== s.size || !Array.isArray(input.points)) return false;
+  const pts = input.points as unknown[];
+  return pts.length === s.points.length && pts.every((p, i) => {
+    const q = p as number[] | null, o = s.points[i];
+    return !!q && q[0] === o[0] && q[1] === o[1] && (q[2] ?? 0.5) === o[2];
+  });
 }
 
 /** A stroke as stored: x and y rounded to 2 decimals, pressure to 3. */

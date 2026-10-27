@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Point, Stroke } from '@inkslide/annotate/geometry';
 import { deckFromPdf } from '@inkslide/annotate/io';
 import { createStroke, NotesDoc } from '@inkslide/annotate/model';
-import { parsePresenterMessage, type PresenterMessage } from '@inkslide/annotate/presenter';
+import { parsePresenterMessage, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import { createPresenter, LIVE_MS, type PresenterTimers } from '../src/presenter';
 
 /** Timers run by hand: microtasks with flush(), timeouts with tick(). */
@@ -90,13 +90,90 @@ describe('createPresenter', () => {
     expect(types()).toEqual(['blanks']);
   });
 
-  it('sends all notes after a load (import, revert)', () => {
-    const { presenter, doc, file, take } = setup();
+  it('sends all notes after a load (import, revert), and nothing more for it', () => {
+    const { presenter, doc, file, clock, take } = setup();
+    presenter.opened(file, doc);
+    presenter.setActive(true);
+    doc.insertBlankPage('p1', 'plain');
+    clock.flush();
+    take();
+    const notes = doc.toJSON();
+    doc.load(notes);
+    clock.flush();
+    expect(take().map(m => m.type)).toEqual(['notes']);
+    // After it, a change sends that page's strokes in full once.
+    doc.addStroke('p2', createStroke({ tool: 'pen', color: '#000', size: 4, points: [pt(1)] }));
+    clock.flush();
+    expect(take().map(m => m.type)).toEqual(['strokes']);
+  });
+
+  it('after the first change of a page, sends only new and changed strokes and the order', () => {
+    const { presenter, doc, file, clock, take } = setup();
     presenter.opened(file, doc);
     presenter.setActive(true);
     take();
-    doc.load({ format: 'marp-notes', version: 2, deck: doc.toJSON().deck, pages: [] });
-    expect(take().map(m => m.type)).toContain('notes');
+    const mk = (x: number) => createStroke({ tool: 'pen', color: '#000', size: 4, points: [pt(x), pt(x + 1)] });
+    const a = mk(1), b = mk(5), c = mk(9);
+    doc.addStroke('p1', a);
+    doc.addStroke('p1', b);
+    clock.flush();
+    expect(take()).toMatchObject([{ type: 'strokes', page: 'p1', strokes: [{ id: a.id }, { id: b.id }] }]);
+    doc.addStroke('p1', c);
+    clock.flush();
+    expect(take()).toMatchObject([{ type: 'delta', page: 'p1', order: [a.id, b.id, c.id], strokes: [{ id: c.id }] }]);
+    doc.restyleStrokes('p1', [b.id], { color: '#f00' });
+    doc.removeStrokes('p1', [a.id]);
+    clock.flush();
+    expect(take()).toEqual([{ type: 'delta', page: 'p1', order: [b.id, c.id], strokes: [expect.objectContaining({ id: b.id, color: '#f00' })] }]);
+    // An edit undone in the same task: nothing.
+    doc.addStroke('p1', mk(20));
+    doc.undo();
+    clock.flush();
+    expect(take()).toEqual([]);
+    // The audience window reloads: everything again, then the page in full.
+    presenter.setActive(true);
+    take();
+    doc.addStroke('p1', mk(30));
+    clock.flush();
+    expect(take().map(m => m.type)).toEqual(['strokes']);
+  });
+
+  it('sends only the blank page that changed, not every blank page', () => {
+    const { presenter, doc, file, clock, take } = setup();
+    presenter.opened(file, doc);
+    presenter.setActive(true);
+    const first = doc.insertBlankPage('p1', 'plain').pageId;
+    clock.flush();
+    take();
+    const second = doc.insertBlankPage('p2', 'lined').pageId;
+    clock.flush();
+    expect(take()).toMatchObject([{ type: 'blanks' }, { type: 'strokes', page: second }]);
+    // After a reload of the audience no page is known there: only the changed one is sent.
+    presenter.setActive(true);
+    take();
+    doc.setPaper(first, 'grid');
+    clock.flush();
+    expect(take()).toMatchObject([{ type: 'blanks' }, { type: 'strokes', page: first }]);
+  });
+
+  it('does not mirror a PDF too large for IPC, and says so', () => {
+    const { presenter, doc, take } = setup();
+    const huge = { path: null, name: 'huge.pdf', bytes: { byteLength: PRESENTER_LIMITS.pdfBytes + 1 } as Uint8Array };
+    presenter.opened(huge, doc);
+    presenter.setActive(true);
+    expect(take()).toEqual([{ type: 'close', reason: 'too-large' }]);
+  });
+
+  it('says the PDF failed when it cannot be sent', () => {
+    const sent: PresenterMessage[] = [];
+    const presenter = createPresenter(m => {
+      if (m.type === 'open') throw new Error('could not be cloned');
+      sent.push(m);
+    }, manualTimers().timers);
+    const doc = new NotesDoc(deckFromPdf({ title: 'Deck', pageSizes: [[960, 540]] }));
+    presenter.opened({ path: null, name: 'a.pdf', bytes: new Uint8Array(4) }, doc);
+    presenter.setActive(true);
+    expect(sent).toEqual([{ type: 'close', reason: 'failed' }]);
   });
 
   it('mirrors the stroke being written with only the points that changed, at most every LIVE_MS', () => {

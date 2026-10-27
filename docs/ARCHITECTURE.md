@@ -141,8 +141,9 @@ the sender is the app window), so it reads no files; it only receives.
 ```
 
 - **Messages** (`packages/annotate/src/presenter.ts`): `open` (the PDF bytes and title),
-  `notes` (the notes file text), `close`, `page`, `strokes` (all strokes of one page),
-  `blanks` (every blank page), `live` (the stroke being written, points from index `from`
+  `notes` (the notes file text), `close` (with a reason when the PDF is too large or could
+  not be sent), `page`, `strokes` (all strokes of one page), `delta` (a page's stroke ids in
+  order, and only the new and changed strokes), `blanks` (every blank page), `live` (the stroke being written, points from index `from`
   on), `live-end` and `laser` (points). `parsePresenterMessage` rebuilds a message from its
   known fields and refuses wrong types and oversized ones; main runs it before relaying, the
   audience page again on arrival, and `createStroke` checks strokes once more when they are
@@ -151,15 +152,20 @@ the sender is the app window), so it reads no files; it only receives.
   `NotesDoc`, the page shown, the stroke being written (a wrapper around the live ink
   renderer) and the laser (`ToolHost.sync`). When main says the audience page has loaded
   (`presenterState` true; also after a reload of either window), everything is sent. Then a
-  finished edit sends its page's strokes at the end of the task; blank page changes and page
-  turns go at once; a load (import, revert) sends the notes again. The stroke being written
+  finished edit sends its page's changes at the end of the task: all its strokes the first
+  time, after that a `delta` (strokes are immutable, so a changed stroke is a new object).
+  Blank page changes and page turns go at once; a load (import, revert) sends the notes
+  again. A PDF over 256 MB is not mirrored (its bytes cross IPC twice, each time presenter
+  mode starts or a window reloads): the audience window says so, as it does when the PDF
+  cannot be sent or opened. The stroke being written
   and the laser go at most every 30 ms (`LIVE_MS`), the stroke with only the points that
   changed since the last message (`commonPrefix`). `live-end` follows the finished stroke's
   `strokes`, so the audience never shows neither.
 - **Audience side** (`audience.ts`): messages are handled one at a time, in order (opening the
   PDF is async). The PDF is rendered with PDF.js like the viewer's (bitmap cache, the next
   page pre-rendered), always the whole page fitted to the window; notes go into a `NotesDoc`
-  through `load`, `applyRemoteStrokes` and `applyRemoteBlanks`; the live stroke and the laser
+  through `load`, `applyRemoteStrokes` (which keeps a stroke it already has, so its SVG node
+  is not drawn again) and `applyRemoteBlanks`; the live stroke and the laser
   are drawn in the page's SVG (`render.liveStroke`, `render.laser`). Nothing takes input.
 - **Ending:** closing the audience window, F5 or View → Presenter Mode again, or Escape in the
   audience window (which has no menu on Linux and Windows; F11 there toggles full screen).

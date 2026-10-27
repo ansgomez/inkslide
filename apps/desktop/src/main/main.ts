@@ -519,6 +519,11 @@ function start(): void {
       if (audience && audienceLoaded) audience.webContents.send(IPC.audience, m);
     } catch (err) {
       console.warn(`presenter message dropped: ${(err as Error).message}`);
+      // A PDF that cannot be relayed: the audience says so instead of waiting.
+      const open = !!message && typeof message === 'object' && (message as { type?: unknown }).type === 'open';
+      if (open && audience && audienceLoaded && e.sender === win?.webContents) {
+        audience.webContents.send(IPC.audience, { type: 'close', reason: 'failed' });
+      }
     }
   });
 

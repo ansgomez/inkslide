@@ -113,6 +113,16 @@ test('the audience page shows the presenter\'s page, ink, live stroke, laser and
   await expect(audience.locator('path.ann-live')).toHaveCount(0);
   await expect(audienceStrokes(audience)).toHaveCount(2);
 
+  // A later stroke on the page comes as a delta; the strokes already shown keep their nodes.
+  await audience.evaluate(() => {
+    (window as unknown as { kept: Element[] }).kept = [...document.querySelectorAll('.ann-pen path.ann-stroke-pen')];
+  });
+  await penStroke(presenter, [0.2, 0.8], [0.7, 0.85]);
+  await presenter.waitForTimeout(50);
+  expect(await relay(presenter, audience)).toEqual(['live', 'delta', 'live-end']);
+  await expect(audienceStrokes(audience)).toHaveCount(3);
+  expect(await audience.evaluate(() => (window as unknown as { kept: Element[] }).kept.every(n => n.isConnected))).toBe(true);
+
   // The laser.
   await presenter.keyboard.press('l');
   await firePointers(presenter, [
@@ -131,7 +141,7 @@ test('the audience page shows the presenter\'s page, ink, live stroke, laser and
   await presenter.waitForTimeout(50);
   expect(await relay(presenter, audience)).toEqual(['page']);
   await expect(audience.locator('.ink-page svg.ann-page:not(.ink-blank)')).toHaveCount(1);
-  await expect(audienceStrokes(audience)).toHaveCount(2);
+  await expect(audienceStrokes(audience)).toHaveCount(3);
 
   // The audience window closes: nothing more is sent.
   await presenting(presenter, false);

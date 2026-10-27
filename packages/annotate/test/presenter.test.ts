@@ -15,6 +15,10 @@ describe('parsePresenterMessage', () => {
     expect(parsePresenterMessage({ type: 'strokes', page: 'p1', strokes: [{ ...stroke, evil: '<script>' }] })).toEqual({
       type: 'strokes', page: 'p1', strokes: [{ id: 's1', tool: 'pen', color: '#000', size: 4, points: [[1, 2, 0.4], [3, 4, 0.5]] }],
     });
+    expect(parsePresenterMessage({ type: 'delta', page: 'p1', order: ['a', 's1'], strokes: [stroke], x: 1 })).toEqual({
+      type: 'delta', page: 'p1', order: ['a', 's1'], strokes: [{ ...stroke, points: [[1, 2, 0.4], [3, 4, 0.5]] }],
+    });
+    expect(parsePresenterMessage({ type: 'close', reason: 'too-large' })).toEqual({ type: 'close', reason: 'too-large' });
     expect(parsePresenterMessage({ type: 'blanks', blanks: [{ id: 'b-x-1', after: 2, paper: 'grid', z: 1 }] }))
       .toEqual({ type: 'blanks', blanks: [{ id: 'b-x-1', after: 2, paper: 'grid' }] });
     expect(parsePresenterMessage({ type: 'live', page: 'p1', tool: 'highlighter', color: '#ff0', size: 20, from: 3, points: [[5, 6, 1]] }))
@@ -35,6 +39,12 @@ describe('parsePresenterMessage', () => {
       { type: 'strokes', page: 'p1', strokes: [{ ...stroke, points: [[0, 0, 'x']] }] },
       { type: 'strokes', page: 'p1', strokes: [{ ...stroke, color: { toString: () => 'x' } }] },
       { type: 'strokes', page: 'p1', strokes: {} },
+      { type: 'close', reason: 'other' },
+      { type: 'delta', page: 'p1', order: ['a', 5], strokes: [] },
+      { type: 'delta', page: 'p1', order: ['a', ''], strokes: [] },
+      { type: 'delta', page: 'p1', order: 'a', strokes: [] },
+      { type: 'delta', page: 'p1', order: [], strokes: [{ ...stroke, tool: 'laser' }] },
+      { type: 'delta', page: 'p1', order: [] },
       { type: 'blanks', blanks: [{ id: 'b', after: 1.5, paper: 'plain' }] },
       { type: 'blanks', blanks: [{ id: 'b', after: 1, paper: 'dots' }] },
       { type: 'live', page: 'p1', tool: 'pen', color: '#000', size: 4, from: -1, points: [] },
@@ -43,6 +53,8 @@ describe('parsePresenterMessage', () => {
       { type: 'laser', page: 'p1', points: Array.from({ length: PRESENTER_LIMITS.laserPoints + 1 }, () => [0, 0]) },
     ];
     for (const m of bad) expect(() => parsePresenterMessage(m), JSON.stringify(m)).toThrow(/invalid presenter message/);
+    // A PDF too large to mirror (it would cross IPC twice).
+    expect(() => parsePresenterMessage({ type: 'open', pdf: new Uint8Array(PRESENTER_LIMITS.pdfBytes + 1), title: '' })).toThrow(/pdf/);
   });
 
   it('counts the points of all strokes against one limit', () => {

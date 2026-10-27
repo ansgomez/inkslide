@@ -41,8 +41,7 @@ desktop app uses Electron.
   for Tauri after the device tests.
 - **Presenter mode:** try it with a real projector on Linux (Wayland places windows itself, so
   the audience window may open on the app's display), Windows and macOS. Mirror erasing and
-  moving while they happen; send stroke changes as deltas instead of the whole page; a
-  browser and PWA version (`BroadcastChannel` and `window.open`).
+  moving while they happen; a browser and PWA version (`BroadcastChannel` and `window.open`).
 - **Later:** opening Marp HTML decks directly.
 
 ## Why Electron on the desktop
