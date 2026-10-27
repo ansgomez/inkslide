@@ -31,16 +31,21 @@ export function canWriteOpfs(): boolean {
 /**
  * Write a file through createWritable() (a swap file, applied on close()).
  * Checks for createWritable first: a file created that can not be written
- * would stay behind empty. Resolves false if it could not be written.
+ * would stay behind empty. Resolves false if it could not be written; with
+ * `quotaRejects`, rejects with a QuotaExceededError instead (the caller can
+ * make room: other storage of the origin shares the quota).
  */
-export async function writeOpfsFile(dir: FileSystemDirectoryHandle, name: string, data: string | Uint8Array<ArrayBuffer>): Promise<boolean> {
+export async function writeOpfsFile(
+  dir: FileSystemDirectoryHandle, name: string, data: string | Uint8Array<ArrayBuffer>, quotaRejects = false,
+): Promise<boolean> {
   if (!canWriteOpfs()) return false;
   try {
     const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
     await w.write(data);
     await w.close();
     return true;
-  } catch (_) {
+  } catch (e) {
+    if (quotaRejects && (e as Error | null)?.name === 'QuotaExceededError') throw e;
     return false;
   }
 }
