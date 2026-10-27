@@ -26,7 +26,7 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 | `src/main/access.ts` | `PathGrants`: the renderer may only read PDFs the user chose. |
 | `src/main/crashRecovery.ts` | After the page's renderer dies: reload it (the PDF reopens), or ask when it dies again soon. |
 | `src/main/openRequests.ts` | PDFs to open before the page has loaded: the first through `initialPath()`, the others sent once it has. |
-| `src/main/paths.ts` | Front end location (dev, packaged, override), the PDF in a command line, the app-storage notes path. |
+| `src/main/paths.ts` | Front end location (dev, packaged, override) and the `app://inkslide/` URLs it is served under, the test-only environment variables, the PDF in a command line, the app-storage notes path. |
 | `src/main/recent.ts`, `windowState.ts`, `preferences.ts`, `jsonStore.ts` | Recent files, window state and preferences (backups on or off) in `userData`. |
 | `src/main/print.ts` | Printing: the exported PDF in a hidden window, Chromium's PDF viewer, the system print dialog. |
 | `src/main/harden.ts` | Window lockdown shared by both windows: webPreferences, no navigation, permissions (fullscreen only). |
@@ -50,7 +50,10 @@ executable such as the AppImage). Packaged builds ignore `INKSLIDE_PAGE`, `INKSL
 
 ## Packaging
 
-`electron-builder.yml` holds the configuration; `dist` builds the web front end,
+`electron-builder.yml` holds the configuration, including the Electron fuses flipped in the
+packaged binary: no `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` or `--inspect`, no extra privileges
+for `file://` pages, the app code only from `app.asar`, checked against its hash on macOS and
+Windows. Check them with `npx @electron/fuses read --app <executable>`. `dist` builds the web front end,
 then `scripts/dist.mjs` checks that the icons are current, bundles main/preload and runs
 electron-builder with its arguments. Output goes to `apps/desktop/dist/`.
 

@@ -1,6 +1,7 @@
 /* Inkslide desktop - Electron main process
  *
- * One window with the shared front end (apps/web), file access over IPC for
+ * One window with the shared front end (apps/web, served from app://inkslide/,
+ * paths.ts APP_ORIGIN), file access over IPC for
  * the preload bridge (window.inkslide), single instance, recent files, window
  * state, preferences and a small native menu. No rendering happens here.
  *
@@ -17,10 +18,11 @@
  *   INKSLIDE_PRINT_TO_PDF  smoke test mode only: Print writes this PDF file instead of
  *                       showing the print dialog
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 import { checkDroppedPdf, checkPath, PathGrants } from './access';
 import { CrashRecovery } from './crashRecovery';
@@ -32,7 +34,7 @@ import {
   writeNotesFor, type NotesTarget,
 } from './notes';
 import { OpenRequests } from './openRequests';
-import { isSha256, pdfFromArgv, resolveWebEntry, testEnv } from './paths';
+import { APP_ORIGIN, APP_SCHEME, isSha256, pdfFromArgv, resolveWebEntry, testEnv, webFileFor } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
 import { printPdf } from './print';
 import { RecentFiles } from './recent';
@@ -56,6 +58,12 @@ if (!app.isPackaged && process.env.INKSLIDE_DESKTOP_NAME) {
 }
 
 const smokeMode = testVars.smoke;
+// The front end's origin, app://inkslide/ (paths.ts APP_ORIGIN): standard and
+// secure like https, so its CSP 'self' is that origin only, and module
+// workers, fetch and wasm work. Must be registered before 'ready'.
+protocol.registerSchemesAsPrivileged([
+  { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, codeCache: true } },
+]);
 const onWayland = process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
 
 if (!app.requestSingleInstanceLock()) {
@@ -79,6 +87,8 @@ function start(): void {
   let win: BrowserWindow | null = null;
   let state: WindowState = loadWindowState(stateFile);
   let loaded = false;
+  /** The folder app://inkslide/ serves (the front end's, or the INKSLIDE_PAGE fixture's). */
+  let webRoot: string | null = null;
   /** PDFs from the command line or the OS before the page loaded. */
   const opens = new OpenRequests();
   /** The PDF opened last (default folder for dialogs, never an export target). */
@@ -309,7 +319,11 @@ function start(): void {
     if (entry.kind === 'url') void w.loadURL(entry.url);
     else if (!existsSync(entry.file)) {
       void w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
-    } else void w.loadFile(entry.file, smokeMode ? { hash: `smoke=${encodeURIComponent(smokeMode)}` } : {});
+    } else {
+      webRoot = dirname(entry.file);
+      const hash = smokeMode ? `#smoke=${encodeURIComponent(smokeMode)}` : '';
+      void w.loadURL(`${APP_ORIGIN}/${encodeURIComponent(basename(entry.file))}${hash}`);
+    }
   }
 
   // ── IPC ──────────────────────────────────────────────────────
@@ -518,6 +532,12 @@ function start(): void {
     // Old backups and unreadable copies go, in the background.
     void cleanupNotesStore(userData).catch(err => console.warn(`notes cleanup failed: ${(err as Error).message}`));
     restrictPermissions(session.defaultSession);
+    // app://inkslide/<path>: files of webRoot only (webFileFor refuses anything outside it).
+    protocol.handle(APP_SCHEME, async req => {
+      const file = webRoot ? webFileFor(webRoot, req.url) : null;
+      if (!file) return new Response('Not found', { status: 404 });
+      return net.fetch(pathToFileURL(file).href).catch(() => new Response('Not found', { status: 404 }));
+    });
     refreshMenu();
     createWindow();
   });

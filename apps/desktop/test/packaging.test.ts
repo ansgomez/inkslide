@@ -116,6 +116,23 @@ describe('icon formats', () => {
   });
 });
 
+describe('electron fuses', () => {
+  it('turns off running as Node, NODE_OPTIONS, --inspect and file:// privileges; app code from a checked asar', () => {
+    const yml = readFileSync(new URL('../electron-builder.yml', import.meta.url), 'utf8');
+    const block = /^electronFuses:\n((?: {2}\w+: \w+\n)+)/m.exec(yml)?.[1] ?? '';
+    const fuses = Object.fromEntries(block.trim().split('\n').map(l => l.trim().split(/:\s*/)));
+    expect(fuses).toEqual({
+      runAsNode: 'false',
+      enableNodeOptionsEnvironmentVariable: 'false',
+      enableNodeCliInspectArguments: 'false',
+      grantFileProtocolExtraPrivileges: 'false',
+      onlyLoadAppFromAsar: 'true',
+      enableEmbeddedAsarIntegrityValidation: 'true',
+    });
+    expect(yml).toMatch(/^asar: true$/m);
+  });
+});
+
 describe('dist preflight', () => {
   it('knows which Linux targets a command line builds', () => {
     const all = ['appimage', 'rpm'];

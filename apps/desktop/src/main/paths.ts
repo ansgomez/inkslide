@@ -1,5 +1,5 @@
 /* Inkslide desktop - where the front end lives, PDF arguments (no Electron) */
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BACKUP_SUFFIX, NOTES_SUFFIX } from '@inkslide/annotate/io';
 
@@ -71,6 +71,42 @@ export function testEnv(env: Record<string, string | undefined>, allowed: boolea
     smoke: env.INKSLIDE_SMOKE || '',
     printToPdf: env.INKSLIDE_PRINT_TO_PDF || undefined,
   };
+}
+
+/**
+ * The front end is served from app://inkslide/ (main.ts), not file://: a
+ * file:// page counts every local file as its own origin ('self' in its CSP,
+ * fetch), so a compromised renderer (a PDF.js exploit) could read ~/.ssh.
+ */
+export const APP_SCHEME = 'app';
+export const APP_ORIGIN = `${APP_SCHEME}://inkslide`;
+
+/**
+ * The file in `root` (the front end's folder) that the app:// URL `url`
+ * names; a folder gives its index.html. null for another scheme or host,
+ * a bad escape, or a path that leaves `root` (also through %2F, %5C or ..).
+ */
+export function webFileFor(root: string, url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch (_) {
+    return null;
+  }
+  // Node's URL gives a custom scheme no origin ('null'): compare scheme and host.
+  if (`${u.protocol}//${u.host.toLowerCase()}` !== APP_ORIGIN) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(u.pathname);
+  } catch (_) {
+    return null;
+  }
+  if (path.includes('\0')) return null;
+  if (path === '' || path.endsWith('/')) path += 'index.html';
+  const file = resolve(root, `.${path.startsWith('/') ? '' : '/'}${path}`);
+  const rel = relative(resolve(root), file);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  return file;
 }
 
 const isPdfName = (s: string): boolean => /\.pdf$/i.test(s);

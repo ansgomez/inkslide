@@ -126,6 +126,18 @@ Both windows (the app and the hidden print window) are locked down by `harden.ts
 isolation, sandbox, no Node; no navigation, no new windows (http(s) links open in the system
 browser); every permission request and check is refused except fullscreen.
 
+The front end is not loaded from `file://`: a `file://` page counts every local file as its
+own origin, so its CSP `'self'` and `fetch` would reach any file (a PDF.js exploit could read
+`~/.ssh`). Main registers the privileged scheme `app` (standard, secure, fetch) and serves
+`resources/web` (in development `apps/web/dist`) as `app://inkslide/`; the handler maps a URL to
+a file of that folder only (`webFileFor` in `paths.ts`: no `..`, encoded slashes or other
+hosts). The built page's CSP (`apps/web/vite.config.ts`) then limits scripts, workers, fetch and
+wasm to that origin. The print window still loads its temp PDF with `loadFile`, which the fuses
+below do not affect. Packaged builds flip Electron fuses (`electronFuses` in
+`electron-builder.yml`): no `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` or `--inspect`, no extra
+`file://` privileges, app code only from `app.asar`, with its integrity checked on macOS and
+Windows.
+
 ## Autosave
 
 `createAutosave()` (`packages/annotate/src/autosave.ts`) is pure and shell independent:

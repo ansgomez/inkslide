@@ -1,7 +1,7 @@
 /* Vite config of the Inkslide front end.
  *
- * base './' keeps every asset path relative, so Electron can loadFile()
- * dist/index.html. PDF.js's data files (CMaps, standard fonts, wasm
+ * base './' keeps every asset path relative, so Electron can serve
+ * dist/ from its app://inkslide/ origin. PDF.js's data files (CMaps, standard fonts, wasm
  * decoders, ICC profiles) are served from node_modules in dev and copied
  * to dist/pdfjs/ on build: everything works offline, no CDN.
  *
@@ -54,7 +54,10 @@ function pdfjsAssets(): Plugin {
 
 /**
  * Content-Security-Policy of the built page (not the dev server, whose HMR
- * client it would block). wasm-unsafe-eval: PDF.js's image decoders.
+ * client it would block). wasm-unsafe-eval: PDF.js's image decoders (PDF.js 6
+ * compiles nothing with eval, so no 'unsafe-eval'). Electron serves the
+ * page from app://inkslide/, so 'self' there is that origin, not every
+ * file:// URL as it would be for a page loaded from a file.
  * connect-src has no https: (other sites): the same page runs in Electron,
  * where a compromised renderer could send data out with it; ?pdf= links
  * open same-site PDFs only (platform/web.ts). The Tauri build (`--mode tauri`,

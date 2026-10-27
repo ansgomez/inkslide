@@ -1,6 +1,6 @@
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fallbackBackupPath, fallbackNotesPath, isSha256, pdfFromArgv, resolveWebEntry, testEnv } from '../src/main/paths';
+import { APP_ORIGIN, fallbackBackupPath, fallbackNotesPath, isSha256, pdfFromArgv, resolveWebEntry, testEnv, webFileFor } from '../src/main/paths';
 
 const local = (path: string) => ({ path: resolve(path) });
 
@@ -27,6 +27,40 @@ describe('resolveWebEntry', () => {
     expect(() => resolveWebEntry({ ...base, devUrl: 'localhost:5173' })).toThrow(/http/);
     expect(() => resolveWebEntry({ ...base, devUrl: 'file:///etc/passwd' })).toThrow(/http/);
     expect(() => resolveWebEntry({ ...base, devUrl: 'not a url' })).toThrow(/not a URL/);
+  });
+});
+
+describe('webFileFor', () => {
+  const root = resolve('/opt/Inkslide/resources/web');
+  it('maps app://inkslide/ URLs to files of the front end', () => {
+    expect(APP_ORIGIN).toBe('app://inkslide');
+    expect(webFileFor(root, 'app://inkslide/index.html#smoke=basic')).toBe(join(root, 'index.html'));
+    expect(webFileFor(root, 'app://inkslide/')).toBe(join(root, 'index.html'));
+    expect(webFileFor(root, 'app://inkslide/pdfjs/cmaps/UniJIS-UTF16-H.bcmap?x=1')).toBe(join(root, 'pdfjs', 'cmaps', 'UniJIS-UTF16-H.bcmap'));
+    expect(webFileFor(root, 'app://inkslide/assets/my%20file.js')).toBe(join(root, 'assets', 'my file.js'));
+  });
+  it('never leaves the folder', () => {
+    for (const url of [
+      'app://inkslide/../../../etc/passwd',
+      'app://inkslide/%2e%2e/%2e%2e/etc/passwd',
+      'app://inkslide/..%2F..%2Fetc%2Fpasswd',
+      'app://inkslide/..%5C..%5Cetc%5Cpasswd',
+      'app://inkslide/assets/..%2F..%2F..%2Fhome%2Fu%2F.ssh%2Fid_ed25519',
+      'app://inkslide/%2Fetc%2Fpasswd',
+      'app://inkslide/a%00.html',
+      'app://inkslide/%E0%A4',
+    ]) {
+      const file = webFileFor(root, url);
+      expect(file === null || file.startsWith(root + sep), url).toBe(true);
+    }
+    expect(webFileFor(root, 'app://inkslide/..%2F..%2Fetc%2Fpasswd')).toBeNull();
+    expect(webFileFor(root, 'app://inkslide/a%00.html')).toBeNull();
+  });
+  it('serves nothing for another scheme or host', () => {
+    expect(webFileFor(root, 'file:///opt/Inkslide/resources/web/index.html')).toBeNull();
+    expect(webFileFor(root, 'app://other/index.html')).toBeNull();
+    expect(webFileFor(root, 'https://inkslide/index.html')).toBeNull();
+    expect(webFileFor(root, 'not a url')).toBeNull();
   });
 });
 
