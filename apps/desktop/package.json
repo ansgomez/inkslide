@@ -32,7 +32,7 @@
     "@inkslide/annotate": "workspace:*",
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^22",
-    "electron": "39.8.10",
+    "electron": "43.8.4",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.25.0",
     "typescript": "~5.9.3",

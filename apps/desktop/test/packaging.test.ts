@@ -144,3 +144,15 @@ describe('dist preflight', () => {
     expect(missingForRpm({ has: () => true, libs: null })).toEqual([]);
   });
 });
+
+describe('electron version', () => {
+  // Electron 39-41 (Chromium 142-146) dereference a null window in the main
+  // process when a touchpad hold gesture starts while no Inkslide window has
+  // pointer focus (ui::WaylandEventSource::OnHoldEvent, native Wayland): the
+  // app crashes with SIGSEGV. Chromium 148 (Electron 42) checks for it.
+  it('is at least 42 (Wayland hold-gesture crash fixed)', () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { devDependencies: Record<string, string> };
+    const major = Number(/^\D*(\d+)\./.exec(pkg.devDependencies.electron)?.[1]);
+    expect(major).toBeGreaterThanOrEqual(42);
+  });
+});

@@ -1721,7 +1721,7 @@ The desktop installers contain Electron (with Chromium, V8, Node.js and FFmpeg).
 Electron's `LICENSE` as `LICENSE.electron.txt` and the notices of Chromium and all its third-party components
 as `LICENSES.chromium.html` next to the executable.
 
-### electron 39.8.10
+### electron 43.8.4
 
 License: MIT · https://github.com/electron/electron
 
