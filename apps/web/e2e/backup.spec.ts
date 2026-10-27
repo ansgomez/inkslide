@@ -31,18 +31,29 @@ interface Files {
   firstReads?: (string | null)[];
   /** keepUnreadableNotes rejects. */
   keepFails?: boolean;
+  /** writeNotes waits for release() (one per write). */
+  gateWrites?: boolean;
 }
 
 interface Stub extends Files {
   calls: string[];
   questions: string[];
+  /** Text of each write, with the PDF's path. */
+  written: { path: string; text: string }[];
+  /** Writes waiting for release() (gateWrites). */
+  pending: number;
+  release(): void;
   menu(command: string): void;
 }
 
 /** Install the stand-in bridge and open the fixture through initialPath(). */
 async function openWith(page: Page, files: Files): Promise<void> {
   await page.addInitScript(([bytes, init]) => {
-    const st: Stub = { ...init, calls: [], questions: [], menu: () => {} };
+    const gates: (() => void)[] = [];
+    const st: Stub = {
+      ...init, calls: [], questions: [], written: [], pending: 0, menu: () => {},
+      release: () => { st.pending--; gates.shift()!(); },
+    };
     (window as unknown as { stub: Stub }).stub = st;
     let initial: string | null = '/docs/deck.pdf';
     (window as unknown as { inkslide: unknown }).inkslide = {
@@ -60,7 +71,15 @@ async function openWith(page: Page, files: Files): Promise<void> {
         if (st.keepFails) throw new Error('ENOSPC');
         return '/ud/notes/abc.notes.unreadable.json';
       },
-      writeNotes: async (_pdf: unknown, text: string) => { st.calls.push('writeNotes'); st.notes = text; },
+      writeNotes: async (pdf: { path: string }, text: string) => {
+        st.calls.push('writeNotes');
+        if (st.gateWrites) {
+          st.pending++;
+          await new Promise<void>(r => gates.push(r));
+        }
+        st.written.push({ path: pdf.path, text });
+        if (pdf.path === '/docs/deck.pdf') st.notes = text;
+      },
       readBackup: async () => (st.backup === null ? null : { text: st.backup, time: Date.UTC(2026, 9, 26, 9, 30) }),
       revertToBackup: async () => {
         st.calls.push('revertToBackup');
@@ -82,8 +101,8 @@ async function openWith(page: Page, files: Files): Promise<void> {
 }
 
 const stub = (page: Page): Promise<Stub> => page.evaluate(() => {
-  const { calls, questions, notes, backup } = (window as unknown as { stub: Stub }).stub;
-  return { calls, questions, notes, backup } as Stub;
+  const { calls, questions, notes, backup, written, pending } = (window as unknown as { stub: Stub }).stub;
+  return { calls, questions, notes, backup, written, pending } as Stub;
 });
 const menu = (page: Page, command: string) =>
   page.evaluate(c => (window as unknown as { stub: Stub }).stub.menu(c), command);
@@ -198,4 +217,30 @@ test('Revert to Backup without a backup says so', async ({ page }) => {
   await menu(page, 'revert-backup');
   await expect(page.locator('.ann-banner-warn')).toContainText('There is no backup of these notes.');
   expect((await stub(page)).questions).toEqual([]);
+});
+
+test('opening another PDF writes strokes made during the last save before the PDF closes', async ({ page }) => {
+  await openWith(page, { notes: notes(0), backup: null, answers: [], gateWrites: true });
+  await expect(page.locator('.ink-stage')).toBeVisible();
+  const release = () => page.evaluate(() => (window as unknown as { stub: Stub }).stub.release());
+  const waitPending = () => expect.poll(async () => (await stub(page)).pending).toBe(1);
+  await penStroke(page, [0.1, 0.2], [0.3, 0.4]);
+  void page.evaluate(() => (window as unknown as { inkslideViewer: { openFrom(p: string): Promise<void> } })
+    .inkslideViewer.openFrom('/docs/other.pdf'));
+  // First write (1 stroke): a stroke during it.
+  await waitPending();
+  await penStroke(page, [0.4, 0.2], [0.6, 0.4]);
+  await release();
+  // Second write (2 strokes, before the PDF closes): another stroke during it.
+  await waitPending();
+  await penStroke(page, [0.7, 0.2], [0.9, 0.4]);
+  await release();
+  // The third stroke is written too before the other PDF opens.
+  await waitPending();
+  await release();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { inkslideViewer: { session: { file: { path: string } } } }).inkslideViewer.session.file.path))
+    .toBe('/docs/other.pdf');
+  const s = await stub(page);
+  expect(s.written.filter(w => w.path === '/docs/deck.pdf').map(w => strokesIn(w.text))).toEqual([1, 2, 3]);
 });
