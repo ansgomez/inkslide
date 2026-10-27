@@ -365,11 +365,33 @@ export function resample(points: readonly Point[], step: number): Point[] {
   return out;
 }
 
+/** Most samples splitByEraser takes along one segment. */
+const MAX_ERASE_SAMPLES = 4096;
+
+/** The part of segment p→q inside `box`, as [t0, t1] along it (Liang–Barsky); null if it misses. */
+function clipSegment(p: XY, q: XY, box: BBox): [number, number] | null {
+  const dx = q[0] - p[0], dy = q[1] - p[1];
+  let t0 = 0, t1 = 1;
+  const edges: [number, number][] = [
+    [-dx, p[0] - box.minX], [dx, box.maxX - p[0]], [-dy, p[1] - box.minY], [dy, box.maxY - p[1]],
+  ];
+  for (const [d, e] of edges) {
+    if (d === 0) {
+      if (e < 0) return null;
+    } else {
+      const t = e / d;
+      if (d < 0) { if (t > t1) return null; if (t > t0) t0 = t; }
+      else { if (t < t0) return null; if (t < t1) t1 = t; }
+    }
+  }
+  return [t0, t1];
+}
+
 /**
  * Partial erase. Returns null if the eraser (radius, moving a→b) removes no
  * ink; otherwise the remaining pieces as point arrays ([] when nothing is
- * left). The stroke is sampled densely to find the cut, but each piece keeps
- * only the original points plus its two cut ends.
+ * left). The stroke is sampled densely near the eraser to find the cut, but
+ * each piece keeps only the original points plus its two cut ends.
  */
 export function splitByEraser(stroke: StrokeLike, a: XY, b: XY, radius: number): Point[][] | null {
   if (!strokeHitsSegment(stroke, a, b, radius)) return null;
@@ -395,13 +417,23 @@ export function splitByEraser(stroke: StrokeLike, a: XY, b: XY, radius: number):
     }
   };
 
+  // Only ink within this box can be erased. Samples elsewhere never become a
+  // cut end (one beside an erased sample is kept below), so a segment is
+  // sampled only where it crosses the box.
+  const box = pointsBBox([a, b], radius + maxStrokeRadius(stroke) + step);
   visit(pt3(src[0]), true);
   for (let i = 1; i < src.length; i++) {
     const p = src[i - 1], q = src[i];
-    const n = Math.max(1, Math.ceil(dist(p, q) / step - 1e-9));
-    for (let k = 1; k < n; k++) {
-      const t = k / n;
-      visit([lerp(p[0], q[0], t), lerp(p[1], q[1], t), lerp(p[2], q[2], t)], false);
+    const span = clipSegment(p, q, box);
+    if (span) {
+      let n = Math.max(1, Math.ceil(dist(p, q) / step - 1e-9));
+      // A huge segment through the eraser: coarser cuts, not millions of samples.
+      if ((span[1] - span[0]) * n > MAX_ERASE_SAMPLES) n = Math.max(1, Math.ceil(MAX_ERASE_SAMPLES / (span[1] - span[0])));
+      const k0 = Math.max(1, Math.floor(span[0] * n) - 1), k1 = Math.min(n - 1, Math.ceil(span[1] * n) + 1);
+      for (let k = k0; k <= k1; k++) {
+        const t = k / n;
+        visit([lerp(p[0], q[0], t), lerp(p[1], q[1], t), lerp(p[2], q[2], t)], false);
+      }
     }
     visit(pt3(q), true);
   }
