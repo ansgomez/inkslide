@@ -742,10 +742,18 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     },
 
     async openFile(file) {
-      const path = adapter.pathForFile ? adapter.pathForFile(file) : '';
-      if (path) return viewer.openFrom(path);
-      await open(adapter.fromFile ? await adapter.fromFile(file)
-        : { path: null, name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+      let pdf: PdfFile;
+      try {
+        const path = adapter.pathForFile ? adapter.pathForFile(file) : '';
+        if (path) return await viewer.openFrom(path);
+        // Reading can fail (the file was moved or changed since it was picked or dropped).
+        pdf = adapter.fromFile ? await adapter.fromFile(file)
+          : { path: null, name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+      } catch (e) {
+        banner(`Could not open ${file.name}: ${(e as Error).message || e}`, 'error');
+        return;
+      }
+      await open(pdf);
     },
 
     show,

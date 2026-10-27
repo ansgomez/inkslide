@@ -168,6 +168,22 @@ test('a file that is not a PDF shows an error; no PDF.js worker stays behind', a
   await expect.poll(() => page.workers().length).toBe(1);
 });
 
+test('a dropped file that can not be read shows an error (no unhandled rejection)', async ({ page }) => {
+  const unhandled: string[] = [];
+  page.on('pageerror', e => unhandled.push(e.message));
+  await page.evaluate(() => {
+    // A dropped file moved or changed since: reading it fails.
+    const file = new File([], 'gone.pdf', { type: 'application/pdf' });
+    file.arrayBuffer = () => Promise.reject(new DOMException('the file was changed', 'NotReadableError'));
+    const e = new DragEvent('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'dataTransfer', { value: { types: ['Files'], files: [file] } });
+    window.dispatchEvent(e);
+  });
+  await expect(page.locator('.ann-banner-error')).toContainText('Could not open gone.pdf: the file was changed');
+  await page.waitForTimeout(100);
+  expect(unhandled).toEqual([]);
+});
+
 test('a PDF asked for while another opens is opened next', async ({ page }) => {
   const two = await PDFDocument.create();
   two.addPage([400, 300]);
