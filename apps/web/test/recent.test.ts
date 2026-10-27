@@ -5,7 +5,8 @@ import { createRecentFiles, planEviction, RecentError, type RecentBackend, type 
 function fakeBackend() {
   const records = new Map<string, RecentRecord>();
   const copies = new Map<string, Uint8Array>();
-  const state = { failCopies: false, failPuts: false, writes: 0 };
+  /** quota: bytes the copies may take in all (QuotaExceededError past it); failRemoves: removeCopy rejects. */
+  const state = { failCopies: false, failPuts: false, failRemoves: false, writes: 0, quota: Infinity };
   const backend: RecentBackend = {
     all: async () => [...records.values()].map(r => ({ ...r })),
     put: async rec => {
@@ -16,10 +17,15 @@ function fakeBackend() {
     writeCopy: async (id, bytes) => {
       state.writes++;
       if (state.failCopies) throw new DOMException('full', 'QuotaExceededError');
+      const used = [...copies.values()].reduce((n, c) => n + c.byteLength, 0);
+      if (used + bytes.byteLength > state.quota) throw new DOMException('full', 'QuotaExceededError');
       copies.set(id, bytes.slice());
     },
     readCopy: async id => copies.get(id) ?? null,
-    removeCopy: async id => { copies.delete(id); },
+    removeCopy: async id => {
+      if (state.failRemoves) throw new DOMException('locked', 'NoModificationAllowedError');
+      copies.delete(id);
+    },
   };
   return { backend, records, copies, state };
 }
@@ -183,6 +189,45 @@ describe('recent files', () => {
     await recent.remove('a'); // twice is fine
     expect(await recent.list()).toEqual([]);
     expect(f.copies.size).toBe(0);
+  });
+});
+
+describe('recent files near the storage quota', () => {
+  it('drops the copies past the byte limit before writing the new one', async () => {
+    const { backend, records, copies, state } = fakeBackend();
+    state.quota = 100; // the storage is full at the byte limit
+    const r = createRecentFiles(backend, { bytesLimit: 100, ...clock() });
+    expect(await r.remember({ id: 'a', name: 'a.pdf', size: 60 }, { bytes: bytes(60) })).toBe(true);
+    expect(await r.remember({ id: 'b', name: 'b.pdf', size: 60 }, { bytes: bytes(60) })).toBe(true);
+    expect([...records.keys()]).toEqual(['b']);
+    expect([...copies.keys()]).toEqual(['b']);
+  });
+
+  it('over the quota anyway, drops the oldest copy left and writes once more', async () => {
+    const { backend, records, copies, state } = fakeBackend();
+    const r = createRecentFiles(backend, { bytesLimit: 1000, ...clock() });
+    await r.remember({ id: 'a', name: 'a.pdf', size: 40 }, { bytes: bytes(40) });
+    await r.remember({ id: 'b', name: 'b.pdf', size: 40 }, { bytes: bytes(40) });
+    state.quota = 100; // the browser's quota, below the app's limit
+    expect(await r.remember({ id: 'c', name: 'c.pdf', size: 40 }, { bytes: bytes(40) })).toBe(true);
+    expect([...records.keys()].sort()).toEqual(['b', 'c']);
+    expect([...copies.keys()].sort()).toEqual(['b', 'c']);
+  });
+
+  it('an entry whose copy can not be removed stays listed (its bytes still count)', async () => {
+    const { backend, records, copies, state } = fakeBackend();
+    const r = createRecentFiles(backend, { bytesLimit: 100, ...clock() });
+    await r.remember({ id: 'a', name: 'a.pdf', size: 60 }, { bytes: bytes(60) });
+    state.failRemoves = true;
+    expect(await r.remember({ id: 'b', name: 'b.pdf', size: 60 }, { bytes: bytes(60) })).toBe(true);
+    expect([...records.keys()].sort()).toEqual(['a', 'b']);
+    await expect(r.remove('a')).rejects.toThrow('locked');
+    expect(records.has('a')).toBe(true);
+    // Removable again: it goes with the next change.
+    state.failRemoves = false;
+    await r.remember({ id: 'c', name: 'c.pdf', size: 10 }, { bytes: bytes(10) });
+    expect([...records.keys()].sort()).toEqual(['b', 'c']);
+    expect([...copies.keys()].sort()).toEqual(['b', 'c']);
   });
 });
 

@@ -9,7 +9,11 @@
  *     drag and drop, ?pdf= links) the PDF's bytes are kept in app storage.
  * At most RECENT_LIMIT entries are kept, and the copies together take at
  * most COPY_BYTES_LIMIT: past that, the least recently opened copies are
- * dropped (LRU). A PDF larger than the limit is not kept at all.
+ * dropped (LRU), before a new copy is written (near the storage quota the
+ * room they free is what the new copy needs; if the write still exceeds the
+ * quota, the oldest copy left goes too and the write is tried once more).
+ * A PDF larger than the limit is not kept at all. An entry whose copy could
+ * not be removed stays listed (its bytes still count) and goes next time.
  *
  * The storage itself (IndexedDB, OPFS) is a RecentBackend
  * (platform/recent-storage.ts), so this logic is tested with a fake.
@@ -118,10 +122,17 @@ export function createRecentFiles(backend: RecentBackend, opts: { limit?: number
     return run;
   }
 
+  /** Forget an entry and remove its copy; if the copy can not be removed, the entry stays (rejects). */
   async function drop(rec: RecentRecord): Promise<void> {
-    await backend.remove(rec.id);
     if (rec.source === 'copy') await backend.removeCopy(rec.id);
+    await backend.remove(rec.id);
   }
+
+  /** Drop entries while remembering; a failure only leaves them for the next time. */
+  const evict = (recs: Iterable<RecentRecord>): Promise<unknown> =>
+    Promise.all([...recs].map(r => drop(r).catch(e => console.warn('Could not drop the recent file', e))));
+
+  const isQuota = (e: unknown): boolean => (e as Error | null)?.name === 'QuotaExceededError';
 
   return {
     async list() {
@@ -145,19 +156,32 @@ export function createRecentFiles(backend: RecentBackend, opts: { limit?: number
         rec = { ...old, ...entry };
       } else {
         if (info.size > bytesLimit) return false;
+        rec = { ...entry, source: 'copy' };
+        // Make room first, counting the new copy.
+        const evicted = new Set(planEviction([...all, rec], limit, bytesLimit));
+        await evict(all.filter(r => evicted.has(r.id)));
+        const left = (await backend.all()).filter(r => r.source === 'copy').sort((a, b) => a.openedAt - b.openedAt);
         try {
-          await backend.writeCopy(info.id, from.bytes);
+          try {
+            await backend.writeCopy(info.id, from.bytes);
+          } catch (e) {
+            // Over the storage quota: the oldest copy left goes too, and once more.
+            if (!isQuota(e) || !left.length) throw e;
+            await backend.removeCopy(info.id).catch(() => {});
+            await drop(left[0]);
+            await backend.writeCopy(info.id, from.bytes);
+          }
         } catch (_) {
           await backend.removeCopy(info.id).catch(() => {});
           return false;
         }
-        rec = { ...entry, source: 'copy' };
       }
       await backend.put(rec);
       if (old && old.source === 'copy' && rec.source === 'handle') await backend.removeCopy(old.id); // replaced by the handle
-      const kept = [...all.filter(r => r.id !== rec.id && !gone.has(r)), rec];
+      const goneIds = new Set([...gone].map(r => r.id));
+      const kept = [...(await backend.all()).filter(r => r.id !== rec.id && !goneIds.has(r.id)), rec];
       const evicted = new Set(planEviction(kept, limit, bytesLimit));
-      await Promise.all([...gone, ...kept.filter(r => evicted.has(r.id))].map(drop));
+      await evict([...gone, ...kept.filter(r => evicted.has(r.id))]);
       return true;
     }),
 
