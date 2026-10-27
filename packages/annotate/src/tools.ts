@@ -194,10 +194,27 @@ function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
 
 // ── Erasers ────────────────────────────────────────────────────
 
-/** Works on a private copy of the page; one command on release. */
+/**
+ * Works on a private copy of the page; one command on release, which applies
+ * only what was erased to the page as it is then (edits made meanwhile stay).
+ */
 function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): Tool {
   const partial = id === 'partial';
   let working: Stroke[] | null = null, last: Point | null = null;
+  let base: Map<string, Stroke> | null = null; // the page's strokes at down
+  let origin: Map<string, string> | null = null; // piece id -> id of the stroke it was cut from
+
+  /** The page's current strokes with this gesture's erasing applied. */
+  function erased(current: readonly Stroke[]): Stroke[] {
+    const left = new Map<string, Stroke[]>(); // erased stroke id -> its remaining pieces
+    for (const s of base!.values()) left.set(s.id, []);
+    for (const s of working!) {
+      if (base!.get(s.id) === s) left.delete(s.id); // untouched
+      else left.get(origin!.get(s.id)!)!.push(s);
+    }
+    // A stroke changed meanwhile (moved, restyled) is kept as it is now.
+    return current.flatMap(s => (left.has(s.id) && base!.get(s.id) === s ? left.get(s.id)! : [s]));
+  }
 
   const radius = (surface: Surface): number => sizeOf(app, id, surface);
 
@@ -214,7 +231,11 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       const pieces = splitByEraser(s, a, b, r);
       if (pieces === null) { next.push(s); continue; }
       changed = true;
-      for (const points of pieces) next.push(createStroke({ ...s, id: null, points }));
+      for (const points of pieces) {
+        const piece = createStroke({ ...s, id: null, points });
+        origin!.set(piece.id, origin!.get(s.id) || s.id);
+        next.push(piece);
+      }
     }
     if (changed) {
       working = next;
@@ -226,6 +247,8 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
     id,
     down(surface, pt) {
       working = app.doc.strokes(surface.pageId).slice();
+      base = new Map(working.map(s => [s.id, s]));
+      origin = new Map();
       last = pt;
       R.setEraserCursor(surface.layer, pt, radius(surface));
       eraseAlong(surface, pt, pt);
@@ -238,12 +261,12 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
     },
     up(surface) {
       if (!working) return;
-      const result = working;
-      working = last = null;
-      if (app.doc.hasPage(surface.pageId)) app.doc.replaceStrokes(surface.pageId, result, partial ? 'partial-erase' : 'erase');
+      const result = app.doc.hasPage(surface.pageId) ? erased(app.doc.strokes(surface.pageId)) : null;
+      working = last = base = origin = null;
+      if (result) app.doc.replaceStrokes(surface.pageId, result, partial ? 'partial-erase' : 'erase');
     },
     cancel(surface) {
-      working = last = null;
+      working = last = base = origin = null;
       R.syncLayer(surface.layer, app.doc.strokes(surface.pageId));
       R.setEraserCursor(surface.layer, null);
     },

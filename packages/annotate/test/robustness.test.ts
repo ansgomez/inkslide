@@ -216,4 +216,19 @@ describe('tools with a real NotesDoc', () => {
     }
     vi.unstubAllGlobals();
   });
+
+  it('an eraser does not bring back strokes cleared or deleted mid-gesture', () => {
+    for (const id of ['eraser', 'partial'] as const) {
+      const doc = pdfDoc();
+      const t = createTools(host(doc), noop)[id];
+      doc.addStroke('p1', stroke('a'));
+      doc.addStroke('p1', stroke('b', [[300, 300, 0.5], [350, 300, 0.5]]));
+      const s = surf('p1', pageUnit(A4));
+      t.down!(s, [30, 35, 0.5]); // erases a
+      doc.clearPage('p1'); // Clear page while the pen is down
+      t.up!(s, null);
+      expect(doc.strokes('p1')).toEqual([]);
+      expect(doc.history.top()!.label).toBe('clear');
+    }
+  });
 });
