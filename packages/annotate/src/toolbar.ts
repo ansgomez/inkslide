@@ -319,7 +319,9 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
   if (resize) resize.observe(bar);
   setOffset();
 
+  let destroyed = false;
   function update(): void {
+    if (destroyed) return; // a detached bar would set the bar size to 0 for the next one
     for (const { item, btn } of entries) {
       if (item.text) {
         const t = item.text();
@@ -349,6 +351,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
     el: bar,
     update,
     destroy() {
+      destroyed = true;
       if (resize) resize.disconnect();
       bar.remove();
     },

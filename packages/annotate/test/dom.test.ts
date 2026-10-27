@@ -272,6 +272,12 @@ describe('annotator, toolbar and keys', () => {
       bar.destroy();
       expect(observers[0].disconnect).toHaveBeenCalled();
       expect(bar.el.isConnected).toBe(false);
+      // a late refresh (an autosave's 'saved') leaves the next session's bar size alone
+      const style = document.documentElement.style;
+      style.setProperty('--ann-bar-h', '48px');
+      app.refresh();
+      app.doc.markSaved();
+      expect(style.getPropertyValue('--ann-bar-h')).toBe('48px');
     } finally {
       vi.unstubAllGlobals();
     }
