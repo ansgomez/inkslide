@@ -9,10 +9,12 @@
  * Updates: a new build means a new sw.js. It installs next to the old one
  * and waits; the page shows "Reload to update" and posts 'skip-waiting'
  * when the user agrees (src/pwa.ts). On activation the caches of older
- * builds go, except the one before this: windows still running it (told to
- * reload, src/pwa.ts) load files lazily (the PDF.js worker, CMaps, fonts,
- * wasm, the export chunk) that the new build does not have. A request this
- * build's cache does not have is looked up in that one.
+ * builds go, except the one of the build that was active until now: windows
+ * still running it (told to reload, src/pwa.ts) load files lazily (the
+ * PDF.js worker, CMaps, fonts, wasm, the export chunk) that the new build
+ * does not have. A request this build's cache does not have is looked up
+ * there. The active build is recorded in the cache META (a build that
+ * installed but never became active, an update skipped, is not kept).
  */
 /// <reference lib="webworker" />
 
@@ -23,6 +25,9 @@ declare const PRECACHE: { version: string; urls: string[] };
 const PREFIX = 'inkslide-';
 const CACHE = PREFIX + PRECACHE.version;
 const SHELL = 'index.html';
+/** Which build is active: its cache name, as the text of META_KEY. Not PREFIX + a version. */
+const META = 'inkslide:meta';
+const META_KEY = 'active';
 
 const url = (path: string): string => new URL(path, sw.registration.scope).href;
 
@@ -36,9 +41,12 @@ sw.addEventListener('install', event => {
 
 sw.addEventListener('activate', event => {
   event.waitUntil((async () => {
-    // keys() lists the caches oldest first: keep the newest other one (the build before).
-    const older = (await caches.keys()).filter(name => name.startsWith(PREFIX) && name !== CACHE);
-    for (const name of older.slice(0, -1)) await caches.delete(name);
+    const meta = await caches.open(META);
+    const before = await (await meta.match(META_KEY))?.text(); // none: the first build, or one before META
+    for (const name of await caches.keys()) {
+      if (name.startsWith(PREFIX) && name !== CACHE && name !== before) await caches.delete(name);
+    }
+    await meta.put(META_KEY, new Response(CACHE));
     await sw.clients.claim();
   })());
 });
