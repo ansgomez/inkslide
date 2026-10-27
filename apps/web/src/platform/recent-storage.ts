@@ -28,6 +28,11 @@ const done = <T>(req: IDBRequest<T>): Promise<T> => new Promise((resolve, reject
   req.onerror = () => reject(req.error);
 });
 
+/**
+ * The open connection, opened again once it closed: WebKit drops the
+ * connections of a backgrounded PWA, and another window that upgrades the
+ * database (a newer build) asks this one to close.
+ */
 let dbPromise: Promise<IDBDatabase> | null = null;
 function db(): Promise<IDBDatabase> {
   if (!dbPromise) {
@@ -36,14 +41,30 @@ function db(): Promise<IDBDatabase> {
       req.result.createObjectStore(RECENT, { keyPath: 'id' });
       req.result.createObjectStore(COPIES);
     };
-    dbPromise = done(req);
-    dbPromise.catch(() => { dbPromise = null; });
+    // Another window keeps an older version open; it closes on its versionchange.
+    req.onblocked = () => console.warn('The recent files database waits for another window to close it');
+    const p: Promise<IDBDatabase> = done(req).then(conn => {
+      const forget = (): void => { if (dbPromise === p) dbPromise = null; };
+      conn.onclose = forget;
+      conn.onversionchange = () => { conn.close(); forget(); };
+      return conn;
+    });
+    dbPromise = p;
+    p.catch(() => { if (dbPromise === p) dbPromise = null; });
   }
   return dbPromise;
 }
 
 async function store(name: string, mode: IDBTransactionMode): Promise<IDBObjectStore> {
-  return (await db()).transaction(name, mode).objectStore(name);
+  const conn = await db();
+  try {
+    return conn.transaction(name, mode).objectStore(name);
+  } catch (e) {
+    // Closed without a close event (WebKit): open it again, once.
+    if ((e as Error | null)?.name !== 'InvalidStateError') throw e;
+    if (dbPromise && (await dbPromise) === conn) dbPromise = null;
+    return (await db()).transaction(name, mode).objectStore(name);
+  }
 }
 
 const fileName = (id: string): string => safeFileName(id, '.pdf');

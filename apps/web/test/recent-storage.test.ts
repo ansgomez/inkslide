@@ -6,14 +6,20 @@ import type { RecentBackend } from '../src/recent';
 /** Just enough IndexedDB for recent-storage.ts: open with an upgrade, stores with get / put / delete / getAll. */
 function fakeIndexedDb() {
   const stores = new Map<string, Map<IDBValidKey, unknown>>();
+  const state = { opens: 0, conns: [] as { closed: boolean; onclose: null | (() => void); onversionchange: null | (() => void) }[] };
   const request = <T>(run: () => T) => {
     const req = { result: undefined as T | undefined, error: null, onsuccess: null as null | (() => void), onerror: null };
     queueMicrotask(() => { req.result = run(); req.onsuccess?.(); });
     return req;
   };
-  const db = {
+  const connection = () => ({
+    closed: false,
+    onclose: null as null | (() => void),
+    onversionchange: null as null | (() => void),
+    close() { this.closed = true; },
     createObjectStore(name: string) { stores.set(name, new Map()); },
     transaction(name: string) {
+      if (this.closed) throw new DOMException('The database connection is closing.', 'InvalidStateError');
       const m = stores.get(name)!;
       return {
         objectStore: () => ({
@@ -24,12 +30,19 @@ function fakeIndexedDb() {
         }),
       };
     },
-  };
+  });
   return {
     stores,
+    state,
     indexedDB: {
       open() {
-        const req = { result: db, onupgradeneeded: null as null | (() => void), onsuccess: null as null | (() => void), onerror: null };
+        const db = connection();
+        state.opens++;
+        state.conns.push(db);
+        const req = {
+          result: db, onupgradeneeded: null as null | (() => void), onsuccess: null as null | (() => void), onerror: null,
+          onblocked: null,
+        };
         queueMicrotask(() => { if (!stores.size) req.onupgradeneeded?.(); req.onsuccess?.(); });
         return req;
       },
@@ -129,5 +142,26 @@ describe('recent copies', () => {
     await backend.removeCopy('abc');
     expect(await backend.readCopy('abc')).toBeNull();
     expect(opfs.files.size).toBe(0);
+  });
+});
+
+describe('recent files database connection', () => {
+  it('is opened again after WebKit closed it (with or without a close event) or another window upgrades', async () => {
+    await backend.put({ id: 'a', name: 'a.pdf', size: 1, openedAt: 1, source: 'copy' });
+    expect(idb.state.opens).toBe(1);
+    // Dropped without an event: the transaction throws InvalidStateError, retried once.
+    idb.state.conns[0].closed = true;
+    expect((await backend.all()).map(r => r.id)).toEqual(['a']);
+    expect(idb.state.opens).toBe(2);
+    // A close event.
+    idb.state.conns[1].closed = true;
+    idb.state.conns[1].onclose!();
+    expect((await backend.all()).map(r => r.id)).toEqual(['a']);
+    expect(idb.state.opens).toBe(3);
+    // Another window upgrades: this connection closes so it is not blocked.
+    idb.state.conns[2].onversionchange!();
+    expect(idb.state.conns[2].closed).toBe(true);
+    expect((await backend.all()).map(r => r.id)).toEqual(['a']);
+    expect(idb.state.opens).toBe(4);
   });
 });
