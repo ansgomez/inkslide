@@ -4,18 +4,30 @@
  * plus the renders in flight, so callers asking for the same bitmap at once
  * share one render. Bitmaps of a document that was closed meanwhile are
  * closed, never cached.
+ *
+ * Renders no longer wanted do not pile up in the render queue (holding a
+ * page key): there is one page on screen (PRIORITY.current) and the
+ * pre-renders of its neighbours. A new page on screen cancels the render of
+ * another scale of the same page and moves the one of another page down to
+ * a pre-render; prefetch() cancels pre-renders it no longer asks for. A
+ * pending pre-render asked for at a higher priority is moved up.
  */
 import { BitmapCache } from './bitmap-cache';
 import { scaleKey } from './fit';
-import { PRIORITY, type PdfDoc } from './pdf';
+import { PRIORITY, type PdfDoc, type RenderJob } from './pdf';
 
 /** Key of page n's bitmap at a render scale: "3@1.50". */
 export const bitmapKey = (n: number, scale: number): string => `${n}@${scaleKey(scale)}`;
 
 /** Rendered pages of the open PDF. */
 export interface PageBitmaps {
-  /** Page n at `scale` (device px per point): cached, or rendered at `priority`. */
+  /**
+   * Page n at `scale` (device px per point): cached, or rendered at
+   * `priority`. PRIORITY.current: the page on screen (see the module comment).
+   */
   get(n: number, scale: number, priority: number): Promise<ImageBitmap>;
+  /** Pre-render these pages ([n, scale]) at PRIORITY.neighbor; other pending pre-renders are cancelled. */
+  prefetch(pages: readonly (readonly [number, number])[]): void;
   /** The cached bitmap (marked as recently used), else undefined. */
   cached(n: number, scale: number): ImageBitmap | undefined;
   /** The latest used bitmap of page n at any scale: a stand-in while the exact one renders. */
@@ -40,29 +52,65 @@ function warm(bmp: ImageBitmap): void {
 /** Page bitmaps, at most `limit` kept. */
 export function createPageBitmaps(limit: number): PageBitmaps {
   const cache = new BitmapCache<ImageBitmap>(limit, b => b.close());
-  const pending = new Map<string, Promise<ImageBitmap>>();
+  const pending = new Map<string, { n: number; priority: number; job: RenderJob<ImageBitmap>; promise: Promise<ImageBitmap> }>();
   let doc: PdfDoc | null = null;
 
-  return {
+  function cancel(key: string): void {
+    const p = pending.get(key);
+    if (!p) return;
+    pending.delete(key);
+    p.job.cancel();
+  }
+
+  /** `key` of page n is the page on screen now (see the module comment). */
+  function onScreen(key: string, n: number): void {
+    for (const [k, p] of [...pending]) {
+      if (k === key || p.priority !== PRIORITY.current) continue;
+      if (p.n === n) cancel(k);
+      else {
+        p.priority = PRIORITY.neighbor;
+        p.job.setPriority(PRIORITY.neighbor);
+      }
+    }
+  }
+
+  const api: PageBitmaps = {
     get(n, scale, priority) {
       const key = bitmapKey(n, scale);
+      if (priority === PRIORITY.current) onScreen(key, n);
       const hit = cache.get(key);
       if (hit) return Promise.resolve(hit);
       const running = pending.get(key);
-      if (running) return running;
+      if (running) {
+        if (priority < running.priority) {
+          running.priority = priority;
+          running.job.setPriority(priority);
+        }
+        return running.promise;
+      }
       if (!doc) return Promise.reject(new Error('no document'));
       const pdf = doc;
-      const done = (): void => { if (pending.get(key) === p) pending.delete(key); }; // not the next document's
-      const p = pdf.renderBitmap(n, scale, priority).then(bmp => {
+      const done = (): void => { if (pending.get(key)?.promise === p) pending.delete(key); }; // not the next document's
+      const job = pdf.renderBitmap(n, scale, priority);
+      const entry = { n, priority, job, promise: null as unknown as Promise<ImageBitmap> };
+      const p = job.promise.then(bmp => {
         done();
         if (doc === pdf) {
           cache.set(key, bmp);
-          if (priority !== PRIORITY.current) warm(bmp);
+          if (entry.priority !== PRIORITY.current) warm(bmp);
         } else bmp.close();
         return bmp;
       }, e => { done(); throw e; });
-      pending.set(key, p);
+      entry.promise = p;
+      pending.set(key, entry);
       return p;
+    },
+    prefetch(pages) {
+      const wanted = new Set(pages.map(([n, scale]) => bitmapKey(n, scale)));
+      for (const [k, p] of [...pending]) {
+        if (p.priority >= PRIORITY.neighbor && !wanted.has(k)) cancel(k);
+      }
+      for (const [n, scale] of pages) api.get(n, scale, PRIORITY.neighbor).catch(() => { /* cancelled, closed */ });
     },
     cached: (n, scale) => cache.get(bitmapKey(n, scale)),
     standIn: n => cache.find(k => k.startsWith(`${n}@`)),
@@ -73,4 +121,5 @@ export function createPageBitmaps(limit: number): PageBitmaps {
       pending.clear();
     },
   };
+  return api;
 }

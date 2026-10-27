@@ -38,7 +38,7 @@ import { attachGestures } from './gestures';
 import { createLiveInk } from './live-ink';
 import { createOverview, type Overview } from './overview';
 import { bitmapKey, createPageBitmaps } from './page-bitmaps';
-import { openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
+import { isCancelled, openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
 import { flushSave, pageTurned, saveState, scheduleSave, setSaveTarget } from './persist';
 import type { AppAdapter } from './platform';
 import { printPageImages } from './print';
@@ -272,7 +272,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     const id = s.current;
     bitmaps.get(n, scale, PRIORITY.current).then(bmp => {
       if (s && s.current === id && bitmaps.cached(n, scale) === bmp) drawBitmap(bmp, key);
-    }, e => console.error(`Rendering page ${n} failed`, e));
+    }, e => { if (!isCancelled(e)) console.error(`Rendering page ${n} failed`, e); });
   }
 
   /** Pre-render the PDF pages before and after the shown one at their fit size. */
@@ -280,12 +280,14 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     if (!s) return;
     const own = s.doc.ownerSlide(s.current);
     if (own == null) return;
+    const pages: [number, number][] = [];
     for (const n of [own + 1, own - 1]) {
       if (n < 1 || n > s.doc.deck.slides) continue;
       const id = `p${n}`;
       const f = fitFor(id);
-      bitmaps.get(n, renderScale(sizeOf(id), f.scale, dpr()), PRIORITY.neighbor).catch(() => { /* closed */ });
+      pages.push([n, renderScale(sizeOf(id), f.scale, dpr())]);
     }
+    bitmaps.prefetch(pages);
   }
 
   // ── Layout and zoom ──────────────────────────────────────────
