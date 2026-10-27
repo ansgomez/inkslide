@@ -169,9 +169,10 @@ test('a file that is not a PDF shows an error; no PDF.js worker stays behind', a
 });
 
 test('a dropped file that can not be read shows an error (no unhandled rejection)', async ({ page }) => {
-  const unhandled: string[] = [];
-  page.on('pageerror', e => unhandled.push(e.message));
   await page.evaluate(() => {
+    const w = window as unknown as { unhandled: string[] };
+    w.unhandled = [];
+    window.addEventListener('unhandledrejection', e => w.unhandled.push(String(e.reason)));
     // A dropped file moved or changed since: reading it fails.
     const file = new File([], 'gone.pdf', { type: 'application/pdf' });
     file.arrayBuffer = () => Promise.reject(new DOMException('the file was changed', 'NotReadableError'));
@@ -180,8 +181,9 @@ test('a dropped file that can not be read shows an error (no unhandled rejection
     window.dispatchEvent(e);
   });
   await expect(page.locator('.ann-banner-error')).toContainText('Could not open gone.pdf: the file was changed');
-  await page.waitForTimeout(100);
-  expect(unhandled).toEqual([]);
+  // unhandledrejection is dispatched in a task after the microtasks that settled the promise:
+  // read the list one task after the banner.
+  expect(await page.evaluate(() => new Promise(r => setTimeout(() => r((window as unknown as { unhandled: string[] }).unhandled))))).toEqual([]);
 });
 
 test('a PDF asked for while another opens is opened next', async ({ page }) => {
