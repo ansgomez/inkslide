@@ -100,6 +100,8 @@ function start(): void {
   let quitting = false;
   /** Notes writes in progress; quitting waits for them. */
   const writes = new Set<Promise<unknown>>();
+  /** Renderer crashes: reload at once, or ask (crashRecovery.ts). */
+  const crashes = new CrashRecovery();
 
   const argPdf = pdfFromArgv(process.argv, process.cwd());
   if (argPdf && 'path' in argPdf) opens.add(grants.grant(argPdf.path));
@@ -273,9 +275,9 @@ function start(): void {
     });
     // The renderer died (crash, killed for memory): the window would stay
     // blank, unable to save or take open requests. Reload it (it reopens the
-    // PDF; requests that come meanwhile are queued); if it dies again soon,
-    // ask. While closing, the window just closes: there is nothing left to save.
-    const crashes = new CrashRecovery();
+    // PDF; requests that come meanwhile are queued); if it dies again soon or
+    // before it saved, ask (crashRecovery.ts). While closing, the window just
+    // closes: there is nothing left to save.
     wc.on('render-process-gone', (_e, details) => {
       loaded = false;
       if (closeAsked) {
@@ -297,6 +299,7 @@ function start(): void {
       if (r.response === 2) w.close();
       else {
         reopen = r.response === 0;
+        crashes.reloaded();
         wc.reload();
       }
     }
@@ -410,6 +413,7 @@ function start(): void {
   // With backups on, the save first copies the saved notes to the backup (notes.ts).
   handle(IPC.writeNotes, async (ref: unknown, text: unknown, sha256?: unknown): Promise<void> => {
     await tracked(writeNotesFor(checkTarget(ref, sha256), checkText(text), userData, prefs.backups));
+    crashes.saved();
     void updateRevert();
   });
 

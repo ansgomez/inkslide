@@ -118,7 +118,8 @@ requests that come before the page has loaded wait in `OpenRequests` (the first 
 `initialPath()`); a reloaded page gets the PDF it showed. Reload is in the menu of development
 builds only, since it skips the save before closing. If the page's renderer process dies
 (crash, killed for memory), main reloads the page and it reopens the PDF; open requests that
-come meanwhile are queued. If it dies again within 30 s, the user chooses: reload, reload
+come meanwhile are queued. If it dies again within 5 minutes of a reload, or before the
+reloaded page saved its notes, the user chooses: reload, reload
 without the PDF, or close the window (`crashRecovery.ts`). During the close handshake the
 window simply closes.
 
