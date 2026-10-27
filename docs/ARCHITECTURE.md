@@ -50,21 +50,27 @@ access.
 - **Model** (`model.ts`): `NotesDoc` holds the deck info and the pages. Source pages are
   `p<n>` (PDF) or `s<n>` (Marp); blank pages sit after a source page. Strokes are immutable;
   every edit replaces a page's stroke array through a `Command` on the `History`, so each
-  finished gesture is one undo step. `toJSON()` / `load()` are the notes file format (see
-  [NOTES-FORMAT.md](NOTES-FORMAT.md)). Change events (`strokes`, `pages`, `saved`) drive
-  rendering and autosave.
+  finished gesture is one undo step. Pages also hold images (snapshots: PNG or JPEG data URLs
+  in a rectangle, below all ink) in a second immutable array; `replaceContent` changes strokes
+  and images in one command, and limits per image, page and document keep the notes file small.
+  `toJSON()` / `load()` are the notes file format (see [NOTES-FORMAT.md](NOTES-FORMAT.md); a
+  file with images is version 3). Change events (`strokes`, `pages`, `saved`) drive rendering
+  and autosave.
 - **Tools** (`tools.ts`): pen, highlighter, selector (tap, box, lasso; move and restyle),
-  laser, stroke eraser and partial eraser. Each tool handles `down / move / up / cancel /
-  hover / leave` with points in page units and edits only through `NotesDoc`. The render
-  functions are injected (`ToolRenderer`), which is how the web app swaps in its canvas live
-  stroke.
+  laser, stroke eraser and partial eraser, snapshot. Each tool handles `down / move / up /
+  cancel / hover / leave` with points in page units and edits only through `NotesDoc`. The
+  selector and the stroke eraser take images too (the partial eraser leaves them alone). The
+  snapshot tool only drags a rectangle and hands it to the app. The render functions are
+  injected (`ToolRenderer`), which is how the web app swaps in its canvas live stroke.
 - **App** (`app.ts`): `createAnnotator()` ties doc, tools, input, toolbar and keys together:
   current tool, colors and sizes (stored in `localStorage`), selection, undo/redo, the
-  `PagesController` and overview supplied by the viewer.
+  `PagesController` and overview supplied by the viewer. The host supplies what needs the PDF
+  or the DOM: `captureArea(pageId, rect)` draws a snapshot (the core has no PDF renderer),
+  `importImage(blob)` scales an image pasted from another program, and `notify` shows messages.
 - **Toolbar** (`toolbar.ts`, `toolbar.css`): the Marp Notes bar, built from registered groups
   (`mode, tools, colors, sizes, history, edit, pages, file`); dockable on four edges. `bindKeys`
   installs the shortcut table on `window` in the capture phase.
-- **Clipboard** (`clipboard.ts`): copy and paste of strokes. One clip per window, shared by
+- **Clipboard** (`clipboard.ts`): copy and paste of strokes and images. One clip per window, shared by
   the documents opened in it, and written to the system clipboard as JSON text with a format
   marker (`inkslide-strokes`). Ctrl/Cmd+C, X and V are left to the browser, whose copy, cut and
   paste events carry the system clipboard without a permission prompt; where no event follows
@@ -72,10 +78,14 @@ access.
   itself, reading the system clipboard with `navigator.clipboard.readText` (as does the paste
   button) and falling back to the window's clip where reading is refused. `clipForPaste`
   decides: a clip on the system clipboard wins; other text pastes nothing once the window's
-  clip had reached the system clipboard. `placeClip` gives a paste new ids, scales it to the
-  target page, offsets it while it would cover equal strokes (never onto one) and clamps it to
-  the page; the app adds it with one `NotesDoc.addStrokes` command. The keys are off while the
-  overview is open.
+  clip had reached the system clipboard. `placeItems` gives a paste new ids, scales it to the
+  target page, offsets it while it would cover equal strokes or an equal image (never onto
+  one) and clamps it to the page; the app adds it with one `NotesDoc.addItems` command. A
+  snapshot becomes the window's clip: an image at the captured area, also written to the
+  system clipboard as a PNG (`ClipboardItem`) next to the clip text where the platform allows
+  it (Electron refuses clipboard permissions, see `harden.ts`; the window's clip still works).
+  A paste event with no clip of Inkslide's but an image file goes to `importImage`. The keys
+  are off while the overview is open.
 - **Geometry** (`geometry.ts`): pure math: smoothing, pressure width, stroke outlines (classic
   Marp outline or perfect-freehand), bounding boxes, hit tests, partial erase, lasso.
 
@@ -205,9 +215,10 @@ One page is shown at a time (`apps/web/src/viewer.ts`):
    page) or "width" (`fit.ts` `fitWidth`, W key): a page taller than the stage scrolls, and
    the scroll is the view's `ty`, so zoom, pan and scroll are one transform of `.ink-page`.
 3. **SVG annotation surface** (`render.ts`, `createPageSurface`): an `<svg>` with the page's
-   size as viewBox and one `g.ann-layer` with highlighter strokes below pen strokes and a UI
-   group (selection, marquee, eraser cursor, laser). Blank pages get paper under the layer.
-   `syncLayer` reuses unchanged path nodes. Surfaces are created per page on demand and kept.
+   size as viewBox and one `g.ann-layer` with images (`<image>` with a data URL) below
+   highlighter strokes below pen strokes and a UI group (selection, marquee, eraser cursor,
+   laser). Blank pages get paper under the layer. `syncLayer` and `syncImages` reuse unchanged
+   nodes. Surfaces are created per page on demand and kept.
 4. **Live ink** (`live-ink.ts`): the stroke being drawn goes to a 2D canvas created with
    `desynchronized: true`, fed straight from pointer events (coalesced and predicted points)
    and redrawn in the event handler. On pen up the tool adds the real stroke to the model,
@@ -215,6 +226,13 @@ One page is shown at a time (`apps/web/src/viewer.ts`):
 
 The overview (`overview.ts`) is a grid of small PDF.js renders, made lazily when a tile
 scrolls into view, with the page's notes as SVG on top.
+
+A snapshot (`snapshot.ts`) is drawn apart from the screen: PDF.js renders only the area again
+(`PdfDoc.renderArea`, a viewport offset) at the page's render scale, at least 2 px per CSS px
+and at most 2048 px on the long side; a blank page gets its paper drawn instead. The page's
+images, highlighter strokes (opacity 0.35, multiply) and pen strokes follow on a 2D canvas,
+as `render.ts` and `toolbar.css` draw them. It is encoded as PNG, or as JPEG (quality 0.9)
+when the PNG exceeds the per-image limit, scaled down further if even that does.
 
 ## Input and palm rejection
 
@@ -241,9 +259,11 @@ and bad pages are reported as warnings. For each page in reading order it:
 - inserts blank pages at their place, with white paper and the rules or grid as filled
   rectangles;
 - appends one content stream with the strokes as vector paths in display coordinates
-  (`displayMatrix` maps them through the CropBox and `/Rotate`). Pen strokes are the same
-  filled outline as on screen; highlighter strokes are stroked centerlines with opacity 0.35
-  and multiply blend, below the pen;
+  (`displayMatrix` maps them through the CropBox and `/Rotate`, and a page's `/UserUnit` is
+  divided out, as PDF.js scales by it). Pen strokes are the same filled outline as on screen;
+  highlighter strokes are stroked centerlines with opacity 0.35 and multiply blend, below the
+  pen; images are image XObjects (`embedPng` / `embedJpg`, each distinct image once) below
+  all ink;
 - leaves the existing content streams alone (only wrapped in `q/Q`), so text stays selectable.
 
 An encrypted PDF (usually an owner password against changes, which PDF.js still displays) is
@@ -255,7 +275,7 @@ startup bundle. The adapter then saves the bytes.
 ## Tests
 
 - Unit tests (Vitest) in each package's `test/`: geometry, model, io (v1/v2), tools, input,
-  autosave, DOM rendering (happy-dom), legacy parity; export (checked with PDF.js); web
+  autosave, DOM rendering (happy-dom), legacy parity, images and snapshots; export (checked with PDF.js); web
   helpers and the web adapter; desktop path rules, notes and backup stores, preferences, file
   helpers, open requests, menu, window hardening, packaging config.
 - End-to-end tests (Playwright) in `apps/web/e2e` against the production build, with
