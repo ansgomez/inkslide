@@ -447,6 +447,46 @@ export function strokesInPolygon(
   return ids;
 }
 
+// ── Rectangles (images) ────────────────────────────────────────
+
+/** An axis-aligned rectangle in page units: an image on a page. */
+export interface RectLike {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Bounding box of a rectangle. */
+export const rectBBox = (r: RectLike): BBox => ({ minX: r.x, minY: r.y, maxX: r.x + r.w, maxY: r.y + r.h });
+
+/** Whether the segment a–b, grown by `radius`, touches the rectangle (an eraser over an image). */
+export function rectHitsSegment(r: RectLike, a: XY, b: XY, radius: number): boolean {
+  const inside = (p: XY): boolean => p[0] >= r.x && p[0] <= r.x + r.w && p[1] >= r.y && p[1] <= r.y + r.h;
+  if (inside(a) || inside(b)) return true;
+  const c: XY[] = [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
+  return c.some((p, i) => distSegments(a, b, p, c[(i + 1) % 4]) <= radius);
+}
+
+/**
+ * Ids of the rectangles at least `threshold` inside a polygon, measured on a
+ * 5×5 grid of points over each (the share of points, as strokesInPolygon).
+ */
+export function rectsInPolygon(rects: readonly (RectLike & { id: string })[], poly: readonly XY[], threshold = 0.75): string[] {
+  if (poly.length < 3) return [];
+  const box = pointsBBox(poly);
+  const ids: string[] = [];
+  for (const r of rects) {
+    if (!boxesOverlap(box, rectBBox(r))) continue;
+    let inside = 0;
+    for (let i = 0; i < 5; i++) {
+      for (let j = 0; j < 5; j++) if (pointInPolygon([r.x + r.w * i / 4, r.y + r.h * j / 4], poly)) inside++;
+    }
+    if (inside / 25 >= threshold) ids.push(r.id);
+  }
+  return ids;
+}
+
 /** Length of a polyline. */
 export function pathLength(points: readonly XY[]): number {
   let len = 0;

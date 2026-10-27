@@ -6,6 +6,7 @@
  * one <g class="ann-layer">, so annotations share the page's coordinates.
  *   g.ann-layer
  *     rect.ann-hit    transparent input surface (only active in annotate mode)
+ *     g.ann-img       images (snapshots), below all ink
  *     g.ann-hl        highlighter strokes (below pen)
  *     g.ann-pen       pen strokes
  *     g.ann-ui        selection box, marquee, eraser cursor, laser (never printed)
@@ -14,7 +15,7 @@ import {
   centerlinePath, laserTrail, outlinePath, round, smoothPoints, strokeOutline,
   type BBox, type Stroke, type StrokeTool, type XY,
 } from './geometry';
-import type { Paper, Size } from './model';
+import type { PageImage, Paper, Size } from './model';
 
 /** SVG namespace. */
 export const SVGNS = 'http://www.w3.org/2000/svg';
@@ -42,10 +43,12 @@ export interface Layer {
   root: SVGGElement;
   size: Size;
   hit: SVGRectElement;
+  img: SVGGElement;
   hl: SVGGElement;
   pen: SVGGElement;
   ui: SVGGElement;
   els: Map<string, { stroke: Stroke; node: SVGPathElement }>; // stroke id -> { stroke, node }
+  imgs: Map<string, { image: PageImage; node: SVGImageElement }>; // image id -> { image, node }
   laser: Laser | null;
   /** Tool size scale of this page (pageUnit); tool sizes are for a 1280×720 slide. */
   unit: number;
@@ -76,10 +79,12 @@ export function createLayer(svg: SVGSVGElement): Layer {
   const layer: Layer = {
     svg, root, size: [w, h],
     hit: el('rect', { class: 'ann-hit', x: 0, y: 0, width: w, height: h, fill: 'transparent' }, root),
+    img: el('g', { class: 'ann-img' }, root),
     hl: el('g', { class: 'ann-hl' }, root),
     pen: el('g', { class: 'ann-pen' }, root),
     ui: el('g', { class: 'ann-ui' }, root),
     els: new Map(),
+    imgs: new Map(),
     laser: null,
     unit: pageUnit([w, h]),
   };
@@ -142,6 +147,47 @@ export function syncLayer(layer: Layer, strokes: readonly Stroke[]): void {
   }
 }
 
+// ── Images ─────────────────────────────────────────────────────
+
+/** Draw an image into an <image> node, stretched to its rectangle. */
+export function paintImage(node: SVGImageElement, image: PageImage): void {
+  node.removeAttribute('transform');
+  node.setAttribute('class', 'ann-image');
+  node.setAttribute('x', String(image.x));
+  node.setAttribute('y', String(image.y));
+  node.setAttribute('width', String(image.w));
+  node.setAttribute('height', String(image.h));
+  node.setAttribute('preserveAspectRatio', 'none');
+  if (node.getAttribute('href') !== image.src) node.setAttribute('href', image.src); // a move does not decode it again
+  node.dataset.id = image.id;
+}
+
+/** Make the layer show exactly `images`, in order, reusing unchanged nodes. */
+export function syncImages(layer: Layer, images: readonly PageImage[]): void {
+  const keep = new Set<string>();
+  let cursor: ChildNode | null = layer.img.firstChild;
+  for (const image of images) {
+    keep.add(image.id);
+    let entry = layer.imgs.get(image.id);
+    if (!entry) {
+      entry = { image, node: el('image', {}) };
+      paintImage(entry.node, image);
+      layer.imgs.set(image.id, entry);
+    } else if (entry.image !== image) {
+      paintImage(entry.node, image);
+      entry.image = image;
+    }
+    if (entry.node === cursor) cursor = cursor.nextSibling;
+    else layer.img.insertBefore(entry.node, cursor);
+  }
+  for (const [id, entry] of layer.imgs) {
+    if (!keep.has(id)) {
+      entry.node.remove();
+      layer.imgs.delete(id);
+    }
+  }
+}
+
 /** A stroke being drawn (see liveStroke). */
 export interface LiveStroke {
   update(stroke: Stroke): void;
@@ -158,10 +204,10 @@ export function liveStroke(layer: Layer, tool: StrokeTool): LiveStroke {
   };
 }
 
-/** Show strokes moved by (dx, dy) while they are dragged; (0, 0) resets. */
+/** Show strokes and images moved by (dx, dy) while they are dragged; (0, 0) resets. */
 export function translateStrokes(layer: Layer, ids: readonly string[], dx: number, dy: number): void {
   for (const id of ids) {
-    const entry = layer.els.get(id);
+    const entry = layer.els.get(id) || (layer.imgs && layer.imgs.get(id));
     if (entry) entry.node.setAttribute('transform', `translate(${dx} ${dy})`);
   }
 }
