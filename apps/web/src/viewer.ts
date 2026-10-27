@@ -622,6 +622,8 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
       const kept = saved.problem ? await keepUnreadable(file, sha256) : '';
       if (kept === null || queued) return;
       const keptMsg = kept ? `The notes file that could not be read was kept as ${kept}.` : '';
+      // The open PDF again: its notes written below (or by autosave meanwhile) came after the read.
+      const reread = !!s && s.sha256 === sha256 && s.file.path === file.path && !saved.problem;
       // Strokes made on the open PDF while this one loaded, or during a write:
       // write until nothing is unsaved, then close with no await in between.
       do {
@@ -629,6 +631,10 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
       } while (!loseUnsaved && saveState() !== 'saved');
       if (queued) return; // a newer request replaces this one
       closeSession();
+      if (reread) {
+        const again = await loadSaved(file, sha256, newDoc);
+        if (!again.problem) doc = again.doc; // else the notes read before, the most there is
+      }
       startSession(file, sha256, pdf, doc);
       if (fromBackup) banner([`Opened the backup from ${fromBackup.when}.`, keptMsg, ...fromBackup.warnings].filter(Boolean).join('\n'), 'warn');
       else if (kept) banner(keptMsg, 'warn');

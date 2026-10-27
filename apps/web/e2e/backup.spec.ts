@@ -33,6 +33,8 @@ interface Files {
   keepFails?: boolean;
   /** writeNotes waits for release() (one per write). */
   gateWrites?: boolean;
+  /** readNotes waits for release() too (one per read). */
+  gateReads?: boolean;
 }
 
 interface Stub extends Files {
@@ -62,6 +64,10 @@ async function openWith(page: Page, files: Files): Promise<void> {
       openPdf: async (path: string) => ({ path, name: 'deck.pdf', bytes: new Uint8Array(bytes) }),
       readNotes: async () => {
         st.calls.push('readNotes');
+        if (st.gateReads) {
+          st.pending++;
+          await new Promise<void>(r => gates.push(r));
+        }
         const text = st.firstReads?.length ? st.firstReads.shift()! : st.notes;
         if (text === 'unreadable') throw new Error('EBUSY: file is in use');
         return text;
@@ -243,4 +249,26 @@ test('opening another PDF writes strokes made during the last save before the PD
     .toBe('/docs/other.pdf');
   const s = await stub(page);
   expect(s.written.filter(w => w.path === '/docs/deck.pdf').map(w => strokesIn(w.text))).toEqual([1, 2, 3]);
+});
+
+test('opening the open PDF again keeps strokes made while it loaded', async ({ page }) => {
+  await openWith(page, { notes: notes(0), backup: null, answers: [], gateWrites: true });
+  await expect(page.locator('.ink-stage')).toBeVisible();
+  const release = () => page.evaluate(() => (window as unknown as { stub: Stub }).stub.release());
+  const waitPending = () => expect.poll(async () => (await stub(page)).pending).toBe(1);
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.gateReads = true; });
+  await penStroke(page, [0.1, 0.2], [0.3, 0.4]);
+  void page.evaluate(() => (window as unknown as { inkslideViewer: { openFrom(p: string): Promise<void> } })
+    .inkslideViewer.openFrom('/docs/deck.pdf'));
+  await waitPending(); // the write of the first stroke
+  await release();
+  await waitPending(); // the read of the notes (1 stroke)
+  await penStroke(page, [0.4, 0.2], [0.6, 0.4]); // after the read
+  await release();
+  await waitPending(); // the write of the second stroke, before the PDF closes
+  await release();
+  await waitPending(); // the notes read again
+  await release();
+  await expect(penStrokes(page)).toHaveCount(2);
+  expect(strokesIn((await stub(page)).notes)).toBe(2);
 });
