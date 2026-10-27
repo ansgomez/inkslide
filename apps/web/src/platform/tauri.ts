@@ -99,12 +99,25 @@ export function base64(bytes: Uint8Array): string {
 }
 
 /**
+ * Max. size of a PDF handed to the app (export, share): MAX_FILE_BYTES of
+ * apps/mobile/src-tauri/src/lib.rs. Android sends it as base64, a third
+ * larger, and web views cap strings at a few hundred MB.
+ */
+export const MAX_FILE_BYTES = 256 * 1024 * 1024;
+
+/** Why a PDF over MAX_FILE_BYTES can not be exported or shared on the iPad or Android. */
+export const tooLargeMessage = (size: number): string =>
+  `This PDF is too large to export or share here (${Math.ceil(size / 2 ** 20)} MB; at most ${MAX_FILE_BYTES / 2 ** 20} MB).`;
+
+/**
  * invoke() arguments sending a file's bytes and name: a raw body with the
  * name percent-encoded in a header (headers are ASCII), or on Android, whose
- * IPC has no raw bodies, JSON with the bytes in base64.
+ * IPC has no raw bodies, JSON with the bytes in base64. Throws, before any
+ * encoding, for a file over MAX_FILE_BYTES.
  */
 export function fileArgs(os: MobileOs, bytes: Uint8Array, name: string):
   [Uint8Array | { name: string; data: string }, { headers: Record<string, string> } | undefined] {
+  if (bytes.length > MAX_FILE_BYTES) throw new Error(tooLargeMessage(bytes.length));
   return os === 'android'
     ? [{ name, data: base64(bytes) }, undefined]
     : [bytes, { headers: { name: encodeURIComponent(name) } }];

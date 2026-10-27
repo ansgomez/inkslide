@@ -46,13 +46,12 @@ const licenseFiles = dir => readdirSync(dir)
 /**
  * Extra license text a package's own files do not carry, read from the
  * package itself or a sibling: pako's zlib port is under the Zlib license
- * (stated in its source headers, not in LICENSE); the Tauri plugins ship only
+ * (stated in its source headers, not in LICENSE); the Tauri dialog plugin ships only
  * an SPDX file, so the MIT text of @tauri-apps/api (same project) is used.
  */
 const EXTRA = {
   pako: dir => [['lib/zlib/deflate.js (Zlib license of the zlib port)', leadingComment(join(dir, 'lib/zlib/deflate.js'))]],
   '@tauri-apps/plugin-dialog': tauriMit,
-  '@tauri-apps/plugin-fs': tauriMit,
 };
 /** The first block of `//` comment lines of a source file, without the slashes. */
 function leadingComment(file) {

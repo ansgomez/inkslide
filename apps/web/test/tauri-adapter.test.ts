@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import type { PdfFile } from '@inkslide/annotate';
-import { base64, createTauriAdapter, fileArgs, fileUrl, mobileOs, nameFromPath, notesFile, notesKey, shareName } from '../src/platform/tauri';
+import { MAX_FILE_BYTES, base64, createTauriAdapter, fileArgs, fileUrl, mobileOs, nameFromPath, notesFile, notesKey, shareName } from '../src/platform/tauri';
 
 const SHA = 'a'.repeat(64);
 const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
@@ -179,10 +179,23 @@ describe('helpers', () => {
     expect(fileArgs(null, bytes, 'a.pdf')[0]).toBe(bytes);
     expect(fileArgs('android', bytes, 'Deck #1.pdf')).toEqual([{ name: 'Deck #1.pdf', data: 'ACX/gA==' }, undefined]);
     // Large files in chunks (String.fromCharCode has an argument limit).
-    const big = Uint8Array.from({ length: 200_000 }, (_, i) => i % 256);
-    // Compared as Buffers: a deep toEqual over 200 000 elements takes seconds.
-    expect(Buffer.from(atob(base64(big)), 'latin1').equals(Buffer.from(big))).toBe(true);
+    const big = Uint8Array.from({ length: 3 * 0x8000 + 7 }, (_, i) => (i * 7) % 256);
+    expect(Buffer.from(base64(big), 'base64').equals(Buffer.from(big))).toBe(true);
+    expect(base64(big)).toBe(Buffer.from(big).toString('base64'));
     expect(base64(new Uint8Array())).toBe('');
+  });
+
+  it('refuses a file over the limit of the app commands before encoding it', async () => {
+    const lib = readFileSync(join(__dirname, '../../mobile/src-tauri/src/lib.rs'), 'utf8');
+    expect(lib).toMatch(/const MAX_FILE_BYTES: usize = 256 << 20;/);
+    expect(MAX_FILE_BYTES).toBe(256 << 20);
+    // A view: length over the limit without allocating it.
+    const huge = { length: MAX_FILE_BYTES + 1 } as Uint8Array;
+    for (const os of ['android', 'ios', null] as const) expect(() => fileArgs(os, huge, 'a.pdf')).toThrow(/too large .*257 MB; at most 256 MB/);
+    backend.save.target = '/home/me/a.pdf';
+    await expect(createTauriAdapter('android').exportPdf(huge, 'a.pdf')).rejects.toThrow(/too large/);
+    await expect(createTauriAdapter('ios').exportPdf(huge, 'a.pdf')).rejects.toThrow(/too large/);
+    expect(backend.commands()).toEqual([]);
   });
 
   it('percent-encodes file URLs per segment', () => {

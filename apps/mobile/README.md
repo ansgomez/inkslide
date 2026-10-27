@@ -15,7 +15,7 @@ smoke test.
 | `../web/src/platform/tauri.ts` | The front end's `PlatformAdapter` for Tauri (selected when `window.__TAURI_INTERNALS__` exists). |
 | `test/config.test.mjs` | `pnpm test`: paths, dev port, icons, both CSPs agree and allow the IPC, the capabilities stay narrow (no fs plugin permission, no open or save dialog), the app commands match their permissions. |
 | `test/share-names.json` | Names for shared files: what the front end's `shareName` makes of them, checked by both the Rust and the front-end tests. |
-| `test/smoke.mjs` | `pnpm smoke` (Linux): builds the desktop variant with a test script and checks notes through the real plugins. |
+| `test/smoke.mjs` | `pnpm smoke` (Linux): builds the desktop variant with a test script (and the `smoke` feature, which hands one file to `read_picked` as if picked) and checks reading a picked file and the notes through the real plugins and commands. |
 
 ## How files work on mobile
 
@@ -52,8 +52,13 @@ smoke test.
   `:`, control characters or leading dot) and stay in the share folder; `save_pdf` opens the
   save dialog itself and writes only to the file picked there, which the page never sees.
   File bytes go as a raw request body with the name in a header; Android's IPC has no raw
-  bodies, so there they go as JSON with the bytes in base64 (a JSON number array, also
-  accepted, costs about 32 bytes per byte). Files up to 1 GiB.
+  bodies, so there they go as JSON with the bytes in base64 (a JSON number array is refused:
+  Tauri would hold it at about 32 bytes per byte). Export and share take PDFs up to 256 MiB
+  (`MAX_FILE_BYTES`, the same in `lib.rs` and `tauri.ts`); the front end refuses a larger one
+  with a message before encoding it, as base64 strings that large break web views.
+- **Failed dialogs look cancelled:** on iOS and Android the dialog plugin's Rust API reports a
+  picker or save dialog that failed (no activity, a provider error) as no file, the same as a
+  cancel, so `pick_file` and `save_pdf` then return null / false and nothing is shown.
 
 Share uses the community plugin [tauri-plugin-sharekit](https://github.com/Choochmeque/tauri-plugin-sharekit)
 0.3.1 (MIT; Rust crate and `@choochmeque/tauri-plugin-sharekit-api`), as Tauri has no
@@ -170,8 +175,8 @@ pnpm --filter @inkslide/web test        # includes test/tauri-adapter.test.ts (m
 
 The smoke test builds into `src-tauri/target/smoke` with `TAURI_CONFIG` pointing the frontend
 at a copy of `apps/web/dist` plus a test script, and a temporary `XDG_DATA_HOME`. It covers
-the `read_notes` and `write_notes` commands and their permissions, the CSP with the IPC, and
-the adapter's notes path. On
+`read_picked` (a picked file is read, another refused), the `read_notes` and `write_notes`
+commands and their permissions, the CSP with the IPC, and the adapter's notes path. On
 WebKitGTK, IPC calls made before the page's `load` event can hang; the app makes none.
 
 ## Not tested yet (needs the devices)
