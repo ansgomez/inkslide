@@ -20,7 +20,7 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 
 | File | Role |
 |---|---|
-| `src/main/main.ts` | App and window lifecycle, single instance, IPC handlers, save-before-close, smoke mode. |
+| `src/main/main.ts` | App and window lifecycle, single instance, IPC handlers, save-before-close, smoke mode; `crashReporter` keeps minidumps of native crashes in `userData/Crashpad/` (never uploaded). |
 | `src/main/notes.ts` | Where notes are read and written: sidecar `<pdf>.notes.json`, or `userData/notes/<sha256>.notes.json` when the sidecar cannot be written; reads the newer ([NOTES-FORMAT.md](../../docs/NOTES-FORMAT.md#desktop-electron)). The backup, `userData/notes/<sha256>.notes.backup.json`: copied from the saved notes before a save, swapped back by Revert to Backup; the kept copy of an unreadable notes file (`<sha256>.notes.unreadable.json`); cleanup of backups and copies older than 90 days at startup. |
 | `src/main/fsutil.ts` | Atomic writes (temp file, fsync, rename, fsync the folder), writability checks. |
 | `src/main/access.ts` | `PathGrants`: the renderer may only read PDFs the user chose. |
