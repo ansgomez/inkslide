@@ -221,6 +221,16 @@ the pages are printed as images at 200 dpi (Safari cannot print a PDF from a web
 reliably); each page gets its own paper size where the browser supports it (Chrome, Edge,
 Safari 18.2 and later).
 
+## Crash reports (desktop)
+
+If the desktop app crashes, it writes a crash report (a minidump) to the `Crashpad` folder in
+its own storage: `~/.config/Inkslide/Crashpad/` on Linux, `%APPDATA%\Inkslide\Crashpad\` on
+Windows, `~/Library/Application Support/Inkslide/Crashpad/` on macOS. Nothing is uploaded;
+the reports stay on your computer until you delete them. To report a crash, attach the newest
+file from that folder (under `pending/` or `completed/`). A report holds part of the app's
+memory, which can include text of the open PDF and your notes and file paths, so share it only
+with people you would show those to.
+
 ## Other keys
 
 | Key | Action |

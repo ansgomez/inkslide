@@ -25,7 +25,7 @@ access.
               └────────────────────▲─────┘   └────────────────────┘
                                    │ notes path rules (io.notesPathFor)
               ┌────────────────────┴──────────────────────────────────────────────┐
-              │ apps/desktop (Electron 39)                                         │
+              │ apps/desktop (Electron 43)                                         │
               │ preload.ts ── IPC ── main.ts: dialogs, notes.ts, fsutil.ts,        │
               │      access.ts, openRequests.ts, print.ts, harden.ts, recent.ts,   │
               │      windowState.ts, preferences.ts, menu.ts                       │
@@ -123,6 +123,12 @@ Both windows (the app and the hidden print window) are locked down by `harden.ts
 isolation, sandbox, no Node; no navigation, no new windows (http(s) links open in the system
 browser); every permission request and check is refused except fullscreen.
 
+**userData** (`~/.config/Inkslide` on Linux): `notes/` (notes that cannot go next to the PDF,
+backups, kept unreadable copies), `recent-files.json`, `window-state.json`,
+`preferences.json`, and `Crashpad/`: `crashReporter.start({ uploadToServer: false })` in
+`main.ts` keeps a minidump of each native crash (main, GPU or renderer process) there; nothing
+is uploaded.
+
 ## Autosave
 
 `createAutosave()` (`packages/annotate/src/autosave.ts`) is pure and shell independent:
@@ -185,8 +191,8 @@ One page is shown at a time (`apps/web/src/viewer.ts`):
 
 1. **PDF.js** (`pdf.ts`) renders pages in its worker through one priority queue: the page on
    screen first, then neighbours, then overview thumbnails. Data files (CMaps, fonts, wasm)
-   are bundled; nothing comes from a CDN. The legacy build is used for Electron 39 and older
-   Safari.
+   are bundled; nothing comes from a CDN. The legacy build is used for older iPad Safari
+   (Electron 43 would run the modern one).
 2. **Bitmap cache** (`bitmap-cache.ts`): an LRU of at most 6 `ImageBitmap`s keyed by page and
    scale. The current page renders at `fit scale × devicePixelRatio × zoom`; the previous and
    next page are pre-rendered at fit size, so a page turn only draws a bitmap. While the exact

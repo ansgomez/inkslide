@@ -46,7 +46,7 @@ desktop app uses Electron.
 Before building the app, the same pen test page ran in several web views on a Linux tablet
 with a pen (Fedora 44, Wayland):
 
-| | Tauri 2 (WebKitGTK 4.1) | GNOME Web (WebKitGTK 6) | Chromium browser (Wayland) | Tauri 3 + CEF (X11) | Electron 39 (Wayland) |
+| | Tauri 2 (WebKitGTK 4.1) | GNOME Web (WebKitGTK 6) | Chromium browser (Wayland) | Tauri 3 + CEF (X11) | Electron (Wayland; measured with Electron 39) |
 |---|---|---|---|---|---|
 | Pen reported as pen | no (mouse) | no | yes | yes | yes |
 | Pressure levels | 1 (fixed 0.5) | 1 | 661 | 674 | 433 |

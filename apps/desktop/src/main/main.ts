@@ -16,7 +16,7 @@
  *   INKSLIDE_PRINT_TO_PDF  smoke test mode only: Print writes this PDF file instead of
  *                       showing the print dialog
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
@@ -42,6 +42,9 @@ const MAX_TEXT_BYTES = 256 * 2 ** 20;
 // Native Wayland when available (pen pressure, tilt and eraser need it).
 app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
 if (process.env.INKSLIDE_USER_DATA) app.setPath('userData', resolve(process.env.INKSLIDE_USER_DATA));
+// Native crashes (main, GPU, renderer) leave a minidump in userData/Crashpad for
+// bug reports; nothing is uploaded. After setPath, so tests keep theirs apart.
+crashReporter.start({ uploadToServer: false });
 // The dev build gets its own app id, so GNOME does not group it with an installed
 // Inkslide. app.setDesktopName is what Electron itself calls with package.json's
 // desktopName; it is not in the typings.

@@ -91,7 +91,7 @@ Playwright's file chooser does not handle `showOpenFilePicker`.
   CDN, so it works offline. `connect-src` allows no other sites (the same page runs in
   Electron), so `?pdf=` opens PDFs of the page's own site only.
 - PDF.js is the legacy build, because the modern one needs `Map.getOrInsertComputed`, which
-  Electron 39 and older iPad Safari lack.
+  older iPad Safari lacks (Electron 43 has it).
 - `window.inkslideViewer` is exposed for tests and debugging.
 - `plugins/notices.ts` copies the repository's `THIRD_PARTY_NOTICES.md` into `dist/` and fails
   the build when a bundled npm package is not listed there (`pnpm notices` updates it).
