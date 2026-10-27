@@ -243,6 +243,66 @@ describe('notes location', () => {
   });
 });
 
+describe.skipIf(process.platform === 'win32')('a sidecar that is a symlink', () => {
+  /** deck.pdf in `dir`, its sidecar a link to `target` (relative, as an archive would hold it). */
+  function linkedSidecar(dir: string, target: string): { pdf: string; sidecar: string } {
+    const pdf = pdfIn(dir);
+    const sidecar = `${pdf}.notes.json`;
+    symlinkSync(target, sidecar);
+    return { pdf, sidecar };
+  }
+
+  it('is followed to another notes file', async () => {
+    const dir = tempDir(), ud = tempDir();
+    mkdirSync(join(dir, 'synced'));
+    writeFileSync(join(dir, 'synced', 'deck.pdf.notes.json'), 'old');
+    const { pdf, sidecar } = linkedSidecar(join(dir, 'lectures'), '../synced/deck.pdf.notes.json');
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('old');
+    expect(await writeNotesFor({ path: pdf, sha256: sha }, 'new', ud)).toBe(sidecar);
+    expect(lstatSync(sidecar).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(dir, 'synced', 'deck.pdf.notes.json'), 'utf8')).toBe('new');
+  });
+
+  it('to any other file is never read, copied or written through; a save replaces the link', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const secret = join(dir, '.bashrc');
+    writeFileSync(secret, 'export SECRET=1');
+    chmodSync(secret, 0o600);
+    const { pdf, sidecar } = linkedSidecar(join(dir, 'a', 'b'), '../../.bashrc');
+    const t = { path: pdf, sha256: sha };
+    await expect(readNotesFor(t, ud)).rejects.toThrow(/link to \.bashrc/);
+    expect(await keepUnreadableFor(t, ud)).toBeNull();
+    expect(await backupBeforeSave(t, ud)).toBe(false);
+    expect(await notesWritePath(t, ud)).toBe(sidecar);
+    expect(await writeNotesFor(t, '{"a":1}', ud, true)).toBe(sidecar);
+    expect(readFileSync(secret, 'utf8')).toBe('export SECRET=1');
+    expect(lstatSync(sidecar).isSymbolicLink()).toBe(false);
+    expect(readFileSync(sidecar, 'utf8')).toBe('{"a":1}');
+    expect(await readNotesFor(t, ud)).toBe('{"a":1}');
+    expect(existsSync(join(ud, 'notes'))).toBe(false); // nothing of .bashrc in app storage
+  });
+
+  it.skipIf(isRoot)('to a file that cannot be written is still replaced, not written to', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const target = join(dir, 'readonly.txt');
+    writeFileSync(target, 'keep');
+    chmodSync(target, 0o444);
+    const { pdf, sidecar } = linkedSidecar(join(dir, 'p'), target);
+    expect(await writeNotesFor({ path: pdf, sha256: sha }, 'x', ud)).toBe(sidecar);
+    expect(readFileSync(target, 'utf8')).toBe('keep');
+    expect(readFileSync(sidecar, 'utf8')).toBe('x');
+  });
+
+  it('that is dangling counts as missing, and a save replaces it', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const { pdf, sidecar } = linkedSidecar(dir, '../nowhere/.profile');
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBeNull();
+    await writeNotesFor({ path: pdf, sha256: sha }, 'x', ud);
+    expect(lstatSync(sidecar).isSymbolicLink()).toBe(false);
+    expect(existsSync(join(dir, '..', 'nowhere'))).toBe(false);
+  });
+});
+
 describe('notes backup', () => {
   /** A notes file with `n` strokes on page 1. */
   const notes = (n: number): string => JSON.stringify({

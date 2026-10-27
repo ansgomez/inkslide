@@ -17,9 +17,9 @@
  */
 import { createHash } from 'node:crypto';
 import { readdir, readFile, rm, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { BACKUP_SUFFIX, notesPathFor, parseNotes, type NotesBackup } from '@inkslide/annotate/io';
-import { canWriteIn, ensureDir, readTextIfExists, writeFileAtomic } from './fsutil';
+import { basename, dirname, join } from 'node:path';
+import { BACKUP_SUFFIX, NOTES_SUFFIX, notesPathFor, parseNotes, type NotesBackup } from '@inkslide/annotate/io';
+import { canWriteIn, ensureDir, readTextIfExists, refusedLink, writeFileAtomic } from './fsutil';
 import { fallbackBackupPath, fallbackNotesPath, isSha256, isStorageName, NOTES_DIR, sidecarStatePath, UNREADABLE_SUFFIX, unreadableNotesPath } from './paths';
 
 /** The PDF whose notes are read or written. */
@@ -31,6 +31,17 @@ export interface NotesTarget {
   /** PDF bytes, used to compute the hash when neither sha256 nor path is there. */
   bytes?: Uint8Array;
 }
+
+/**
+ * Whether a sidecar that is a symlink to `target` is followed: only to
+ * another notes file (e.g. one in a synced folder). A link to anything else
+ * (a PDF from an archive with "deck.pdf.notes.json -> ../../.bashrc") is
+ * never read, and a save replaces the link instead of writing through it.
+ */
+export const followNotesLink = (target: string): boolean => {
+  const name = basename(target).toLowerCase();
+  return name.endsWith(NOTES_SUFFIX) || name.endsWith(BACKUP_SUFFIX);
+};
 
 /** Hex SHA-256 of `bytes`. */
 export const sha256OfBytes = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
@@ -56,9 +67,9 @@ const hashIfKnown = (t: NotesTarget): Promise<string | null> =>
  */
 async function writeBesideOrStored(beside: string | null, stored: () => Promise<string>, text: string): Promise<string> {
   let besideError: unknown;
-  if (beside && await canWriteIn(dirname(beside), beside)) {
+  if (beside && await canWriteIn(dirname(beside), beside, followNotesLink)) {
     try {
-      await writeFileAtomic(beside, text);
+      await writeFileAtomic(beside, text, followNotesLink);
       return beside;
     } catch (err) {
       besideError = err;
@@ -78,7 +89,7 @@ async function writeBesideOrStored(beside: string | null, stored: () => Promise<
 export async function notesWritePath(t: NotesTarget, userData: string): Promise<string> {
   if (t.path) {
     const sidecar = notesPathFor(t.path);
-    if (await canWriteIn(dirname(sidecar), sidecar)) return sidecar;
+    if (await canWriteIn(dirname(sidecar), sidecar, followNotesLink)) return sidecar;
   }
   return fallbackNotesPath(userData, await hashOf(t));
 }
@@ -102,9 +113,9 @@ interface SidecarState {
   sha256: string | null;
 }
 
-/** SHA-256 of the sidecar's text, null if it is missing or cannot be read. */
-const sidecarHash = (sidecar: string): Promise<string | null> =>
-  readFile(sidecar).then(sha256OfBytes, () => null);
+/** SHA-256 of the sidecar's text, null if it is missing or cannot be read (or is a link that is not followed). */
+const sidecarHash = async (sidecar: string): Promise<string | null> =>
+  (await refusedLink(sidecar, followNotesLink) ? null : readFile(sidecar).then(sha256OfBytes, () => null));
 
 /** The record in `file`; null if it is missing or broken. */
 async function readSidecarState(file: string): Promise<SidecarState | null> {
@@ -142,7 +153,7 @@ export async function readNotesFor(t: NotesTarget, userData: string): Promise<st
 /** The saved notes, as readNotesFor reads them, and the file they come from; null if there are none. */
 async function readSaved(t: NotesTarget, userData: string): Promise<{ file: string; text: string } | null> {
   for (const file of await savedCandidates(t, userData)) {
-    const text = await readTextIfExists(file);
+    const text = await readTextIfExists(file, followNotesLink);
     if (text !== null) return { file, text };
   }
   return null;
@@ -270,7 +281,8 @@ export const removeLegacyBackup = (pdfPath: string): Promise<void> =>
  */
 export async function keepUnreadableFor(t: NotesTarget, userData: string): Promise<string | null> {
   for (const file of await savedCandidates(t, userData)) {
-    if ((await mtimeOf(file)) < 0) continue;
+    // A link that is not followed is not a notes file: nothing of its target is copied.
+    if ((await mtimeOf(file)) < 0 || await refusedLink(file, followNotesLink)) continue;
     const copy = unreadableNotesPath(userData, await hashOf(t));
     await ensureDir(dirname(copy));
     await writeFileAtomic(copy, await readFile(file));
