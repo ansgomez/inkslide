@@ -86,7 +86,7 @@ export interface InputController {
   cancel(): void;
   /** Drop the running gesture (if any). */
   discard(): void;
-  /** Remove the window listeners (surfaces keep theirs until removed). */
+  /** Drop the running gesture and remove all listeners (window and surfaces). */
   destroy(): void;
   readonly busy: boolean;
   /** Pointer type ("pen", "touch", "mouse") of the running gesture; null if none. */
@@ -232,9 +232,16 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
     }
   }
 
+  // Every surface listener is added with this signal, so destroy() removes them all.
+  const listeners = new AbortController();
+  const listenOn = (el: SVGSVGElement): Pick<SVGSVGElement, 'addEventListener'> => ({
+    addEventListener: ((type: string, fn: EventListener) =>
+      el.addEventListener(type, fn, { signal: listeners.signal })) as SVGSVGElement['addEventListener'],
+  });
+
   /** Route events of one surface (PDF page, blank page or slide) to the tools. */
   function attach(slide: Surface): void {
-    const svg = slide.svg;
+    const svg = listenOn(slide.svg);
     svg.addEventListener('pointerdown', e => onDown(slide, e));
     svg.addEventListener('pointermove', e => onMove(slide, e));
     svg.addEventListener('pointerup', e => onUp(e, false));
@@ -262,7 +269,11 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
     attach,
     cancel: () => finish(),
     discard: () => finish(true),
-    destroy: () => window.removeEventListener('blur', onBlur),
+    destroy: () => {
+      finish(true);
+      listeners.abort();
+      window.removeEventListener('blur', onBlur);
+    },
     get busy() { return !!active; },
     get activePointerType() { return active ? active.pointerType : null; },
     get penSeen() { return penSeen; },

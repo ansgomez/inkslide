@@ -201,6 +201,20 @@ describe('attachInput', () => {
     expect(pen.up.mock.calls.at(-1)!.slice(0, 2)).toEqual([surface, [40, 20, 0.5]]);
   });
 
+  it('destroy drops the running gesture and removes the surface listeners', () => {
+    const { fire, pen, input } = setup();
+    fire('pointerdown', { pointerType: 'mouse', button: 0 });
+    input.destroy();
+    expect(pen.cancel).toHaveBeenCalledTimes(1);
+    expect(pen.up).not.toHaveBeenCalled();
+    expect(input.busy).toBe(false);
+    fire('pointerup', { pointerType: 'mouse' });
+    fire('pointerdown', { pointerType: 'mouse', button: 0 });
+    fire('pointermove', { pointerType: 'mouse' });
+    expect(pen.down).toHaveBeenCalledTimes(1);
+    expect(pen.hover).not.toHaveBeenCalled();
+  });
+
   it('cancel commits, discard drops the running gesture', () => {
     const { fire, pen, input } = setup();
     fire('pointerdown', { pointerType: 'mouse', button: 0 });

@@ -553,7 +553,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     old.unbind();
     old.overview.destroy();
     old.app.input.destroy();
-    if (old.app.toolbar) old.app.toolbar.el.remove();
+    if (old.app.toolbar) old.app.toolbar.destroy();
     old.app.surfaces.forEach(surf => surf.svg.remove());
     bitmaps.setDoc(null);
     shownKey = '';

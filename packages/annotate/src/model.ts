@@ -224,8 +224,11 @@ export class History {
     this.redoStack.length = 0;
     this.emit();
   }
-  /** Called after every execute, undo, redo and clear. */
-  onChange(fn: (h: History) => void): void { this.listeners.push(fn); }
+  /** Called after every execute, undo, redo and clear. Returns a function that removes the listener. */
+  onChange(fn: (h: History) => void): () => void {
+    this.listeners.push(fn);
+    return () => { this.listeners = this.listeners.filter(f => f !== fn); };
+  }
   emit(): void { notify(this.listeners, this); }
 }
 
@@ -395,8 +398,11 @@ export class NotesDoc {
 
   // Changes
 
-  /** Called on every change of strokes or pages and on markSaved (see ChangeKind). */
-  onChange(fn: ChangeListener): void { this.listeners.push(fn); }
+  /** Called on every change of strokes or pages and on markSaved (see ChangeKind). Returns a function that removes the listener. */
+  onChange(fn: ChangeListener): () => void {
+    this.listeners.push(fn);
+    return () => { this.listeners = this.listeners.filter(f => f !== fn); };
+  }
   emit(pageId: string | null, kind: ChangeKind = 'strokes'): void { notify(this.listeners, pageId, kind); }
 
   /** Apply fn to a page's stroke list; a page that is gone (deleted by a peer) is skipped. */

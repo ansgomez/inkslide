@@ -83,6 +83,24 @@ describe('History', () => {
     warn.mockRestore();
   });
 
+  it('onChange returns a function that removes the listener, also during an emit', () => {
+    const h = new History();
+    const fn = vi.fn(), other = vi.fn();
+    const off = h.onChange(() => { fn(); off(); });
+    h.onChange(other);
+    h.execute(counter().cmd());
+    h.undo();
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(other).toHaveBeenCalledTimes(2);
+    const doc = marpDoc();
+    const seen = vi.fn();
+    const stop = doc.onChange(seen);
+    doc.addStroke('s1', stroke('a'));
+    stop();
+    doc.addStroke('s1', stroke('b'));
+    expect(seen).toHaveBeenCalledTimes(1);
+  });
+
   it('notifies listeners', () => {
     const h = new History();
     const fn = vi.fn();

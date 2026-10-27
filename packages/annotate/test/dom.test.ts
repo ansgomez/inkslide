@@ -257,6 +257,26 @@ describe('annotator, toolbar and keys', () => {
     expect(app.enabled).toBe(true);
   });
 
+  it('toolbar destroy removes the bar and stops watching its size', () => {
+    const observers: { disconnect: ReturnType<typeof vi.fn> }[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      disconnect = vi.fn();
+      constructor() { observers.push(this); }
+      observe() {}
+    });
+    try {
+      const { app } = setup();
+      app.mount();
+      const bar = app.toolbar!;
+      expect(observers).toHaveLength(1);
+      bar.destroy();
+      expect(observers[0].disconnect).toHaveBeenCalled();
+      expect(bar.el.isConnected).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('a registered pages group replaces the placeholder', () => {
     const { app } = setup();
     const pages: PagesController = {
