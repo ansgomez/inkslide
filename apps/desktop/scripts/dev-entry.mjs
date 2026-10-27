@@ -65,7 +65,9 @@ if (cmd === 'install') {
   // Every inkslide-dev icon in hicolor, whatever sizes were installed.
   const { desktopFile } = devEntryPaths(data, []);
   const icons = existsSync(hicolor)
-    ? readdirSync(hicolor).flatMap(d => DEV_ICON_NAMES.map(n => join(hicolor, d, 'apps', n)))
+    ? readdirSync(hicolor, { withFileTypes: true })
+        .filter(d => d.isDirectory()) // skips icon-theme.cache
+        .flatMap(d => DEV_ICON_NAMES.map(n => join(hicolor, d.name, 'apps', n)))
     : [];
   for (const p of [desktopFile, ...icons]) rmSync(p, { force: true });
   refreshCaches();
