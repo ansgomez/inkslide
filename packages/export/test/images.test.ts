@@ -1,7 +1,7 @@
 /* Images (snapshots) in the export: embedded once, placed like strokes on
  * rotated, cropped and blank pages (checked against PDF.js), below the ink. */
 import { describe, expect, it } from 'vitest';
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, decodePDFRawStream, type PDFPage } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, decodePDFRawStream, type PDFPage } from 'pdf-lib';
 import type { ImageJSON, PageJSON } from '@inkslide/annotate/model';
 import { exportAnnotatedPdfWithReport } from '../src/export';
 import { fixturePdf, notesFile, openPdfJs, pdfjs, pen, hl } from './helpers';
@@ -77,6 +77,25 @@ describe('images in the export', () => {
     ]));
     expect(warnings).toEqual([]);
     for (const n of [1, 2, 3, 4]) expect(await paintedImages(bytes, n)).toEqual([rect]);
+  });
+
+  it('honors /UserUnit as PDF.js does (the notes are in its scaled units), for images and strokes', async () => {
+    const pdf = await PDFDocument.create();
+    const page = pdf.addPage([300, 200]);
+    page.node.set(PDFName.of('UserUnit'), PDFNumber.of(2));
+    const src = await pdf.save();
+    const js = await openPdfJs(src);
+    const vp = (await js.doc.getPage(1)).getViewport({ scale: 1 });
+    await js.destroy();
+    expect([vp.width, vp.height]).toEqual([600, 400]);
+    const notes = { ...v3([{ id: 'p1', kind: 'slide', slide: 1, strokes: [pen('d', [[100, 50]], '#000', 10)],
+      images: [image('i', 300, 200, 200, 100)] }], 1) };
+    notes.deck = { ...notes.deck, size: [600, 400], pageSizes: [[600, 400]] };
+    const { bytes, warnings } = await exportAnnotatedPdfWithReport(src, notes);
+    expect(warnings).toEqual([]);
+    expect(await paintedImages(bytes, 1)).toEqual([[300, 200, 200, 100]]);
+    const text = lastStream((await PDFDocument.load(bytes)).getPage(0));
+    expect(text).toMatch(/1 0 0 -1 0 200 cm\n0\.5 0 0 0\.5 0 0 cm\n/);
   });
 
   it('embeds each distinct image once, PNG and JPEG', async () => {

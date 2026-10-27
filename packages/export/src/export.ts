@@ -66,7 +66,10 @@ export interface ExportResult {
 interface Frame {
   box: Box;
   rotation: number;
+  /** Size as a viewer shows it, in display units (points × userUnit). */
   size: Size;
+  /** The page's /UserUnit (points per user space unit), 1 without one. */
+  userUnit?: number;
 }
 
 /** A box with its corners in either order (allowed by the PDF spec) as x, y, width, height >= 0. */
@@ -82,10 +85,23 @@ function visibleBox(page: PDFPage): Box {
   return x2 > x && y2 > y ? { x, y, width: x2 - x, height: y2 - y } : m;
 }
 
+/** A page's /UserUnit as PDF.js reads it: a positive number, else 1. */
+function userUnitOf(page: PDFPage): number {
+  const u = page.node.lookup(PDFName.of('UserUnit'));
+  const v = u instanceof PDFNumber ? u.asNumber() : 1;
+  return Number.isFinite(v) && v > 0 ? v : 1;
+}
+
+/**
+ * The shown box, rotation and size of a page. PDF.js (and so the notes) scales
+ * a page with a /UserUnit by it, so its display units are userUnit points.
+ */
 function frameOf(page: PDFPage): Frame {
   const box = visibleBox(page);
   const rotation = page.getRotation().angle;
-  return { box, rotation, size: displaySize(box, rotation) };
+  const userUnit = userUnitOf(page);
+  const [w, h] = displaySize(box, rotation);
+  return { box, rotation, size: [w * userUnit, h * userUnit], userUnit };
 }
 
 /** Laser strokes are never stored, but drop them quietly if a file has any. */
@@ -209,6 +225,8 @@ class Painter {
   paint(page: PDFPage, frame: Frame, paper: Paper | null, strokes: readonly Stroke[], images: readonly PageImage[] = []): void {
     page.node.normalize(); // wraps the existing content in q/Q
     const ops: PDFOperator[] = [pushGraphicsState(), concatTransformationMatrix(...displayMatrix(frame.box, frame.rotation))];
+    const unit = frame.userUnit || 1;
+    if (unit !== 1) ops.push(concatTransformationMatrix(1 / unit, 0, 0, 1 / unit, 0, 0)); // display units to user space units
     if (paper) ops.push(...paperOperators(paper, frame.size));
     // Images lie below all ink, as on the screen (render.ts: g.ann-img below g.ann-hl).
     for (const i of images) ops.push(...this.image(page, i));
