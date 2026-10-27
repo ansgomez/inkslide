@@ -486,10 +486,12 @@ export function pathLength(points: readonly XY[]): number {
   return len;
 }
 
-/** A drag that travels much farther than its chord is a lasso, not a rectangle. */
-export function isLasso(path: readonly XY[]): boolean {
+/**
+ * A drag that travels much farther than its chord is a lasso, not a rectangle.
+ * `len` is pathLength(path), if the caller keeps it (one step per move, not the whole path).
+ */
+export function isLasso(path: readonly XY[], len = pathLength(path)): boolean {
   if (path.length < 3) return false;
-  const len = pathLength(path);
   return len > 40 && len > 1.8 * dist(path[0], path[path.length - 1]);
 }
 

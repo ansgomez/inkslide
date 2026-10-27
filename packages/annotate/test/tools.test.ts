@@ -244,6 +244,21 @@ describe('selector', () => {
     expect(app.selection!.ids).toEqual(['a', 'b']);
   });
 
+  it('redraws the marquee once per frame, lasso or rectangle by the running path length', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => frames.push(fn));
+    const { selector } = createTools(app, R.r);
+    selector.down!(surface, [0, 0, 0.5]);
+    for (let i = 1; i <= 2000; i++) selector.move!(surface, [i % 2 ? 100 : 0, i / 100, 0.5]); // zigzag: a lasso
+    expect(frames).toHaveLength(1);
+    frames.shift()!(0);
+    expect(R.log.filter(l => l.startsWith('marquee:'))).toEqual(['marquee:2001']);
+    selector.move!(surface, [0, 21, 0.5]);
+    selector.cancel!(surface);
+    frames.shift()!(0); // a frame after cancel draws nothing
+    expect(R.log.filter(l => l.startsWith('marquee:'))).toEqual(['marquee:2001', 'marquee:off']);
+  });
+
   it('a circle selects with a lasso', () => {
     doc.pages.set('p1', [hline('a', 0, 0, 20), hline('far', 0, 300, 320)]);
     const { selector } = createTools(app, R.r);

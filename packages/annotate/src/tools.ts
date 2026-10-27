@@ -282,6 +282,17 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
   let mode: 'move' | 'select' | null = null, path: Point[] | null = null;
   let start: Point | null = null, offset: [number, number] = [0, 0];
   let moving: Selection | null = null; // the selection being dragged
+  let len = 0, frame = 0; // length of the select path so far; pending marquee redraw
+
+  // Redraw the marquee at most once per frame (moves only collect points).
+  const drawMarquee = (surface: Surface): void => {
+    frame = 0;
+    if (mode === 'select' && path) R.setMarquee(surface.layer, isLasso(path, len) ? path : rectPolygon(path[0], path[path.length - 1]));
+  };
+  const stopMarquee = (): void => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+  };
 
   const sel = (): Selection | null => app.selection;
   const insideSelection = (surface: Surface, pt: Point): boolean => {
@@ -314,6 +325,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
       app.select(null);
       mode = 'select';
       path = [pt];
+      len = 0;
     },
     move(surface, pt) {
       if (mode === 'move') {
@@ -322,8 +334,9 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
         R.translateStrokes(surface.layer, moving!.ids, offset[0], offset[1]);
         R.setSelectionBox(surface.layer, moving!.box, offset[0], offset[1]);
       } else if (mode === 'select') {
+        len += pathLength([path![path!.length - 1], pt]);
         path!.push(pt);
-        R.setMarquee(surface.layer, isLasso(path!) ? path : rectPolygon(path![0], pt));
+        if (!frame) frame = requestAnimationFrame(() => drawMarquee(surface));
       }
     },
     up(surface, pt) {
@@ -343,6 +356,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
       mode = null;
       const p = path!;
       if (pt) p.push(pt);
+      stopMarquee();
       R.setMarquee(surface.layer, null);
       const strokes = app.doc.strokes(surface.pageId);
       let ids: string[];
@@ -362,6 +376,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
         R.translateStrokes(surface.layer, moving!.ids, 0, 0);
         R.setSelectionBox(surface.layer, moving!.box);
       }
+      stopMarquee();
       R.setMarquee(surface.layer, null);
       mode = null;
       moving = null;
