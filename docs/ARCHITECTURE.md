@@ -59,7 +59,9 @@ access.
   functions are injected (`ToolRenderer`), which is how the web app swaps in its canvas live
   stroke.
 - **App** (`app.ts`): `createAnnotator()` ties doc, tools, input, toolbar and keys together:
-  current tool, colors and sizes (stored in `localStorage`), selection, undo/redo, the
+  current tool, colors and sizes (stored in `localStorage`; a size is a step of the scale
+  `SIZES`, stored with the nearest of the four old sizes for earlier versions and the Marp
+  decks), selection, undo/redo, the
   `PagesController` and overview supplied by the viewer.
 - **Toolbar** (`toolbar.ts`, `toolbar.css`): the Marp Notes bar, built from registered groups
   (`mode, tools, colors, sizes, history, edit, pages, file`); dockable on four edges. `bindKeys`
@@ -298,6 +300,9 @@ One page is shown at a time (`apps/web/src/viewer.ts`):
    bitmap renders, any cached scale of the same page stands in. The fit is "page" (whole
    page) or "width" (`fit.ts` `fitWidth`, W key): a page taller than the stage scrolls, and
    the scroll is the view's `ty`, so zoom, pan and scroll are one transform of `.ink-page`.
+   The view's zoom is a factor of the fit (1 = fitted, at most 6). The − and + next to the
+   page counter (and Ctrl/Cmd+= / Ctrl/Cmd+−) step through `fit.ts` `ZOOM_STEPS` around the
+   middle of the view (`zoomAround`), through the same `setView` as the pinch.
 3. **SVG annotation surface** (`render.ts`, `createPageSurface`): an `<svg>` with the page's
    size as viewBox and one `g.ann-layer` with highlighter strokes below pen strokes and a UI
    group (selection, marquee, eraser cursor, laser). Blank pages get paper under the layer.
@@ -323,7 +328,8 @@ scrolls into view, with the page's notes as SVG on top.
   ignored while a gesture runs and for 500 ms after a pen event.
 - `gestures.ts` runs in the capture phase on the stage, before `input.ts`: one finger draws
   until a pen is seen, then pans a zoomed page; two fingers pinch-zoom and pan, or turn the
-  page with a quick sideways swipe; Ctrl + wheel zooms. While the pen touches or hovers, and
+  page with a quick sideways swipe; Ctrl + wheel zooms (the − and + buttons and Ctrl/Cmd+= and
+  Ctrl/Cmd+− are the viewer's). While the pen touches or hovers, and
   500 ms after, touch is ignored, and a pinch or pan already running is ended.
 - Keys: the overview's G + number handler, then the viewer's page keys, then the toolbar's
   keymap, all on `window` in the capture phase. See [USER-GUIDE.md](USER-GUIDE.md).

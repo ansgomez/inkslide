@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTools, DEFAULT_PREFS, SIZES, TOOLS, type Prefs, type Selection, type Surface, type ToolHost, type ToolRenderer } from '../src/tools';
+import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, TOOLS, type Prefs, type Selection, type Surface, type ToolHost, type ToolRenderer } from '../src/tools';
 import type { NotesDoc } from '../src/model';
 import { pageUnit, type Layer } from '../src/render';
-import { loadPrefs } from '../src/app';
+import { loadPrefs, nearestPreset } from '../src/app';
 import type { Point, Stroke } from '../src/geometry';
 
 /** A NotesDoc stand-in that records the commands the tools issue. */
@@ -92,7 +92,7 @@ describe('pen and highlighter', () => {
     expect(R.live.remove).toHaveBeenCalled();
     expect(doc.calls.length).toBe(1);
     const s = doc.calls[0].args[0] as Stroke;
-    expect(s).toMatchObject({ tool: 'pen', color: '#000000', size: SIZES.pen[1] });
+    expect(s).toMatchObject({ tool: 'pen', color: '#000000', size: 4 }); // M
     expect(s.points[0]).toEqual([0, 0, 0.4]);
     // release pressure 0 is replaced by the last real pressure
     expect(s.points[s.points.length - 1]).toEqual([30, 0, 0.8]);
@@ -110,7 +110,7 @@ describe('pen and highlighter', () => {
   });
 
   it('uses the current prefs', () => {
-    app.prefs.pen = { color: '#be1e3c', size: 3 };
+    app.prefs.pen = { color: '#be1e3c', size: 7 }; // XL
     const { pen } = createTools(app, R.r);
     pen.down!(surface, [0, 0, 0.5]);
     pen.up!(surface, null);
@@ -122,7 +122,7 @@ describe('pen and highlighter', () => {
     const { pen } = createTools(app, R.r);
     pen.down!(a4, [0, 0, 0.5]);
     pen.up!(a4, null);
-    expect((doc.calls[0].args[0] as Stroke).size).toBeCloseTo(SIZES.pen[1] * 0.702, 3);
+    expect((doc.calls[0].args[0] as Stroke).size).toBeCloseTo(4 * 0.702, 3);
   });
 
   it('cancel drops the stroke', () => {
@@ -151,7 +151,7 @@ describe('erasers', () => {
 
   it('partial eraser splits a stroke into new strokes', () => {
     doc.pages.set('p1', [hline('a', 0)]);
-    app.prefs.partial.size = 0; // radius 8
+    app.prefs.partial.size = 1; // radius 8
     const { partial } = createTools(app, R.r);
     partial.down!(surface, [50, 0, 0.5]);
     partial.up!(surface, null);
@@ -164,7 +164,7 @@ describe('erasers', () => {
   it('the radius scales with the page', () => {
     doc.pages.set('p1', [hline('a', 0)]);
     const small: Surface = { ...surface, layer: { unit: 0.5 } as Layer };
-    app.prefs.eraser.size = 0; // radius 8, 4 on this page
+    app.prefs.eraser.size = 1; // radius 8, 4 on this page
     const { eraser } = createTools(app, R.r);
     eraser.down!(small, [50, 8, 0.5]);
     eraser.up!(small, null);
@@ -340,14 +340,49 @@ describe('laser', () => {
   });
 });
 
+describe('nextSize', () => {
+  it('steps along the scale and stops at its ends', () => {
+    expect(nextSize('pen', 4, 1)).toBe(5.5);
+    expect(nextSize('pen', 4, -1)).toBe(3);
+    expect(nextSize('pen', 16, 1)).toBe(16);
+    expect(nextSize('pen', 1, -1)).toBe(1);
+  });
+
+  it('works on page-scaled sizes and goes from between two steps to the next one', () => {
+    expect(nextSize('highlighter', 20 * 0.75, 1, 0.75)).toBeCloseTo(26 * 0.75);
+    expect(nextSize('pen', 5, 1)).toBe(5.5);
+    expect(nextSize('pen', 5, -1)).toBe(4);
+    expect(nextSize('pen', 40, -1)).toBe(16);
+  });
+});
+
 describe('loadPrefs', () => {
   const stored = (v: unknown) => ({ getItem: () => JSON.stringify(v) });
 
   it('merges stored prefs over the defaults', () => {
-    const { prefs, tool } = loadPrefs(stored({ tool: 'highlighter', prefs: { pen: { color: '#be1e3c', size: 3 } } }));
+    const { prefs, tool } = loadPrefs(stored({ tool: 'highlighter', prefs: { pen: { color: '#be1e3c', size: 2, step: 6 } } }));
     expect(tool).toBe('highlighter');
-    expect(prefs.pen).toEqual({ color: '#be1e3c', size: 3 });
+    expect(prefs.pen).toEqual({ color: '#be1e3c', size: 6 });
     expect(prefs.eraser).toEqual(DEFAULT_PREFS.eraser);
+  });
+
+  it('prefs of earlier versions (a preset 0..3, no step) load at their preset', () => {
+    const { prefs } = loadPrefs(stored({ prefs: { pen: { size: 0 }, highlighter: { size: 3 }, eraser: { size: 2 } } }));
+    expect(SIZES.pen[prefs.pen.size]).toBe(2);
+    expect(SIZES.highlighter[prefs.highlighter.size]).toBe(48);
+    expect(SIZES.eraser[prefs.eraser.size]).toBe(32);
+  });
+
+  it('the scale keeps the four sizes of earlier versions at the preset steps', () => {
+    const old = { pen: [2, 4, 7, 12], highlighter: [12, 20, 32, 48], eraser: [8, 16, 32, 64], partial: [8, 16, 32, 64] };
+    for (const [tool, sizes] of Object.entries(old)) {
+      expect(SIZE_PRESETS.map(i => SIZES[tool as keyof typeof SIZES][i])).toEqual(sizes);
+      expect(SIZES[tool as keyof typeof SIZES].length).toBe(SIZES.pen.length);
+    }
+  });
+
+  it('nearestPreset maps a step to S, M, L or XL', () => {
+    expect([0, 1, 2, 3, 4, 5, 6, 7, 8].map(nearestPreset)).toEqual([0, 0, 0, 1, 1, 2, 2, 3, 3]);
   });
 
   it('ignores sizes and colors that are not valid (shared key, other writers)', () => {

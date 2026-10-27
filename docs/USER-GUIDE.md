@@ -51,7 +51,7 @@ it to the next edge. The choice is remembered.
 |---|---|---|
 | Pen | P | Pressure-sensitive ink. Hold **Shift** to draw a straight line. |
 | Highlighter | H | Wide, transparent strokes, always drawn under the pen ink. Shift for a straight line. |
-| Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it; Delete or Backspace removes it; Esc deselects. Copy, cut, paste and duplicate: see below. |
+| Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it (− and + make each selected stroke one size thinner or thicker); Delete or Backspace removes it; Esc deselects. Copy, cut, paste and duplicate: see below. |
 | Laser pointer | L | A red trail that fades out. Never saved. |
 | Stroke eraser | E | Removes every stroke it touches. |
 | Partial eraser | Shift+E | Erases only the parts of strokes it touches. |
@@ -59,8 +59,12 @@ it to the next edge. The choice is remembered.
 **Colors:** black, white, red, blue, green, orange, yellow and purple. The pen and the
 highlighter each remember their own color.
 
-**Sizes:** S, M, L, XL (keys **1**–**4**). Pen, highlighter and both erasers each remember
-their own size. Sizes are relative to the page: they look the same on a slide, a 960×540 PDF
+**Sizes:** the size control has **−** and **+** buttons (keys **[** and **]**) and between them a
+dot in the current size and color. It steps through nine sizes and stops at the thinnest and
+the thickest. Keys **1**–**4** pick the sizes S, M, L and XL (the 2nd, 4th, 6th and 8th of the
+nine; the four sizes of earlier versions). Pen, highlighter and both erasers each remember
+their own size; with the selector or the laser, − and + change the pen's size and switch to
+the pen. Sizes are relative to the page: they look the same on a slide, a 960×540 PDF
 or an A4 page.
 
 ## Copy and paste
@@ -108,6 +112,7 @@ be undone.
 | → ↓ PgDn Space | Next page (blank pages included; in fit width PgDn and Space scroll first) |
 | ← ↑ PgUp Shift+Space | Previous page (in fit width PgUp and Shift+Space scroll first) |
 | W | Fit width / whole page |
+| Ctrl/Cmd+= / Ctrl/Cmd+− | Zoom in / out (also Ctrl/Cmd++) |
 | Alt+PgDn / Alt+PgUp | Next / previous PDF page, skipping blank pages |
 | Home / End | First page / last page |
 | G, a number, Enter | Jump to that PDF page (shown in the counter as "Go to 12_") |
@@ -131,12 +136,24 @@ remembered.
 The counter shows "3 / 37" on PDF page 3 of 37, "3 / 37 · +2 blank" when two blank pages
 follow it, and "3 / 37 · blank 1/2" on the first of them.
 
+### Zoom
+
+The **−** and **+** on both sides of the page counter (or **Ctrl/Cmd+=** and **Ctrl/Cmd+−**)
+zoom out and in around the middle of the view, in steps from the fitted page (whole page or
+width) through 125%, 150%, 200%, 300% and 400% to 600% of it. − is greyed out at the fit, +
+at 600%. Their tooltips show the zoom ("now 150% of fit page"). Pinch and Ctrl + wheel zoom
+in between; the buttons then go on to the next step. A page turn and **W** start the page at
+the fit again.
+
 ## Blank pages
 
 - **B** (or the page-with-plus button) inserts a blank page after the current page, with the
   current paper.
-- Paper: **plain**, **lined** (with a margin line) or **grid**. The paper buttons change the
-  current blank page and set the paper for new ones.
+- Paper: **plain**, **lined** (with a margin line) or **grid**. The paper button cycles plain →
+  lined → grid → plain, and its icon shows the current paper. On a blank page it changes that
+  page and the paper for new ones (undo takes back both); on a PDF page it sets the paper for
+  new ones.
+  The paper for new blank pages is remembered.
 - The delete button removes the current blank page with its ink (undoable). PDF pages cannot be
   deleted.
 
@@ -302,4 +319,5 @@ The browser and the iPad and Android apps have no presenter mode yet.
 | Ctrl/Cmd+Q | Quit (desktop, Linux and Windows) |
 | Alt | Show the hidden menu bar (desktop, Linux and Windows; View → Hide Menu Bar) |
 
-Tool and size keys follow the physical key position, so they work with any keyboard layout.
+Tool and size keys follow the physical key position, so they work with any keyboard layout;
+**[** and **]** follow the key label.

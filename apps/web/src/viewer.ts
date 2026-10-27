@@ -8,7 +8,9 @@
  *       canvas.ink-live     live stroke (live-ink.ts), pointer-events: none
  *
  * Fit modes (W, toolbar): "page" shows the whole page; "width" fills the
- * stage width and scrolls a taller page vertically. The scroll position is
+ * stage width and scrolls a taller page vertically. The − and + next to the
+ * page counter (Ctrl/Cmd+= and Ctrl/Cmd+−) zoom by ZOOM_STEPS around the
+ * middle of the view. The scroll position is
  * the view's ty at zoom 1, so pinch zoom, pan and scroll are one transform
  * (clampPan keeps the page over the visible part, see fit.ts). Render scale,
  * bitmap cache and prefetch follow the fit of the current mode.
@@ -24,16 +26,16 @@ import {
   createAnnotator, NotesDoc, type Annotator, type NotesBackup, type Paper, type PdfFile, type Surface,
 } from '@inkslide/annotate';
 import { deckFromPdf, loadNotesText, sha256Hex } from '@inkslide/annotate/io';
-import { pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
+import { PAPERS, pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
 import * as render from '@inkslide/annotate/render';
 import type { ToolRenderer } from '@inkslide/annotate/tools';
-import { ICONS, isTyping, registerGroup, type ToolbarHost } from '@inkslide/annotate/toolbar';
+import { ICONS, isTyping, registerGroup, type ToolbarHost, type ToolbarItem } from '@inkslide/annotate/toolbar';
 import { banner } from './banner';
 import { pageCounter, pdfPageNumber, sourceStep } from './counter';
 import { storedItem, storeItem } from './dom';
 import { buildAnnotatedPdf } from './export';
 import {
-  clampPan, fitTo, pageScroll, panLimits, renderScale, visibleBox, type Box, type FitMode, type FitRect,
+  clampPan, fitTo, pageScroll, panLimits, renderScale, visibleBox, zoomAround, zoomStep, type Box, type FitMode, type FitRect,
 } from './fit';
 import { attachGestures } from './gestures';
 import { createLiveInk } from './live-ink';
@@ -49,10 +51,14 @@ import { printPageImages } from './print';
 const PAGE_MARGIN = 6;
 const CACHE_LIMIT = 6;
 const FIT_KEY = 'inkslide-fit-mode';
+/** Paper for new blank pages (the paper button), remembered like the fit mode. */
+const PAPER_KEY = 'inkslide-blank-paper';
 /** Keys of navKey that scroll or turn the page. */
 const PAGE_KEYS = new Set(['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'PageDown', 'PageUp', ' ', 'Home', 'End']);
 
 ICONS.open = '<path d="M3 7V5a1 1 0 011-1h5l2 2h8a1 1 0 011 1v2"/><path d="M3 9h18l-2 10H5z"/>';
+ICONS.zoomOut = '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M7.5 10.5h6"/>';
+ICONS.zoomIn = '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M7.5 10.5h6M10.5 7.5v6"/>';
 ICONS.revert = '<path d="M3.5 12a8.5 8.5 0 102.5-6"/><path d="M3 3.5V9h5.5"/><path d="M12 7.5V12l3 2"/>';
 ICONS.fitWidth = '<path d="M7 3h10v18H7z"/><path d="M3 12h6M21 12h-6M5 10l-2 2 2 2M19 10l2 2-2 2"/>';
 
@@ -340,6 +346,9 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     resizeLiveInk(fit);
   }
 
+  /** Zoom the toolbar last showed (the − and + buttons' states and titles). */
+  let barZoom = 1;
+
   function setView(zoom: number, tx: number, ty: number, done: boolean): void {
     if (!fit) return;
     const [cx, cy] = clampPan(tx, ty, fit, zoom, vis);
@@ -348,7 +357,33 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     if (done) {
       resizeLiveInk(fit);
       paint();
+      if (s && barZoom !== view.zoom) { // a pinch may have reached a zoom limit
+        barZoom = view.zoom;
+        s.app.refresh();
+      }
     }
+  }
+
+  /** Back to the fit, unzoomed (page turn, W); the caller refreshes the toolbar. */
+  function resetView(): void {
+    view = { zoom: 1, tx: 0, ty: 0 };
+    barZoom = 1;
+  }
+
+  /** − / + next to the page counter: the next zoom step, around the middle of the view. */
+  function zoomBy(dir: -1 | 1): void {
+    // The page must not move under a stroke, nor behind the open overview.
+    if (!s || !fit || s.app.input.busy || s.overview.isOpen()) return;
+    const zoom = zoomStep(view.zoom, dir);
+    if (zoom === null) return;
+    const [tx, ty] = zoomAround(view, zoom, vis.width / 2, vis.height / 2);
+    setView(zoom, tx, ty, true);
+  }
+
+  /** The zoom for the − and + tooltips: "fit page", "150% of fit width". */
+  function zoomText(): string {
+    const fitName = fitMode === 'width' ? 'fit width' : 'fit page';
+    return view.zoom <= 1.001 ? fitName : `${Math.round(view.zoom * 100)}% of ${fitName}`;
   }
 
   /** PgDn / PgUp in fit-width mode: scroll about a screen; false at the page's end (turn instead). */
@@ -375,6 +410,12 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     else stepBackToBottom();
   }
 
+  /** The remembered paper for new blank pages; plain if none (or storage is blocked). */
+  const storedPaper = (): Paper => {
+    const p = storedItem(PAPER_KEY);
+    return PAPERS.some(x => x.id === p) ? p as Paper : 'plain';
+  };
+
   const toggleFitMode = (): void => setFitMode(fitMode === 'width' ? 'page' : 'width');
 
   function setFitMode(mode: FitMode): void {
@@ -382,7 +423,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     fitMode = mode;
     storeItem(FIT_KEY, mode);
     if (!s) return;
-    view = { zoom: 1, tx: 0, ty: 0 };
+    resetView();
     layout();
     paint();
     prefetch();
@@ -446,7 +487,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     if (!surface) return;
     const turned = prev !== surface;
     s.current = pageId;
-    if (turned) view = { zoom: 1, tx: 0, ty: 0 };
+    if (turned) resetView();
     layout();
     if (prev && turned) prev.svg.remove();
     if (!surface.svg.isConnected) pageEl.insertBefore(surface.svg, liveCanvas);
@@ -506,8 +547,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         return page && page.kind === 'blank' ? page.paper : ses.defaultPaper;
       },
       setPaper(paper) {
-        ses.defaultPaper = paper;
-        if (onBlank()) doc.setPaper(ses.current, paper);
+        const before = ses.defaultPaper;
+        const remember = (p: Paper): void => { ses.defaultPaper = p; storeItem(PAPER_KEY, p); };
+        remember(paper);
+        const cmd = onBlank() ? doc.setPaper(ses.current, paper) : null;
+        if (cmd) {
+          // Undo and redo of the blank page's paper take the paper for new blank pages along.
+          const { do: redo, undo } = cmd;
+          cmd.undo = () => { remember(before); undo(); };
+          cmd.do = () => { remember(paper); redo(); };
+        }
         ses.app.refresh();
       },
       deleteCurrent() {
@@ -673,7 +722,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     const app = createAnnotator({ doc, activeSurface: () => currentSurface(), renderer });
     app.sync = mirror;
     const ses: Session = {
-      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: 'plain', hasBackup: false,
+      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: storedPaper(), hasBackup: false,
       overview: null as unknown as Overview, pages: null as unknown as ViewerPages, unbind: () => {},
     };
     s = ses;
@@ -725,6 +774,17 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
 
   registerGroup('pages', (app: PagesHost) => {
     const group = pagesGroup(app);
+    // Zoom out and in on both sides of the page counter; the zoom is in their tooltips (the
+    // counter has no room for it when the bar is docked left or right).
+    const label = group.items.findIndex(item => item.id === 'page-label');
+    const zoomItem = (dir: -1 | 1): ToolbarItem => ({
+      id: dir < 0 ? 'zoom-out' : 'zoom-in', icon: dir < 0 ? 'zoomOut' : 'zoomIn',
+      title: () => `${dir < 0 ? 'Zoom out (Ctrl/Cmd+−)' : 'Zoom in (Ctrl/Cmd+=)'} · now ${zoomText()}`,
+      onClick: () => zoomBy(dir),
+      disabled: () => !s || zoomStep(view.zoom, dir) === null,
+    });
+    group.items.splice(label + 1, 0, zoomItem(1));
+    group.items.splice(label, 0, zoomItem(-1));
     group.items.push({
       id: 'fit-width', icon: 'fitWidth',
       title: () => (fitMode === 'width' ? 'Fit width (W) · on: show the whole page again' : 'Fit width (W): fill the width, scroll the page'),
@@ -899,6 +959,14 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
       void viewer.print();
     }
   });
+  // Ctrl/Cmd+= (or +, also with Shift) and Ctrl/Cmd+−: the page, not the browser's zoom of the
+  // whole app. Capture phase: a focused toolbar button stops keys from bubbling up to window.
+  window.addEventListener('keydown', e => {
+    if (!s || typeof e.key !== 'string' || e.isComposing || isTyping(e.target)) return;
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || !/^(=|\+|-)$/.test(e.key)) return;
+    e.preventDefault();
+    zoomBy(e.key === '-' ? -1 : 1);
+  }, true);
 
   return viewer;
 }
