@@ -40,6 +40,8 @@ const fullNotes = () => notesFile([
 describe('page frames', () => {
   it('normalizes rotation', () => {
     expect([0, 90, 180, 270, 360, -90, 450].map(normalizeRotation)).toEqual([0, 90, 180, 270, 0, 270, 90]);
+    // PDF.js shows a /Rotate that is no multiple of 90 unrotated, so the export does too.
+    expect([45, 89, 135, -45, 90.5, NaN, Infinity].map(normalizeRotation)).toEqual([0, 0, 0, 0, 0, 0, 0]);
     expect(displaySize({ x: 0, y: 0, width: 400, height: 600 }, 90)).toEqual([600, 400]);
   });
 
@@ -51,12 +53,14 @@ describe('page frames', () => {
       { media: [0, 0, 800, 600], crop: [100, 50, 600, 400], rot: 0 },
       { media: [0, 0, 800, 600], crop: [100, 50, 400, 500], rot: 90 },
       { media: [-50, -20, 600, 400], rot: 270 },
+      { media: [0, 0, 600, 400], rot: 45 }, { media: [0, 0, 400, 600], rot: -450 },
     ];
     for (const b of boxes) {
       const p = pdf.addPage();
       p.setMediaBox(b.media[0], b.media[1], b.media[2], b.media[3]);
       if (b.crop) p.setCropBox(b.crop[0], b.crop[1], b.crop[2], b.crop[3]);
-      p.setRotation({ type: 'degrees', angle: b.rot } as never);
+      // pdf-lib refuses angles that are no multiple of 90; set /Rotate directly.
+      p.node.set(PDFName.of('Rotate'), PDFNumber.of(b.rot));
     }
     const bytes = await pdf.save();
     const loaded = await PDFDocument.load(bytes);
