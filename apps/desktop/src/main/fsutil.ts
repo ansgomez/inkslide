@@ -25,7 +25,7 @@ export async function writeFileAtomic(path: string, data: string | Uint8Array): 
     } finally {
       await fh.close();
     }
-    await rename(tmp, file);
+    await renameRetrying(tmp, file);
   } catch (err) {
     await unlink(tmp).catch(() => {});
     throw err;
@@ -34,6 +34,31 @@ export async function writeFileAtomic(path: string, data: string | Uint8Array): 
     // Persist the rename itself; not all file systems allow it, which is fine.
     const dh = await open(dir, 'r').catch(() => null);
     if (dh) await dh.sync().catch(() => {}).finally(() => dh.close());
+  }
+}
+
+/** Windows: the waits before each new rename attempt (about 0.7 s in all). */
+const RENAME_RETRY_MS = [50, 100, 150, 200, 200];
+/** Errors Windows gives while another program (antivirus, indexer, OneDrive) has the file open. */
+const BUSY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/**
+ * rename(from, to). On Windows a target that another program holds open
+ * for a moment fails the rename (EPERM, EBUSY, EACCES); it is tried again a
+ * few times before giving up, so the notes do not move to app storage for that.
+ */
+export async function renameRetrying(
+  from: string, to: string, platform: NodeJS.Platform = process.platform,
+  doRename: (from: string, to: string) => Promise<void> = rename,
+): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      return await doRename(from, to);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (platform !== 'win32' || i >= RENAME_RETRY_MS.length || !BUSY_CODES.has(code)) throw err;
+      await new Promise(resolve => setTimeout(resolve, RENAME_RETRY_MS[i]));
+    }
   }
 }
 

@@ -186,7 +186,9 @@ so in a banner. Once saved, the notes are a v2 file.
   without a path) the newer file by modification time wins, the sidecar on a tie. If only one
   exists, that one is read.
 - **Writing** is crash-safe: a temp file in the same folder, `fsync`, rename over the old file,
-  then `fsync` of the folder. A crash leaves the old or the new file, never half of one. A
+  then `fsync` of the folder. A crash leaves the old or the new file, never half of one. On
+  Windows a rename that fails because another program (antivirus, OneDrive) holds the file is
+  tried again for up to about 0.7 s before the notes go to app storage. A
   sidecar that is a symlink is written through, and the replaced file keeps its permissions.
 - **Backup:** always in app storage, `<userData>/notes/<sha256>.notes.backup.json`, keyed by
   the PDF's SHA-256 like the app-storage notes; the same format as the notes file, written the

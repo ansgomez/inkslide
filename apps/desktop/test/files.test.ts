@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { canWriteIn, sameFile, writeFileAtomic } from '../src/main/fsutil';
+import { canWriteIn, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
 import {
   backupBeforeSave, BACKUP_MIN_AGE_MS, hasBackup, isUsableNotes, notesWritePath, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup,
   cleanupNotesStore, keepUnreadableFor, OLD_COPIES_MAX_AGE_DAYS,
@@ -71,6 +71,36 @@ describe('writeFileAtomic', () => {
     }
     expect(readFileSync(f, 'utf8')).toBe('old');
     expect(readdirSync(dir)).toEqual(['a.json']);
+  });
+});
+
+describe('renameRetrying', () => {
+  const failing = (codes: string[]) => {
+    const tries: string[] = [];
+    const rename = async (from: string, to: string) => {
+      tries.push(`${from}>${to}`);
+      const code = codes.shift();
+      if (code) throw Object.assign(new Error(code), { code });
+    };
+    return { tries, rename };
+  };
+  it('tries again on Windows while the target is busy (antivirus, OneDrive)', async () => {
+    const r = failing(['EPERM', 'EBUSY', 'EACCES']);
+    await renameRetrying('a', 'b', 'win32', r.rename);
+    expect(r.tries).toHaveLength(4);
+  });
+  it('gives up on Windows after a few tries, and at once on other errors', async () => {
+    const busy = failing(Array(10).fill('EBUSY'));
+    await expect(renameRetrying('a', 'b', 'win32', busy.rename)).rejects.toThrow('EBUSY');
+    expect(busy.tries).toHaveLength(6);
+    const missing = failing(['ENOENT']);
+    await expect(renameRetrying('a', 'b', 'win32', missing.rename)).rejects.toThrow('ENOENT');
+    expect(missing.tries).toHaveLength(1);
+  });
+  it('tries once elsewhere', async () => {
+    const r = failing(['EPERM']);
+    await expect(renameRetrying('a', 'b', 'linux', r.rename)).rejects.toThrow('EPERM');
+    expect(r.tries).toHaveLength(1);
   });
 });
 
