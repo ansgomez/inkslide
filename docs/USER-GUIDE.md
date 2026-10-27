@@ -6,7 +6,9 @@ pen. Your ink is saved automatically in a separate notes file; the PDF is never 
 ## Opening a PDF
 
 - **Desktop:** File → Open… (Ctrl/Cmd+O), File → Open Recent, drop a PDF on the window, open it
-  with Inkslide from the file manager ("Open With"), or start `inkslide lecture.pdf`. Opening
+  with Inkslide from the file manager ("Open With"), or start `inkslide lecture.pdf`. The
+  start page lists the recently opened PDFs that still exist, with the pages that have notes:
+  click one to open it with its notes, × removes it from the list. Opening
   a second PDF while Inkslide runs uses the same window. Inkslide opens local files only: a PDF
   on a network location (sftp://, smb://) has to be copied to the computer first.
 - **Browser:** the **Open PDF…** button (Ctrl/Cmd+O) or drop a PDF on the page. A link
@@ -49,7 +51,7 @@ it to the next edge. The choice is remembered.
 |---|---|---|
 | Pen | P | Pressure-sensitive ink. Hold **Shift** to draw a straight line. |
 | Highlighter | H | Wide, transparent strokes, always drawn under the pen ink. Shift for a straight line. |
-| Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it; Delete or Backspace removes it; Esc deselects. |
+| Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it (− and + make each selected stroke one size thinner or thicker); Delete or Backspace removes it; Esc deselects. Copy, cut, paste and duplicate: see below. |
 | Laser pointer | L | A red trail that fades out. Never saved. |
 | Stroke eraser | E | Removes every stroke it touches. |
 | Partial eraser | Shift+E | Erases only the parts of strokes it touches. |
@@ -57,9 +59,33 @@ it to the next edge. The choice is remembered.
 **Colors:** black, white, red, blue, green, orange, yellow and purple. The pen and the
 highlighter each remember their own color.
 
-**Sizes:** S, M, L, XL (keys **1**–**4**). Pen, highlighter and both erasers each remember
-their own size. Sizes are relative to the page: they look the same on a slide, a 960×540 PDF
+**Sizes:** the size control has **−** and **+** buttons (keys **[** and **]**) and between them a
+dot in the current size and color. It steps through nine sizes and stops at the thinnest and
+the thickest. Keys **1**–**4** pick the sizes S, M, L and XL (the 2nd, 4th, 6th and 8th of the
+nine; the four sizes of earlier versions). Pen, highlighter and both erasers each remember
+their own size; with the selector or the laser, − and + change the pen's size and switch to
+the pen. Sizes are relative to the page: they look the same on a slide, a 960×540 PDF
 or an A4 page.
+
+## Copy and paste
+
+With strokes selected, **Ctrl/Cmd+C** copies them, **Ctrl/Cmd+X** cuts them and
+**Ctrl/Cmd+D** duplicates them on their page. **Ctrl/Cmd+V** pastes onto the shown page, also
+after turning the page or opening another PDF. The pasted strokes become the selection (the
+select tool is switched on), ready to drag into place. For writing with the pen alone, copy and
+cut buttons appear in the toolbar while strokes are selected, and a paste button once something
+was copied in this window. The keys do not work while the overview is open.
+
+Pasted strokes keep their place on the page. Where they would cover the strokes they were
+copied from (or an earlier paste), they are moved a little down and to the right, a bit further
+with every paste (up or to the left where the page ends). On a page of another size they are scaled with the page, and they are always
+kept on the page. A paste, a cut and a duplicate are each one undo step.
+
+Copied strokes also go on the system clipboard where the platform allows it (as text that
+other programs show as JSON), so Ctrl/Cmd+V pastes them into Inkslide in another browser
+window or tab too; some browsers (Safari, Firefox) first ask to allow the paste. If something
+else was copied after the strokes, Ctrl/Cmd+V pastes nothing. In the desktop app on macOS,
+copied strokes stay within the app window.
 
 **Undo** (Ctrl/Cmd+Z) and **redo** (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y) work per finished stroke,
 erase, move or page change. **Clear page** (trash button) removes all ink on the page and can
@@ -86,6 +112,7 @@ be undone.
 | → ↓ PgDn Space | Next page (blank pages included; in fit width PgDn and Space scroll first) |
 | ← ↑ PgUp Shift+Space | Previous page (in fit width PgUp and Shift+Space scroll first) |
 | W | Fit width / whole page |
+| Ctrl/Cmd+= / Ctrl/Cmd+− | Zoom in / out (also Ctrl/Cmd++) |
 | Alt+PgDn / Alt+PgUp | Next / previous PDF page, skipping blank pages |
 | Home / End | First page / last page |
 | G, a number, Enter | Jump to that PDF page (shown in the counter as "Go to 12_") |
@@ -109,12 +136,24 @@ remembered.
 The counter shows "3 / 37" on PDF page 3 of 37, "3 / 37 · +2 blank" when two blank pages
 follow it, and "3 / 37 · blank 1/2" on the first of them.
 
+### Zoom
+
+The **−** and **+** on both sides of the page counter (or **Ctrl/Cmd+=** and **Ctrl/Cmd+−**)
+zoom out and in around the middle of the view, in steps from the fitted page (whole page or
+width) through 125%, 150%, 200%, 300% and 400% to 600% of it. − is greyed out at the fit, +
+at 600%. Their tooltips show the zoom ("now 150% of fit page"). Pinch and Ctrl + wheel zoom
+in between; the buttons then go on to the next step. A page turn and **W** start the page at
+the fit again.
+
 ## Blank pages
 
 - **B** (or the page-with-plus button) inserts a blank page after the current page, with the
   current paper.
-- Paper: **plain**, **lined** (with a margin line) or **grid**. The paper buttons change the
-  current blank page and set the paper for new ones.
+- Paper: **plain**, **lined** (with a margin line) or **grid**. The paper button cycles plain →
+  lined → grid → plain, and its icon shows the current paper. On a blank page it changes that
+  page and the paper for new ones (undo takes back both); on a PDF page it sets the paper for
+  new ones.
+  The paper for new blank pages is remembered.
 - The delete button removes the current blank page with its ink (undoable). PDF pages cannot be
   deleted.
 
@@ -149,8 +188,8 @@ Inkslide asks before closing.
 If saved notes exist but cannot be read (a damaged file, one made by a newer Inkslide, or one a
 sync app is holding), Inkslide tries again a second later. If they still cannot be read:
 
-- On the desktop, if there is a backup (below), it asks *The notes file could not be read
-  (<reason>). Open the backup from <time> instead?* **OK** opens the backup.
+- If there is a backup (below; desktop and browser), it asks *The notes file could not be
+  read (<reason>). Open the backup from <time> instead?* **OK** opens the backup.
 - Otherwise, or after **Cancel**, it asks whether to open the PDF anyway, because new notes
   would replace the saved ones. **Cancel** leaves everything as it is.
 
@@ -159,13 +198,19 @@ its own storage: `notes/<checksum>.notes.unreadable.json` (in `~/.config/Inkslid
 `%APPDATA%\Inkslide\` on Windows, `~/Library/Application Support/Inkslide/` on macOS). A
 message says where. Only the latest such copy per PDF is kept.
 
+The browser and the installed web app (PWA) keep the copy the same way, in the browser's storage
+for the site (`notes/inkslide-notes_<checksum>.notes.unreadable.json` there; the message says
+so). That storage is not a folder you can open: the copy is there for a later Inkslide to
+recover, or through the browser's developer tools (Application → Storage). If the copy cannot
+be made (storage full, or Safari before version 26), Inkslide says so and asks before opening.
+
 **Getting the notes back from that copy:** copy the file somewhere else first. If it was made by
 a newer Inkslide, close this one, copy it over `<name>.pdf.notes.json` next to the PDF and open
 the PDF in the newer version. Otherwise repair it if you can (it is JSON text) and load it with
 **File → Import Notes…**. If the copy cannot be made, Inkslide says so and asks before opening.
 Kept copies are deleted after 90 days (below), so recover what you need before then.
 
-### Backup (desktop)
+### Backup
 
 The desktop app keeps one backup of each PDF's notes in its own storage
 (`notes/<checksum>.notes.backup.json`, next to the notes it keeps there, see above), never in
@@ -184,8 +229,21 @@ backup has the format of a notes file, so **File → Import Notes…** can load 
 remembered). Turning it off deletes the backups of all PDFs (not the kept unreadable files)
 and greys out Revert to Backup.
 
-Backups and kept unreadable files older than 90 days are deleted when Inkslide starts. The
-browser, the PWA and the iPad and Android apps keep no backup.
+Backups and kept unreadable files older than 90 days are deleted when Inkslide starts.
+
+**In the browser and the installed web app (PWA)** the backup works the same way, kept in the
+browser's storage for the site next to the notes. Instead of a menu, a **Revert to backup**
+button (a clock with an arrow) appears in the File group of the toolbar once the PDF has a
+backup; it asks the same question, and pressing it again undoes the revert. There is no switch
+to turn backups off. The backup goes when the PDF is removed from the recent files on the start
+screen (by you, or because newer PDFs pushed it out); its notes and a kept unreadable copy stay.
+Like on the desktop, backups and kept copies older than 90 days are deleted when Inkslide
+starts. If a backup that has gone is still offered, pressing the button says there is none and
+hides it. Clearing the site data
+deletes the backup together with the notes, so it guards against unwanted changes, not against
+losing the browser's storage: export a PDF with notes for that. Safari before version 26 keeps
+no backup (it cannot write that storage from the page), and neither do the iPad and Android
+apps.
 
 ### Notes from a Marp deck
 
@@ -219,10 +277,41 @@ the pages are printed as images at 200 dpi (Safari cannot print a PDF from a web
 reliably); each page gets its own paper size where the browser supports it (Chrome, Edge,
 Safari 18.2 and later).
 
+## Crash reports (desktop)
+
+If the desktop app crashes, it writes a crash report (a minidump) to the `Crashpad` folder in
+its own storage: `~/.config/Inkslide/Crashpad/` on Linux, `%APPDATA%\Inkslide\Crashpad\` on
+Windows, `~/Library/Application Support/Inkslide/Crashpad/` on macOS. Nothing is uploaded;
+the reports stay on your computer until you delete them. To report a crash, attach the newest
+file from that folder (under `pending/` or `completed/`). A report holds part of the app's
+memory, which can include text of the open PDF and your notes and file paths, so share it only
+with people you would show those to.
+
+## Presenter mode (desktop)
+
+**View → Presenter Mode** (or **F5**) opens a second window for the projector: the audience
+window. It shows the page you are on, your ink (also the stroke you are writing), the laser
+pointer and blank pages, filling the window on black, with no toolbar. You keep writing in
+the main window; the audience window takes no input.
+
+- With a second display (a projector or an external screen), the audience window opens full
+  screen on it. With one display, and always on Linux with Wayland (where apps cannot choose
+  the screen a window opens on), it opens as a small window: move it to the other screen and
+  press **F11** there to make it full screen.
+- The audience window always shows the whole page; zooming or fit width in the main window
+  does not change it. Erasing and moving strokes show there once they are done.
+- **F5** again, View → Presenter Mode, or **Esc** in the audience window ends presenter mode,
+  as does closing the audience window. Closing the main window closes it too.
+- Many presenter remotes send F5 for their "start presentation" button.
+- PDFs larger than 256 MB are not mirrored; the audience window says so.
+
+The browser and the iPad and Android apps have no presenter mode yet.
+
 ## Other keys
 
 | Key | Action |
 |---|---|
+| F5 | Presenter mode on or off (desktop) |
 | Ctrl/Cmd+O | Open a PDF |
 | Ctrl/Cmd+S | Save the notes now |
 | Ctrl/Cmd+E | Export annotated PDF (desktop menu) |
@@ -230,4 +319,5 @@ Safari 18.2 and later).
 | Ctrl/Cmd+Q | Quit (desktop, Linux and Windows) |
 | Alt | Show the hidden menu bar (desktop, Linux and Windows; View → Hide Menu Bar) |
 
-Tool and size keys follow the physical key position, so they work with any keyboard layout.
+Tool and size keys follow the physical key position, so they work with any keyboard layout;
+**[** and **]** follow the key label.

@@ -12,11 +12,12 @@
  *   app.keymap.push(...);                                          // optional
  *   app.mount();                                                   // keys + toolbar
  */
+import { clipForPaste, getClip, makeClip, markClipSynced, placeClip, serializeClip, setClip, PASTE_OFFSET, type Clip } from './clipboard';
 import { strokeBBox, unionBBox, type Stroke } from './geometry';
 import type { NotesDoc } from './model';
 import { attachInput, type InputController } from './input';
 import * as render from './render';
-import { createTools, DEFAULT_PREFS, SIZES, sizeIndex, toolSize, TOOLS, type Prefs, type Selection, type SizedTool, type Surface, type Tool, type ToolId, type ToolRenderer, type Tools } from './tools';
+import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, sizeIndex, toolSize, TOOLS, type Prefs, type Selection, type SizedTool, type Surface, type Tool, type ToolId, type ToolRenderer, type Tools } from './tools';
 import { bindKeys, createToolbar, defaultKeymap, type Shortcut, type Toolbar } from './toolbar';
 import type { PagesController } from './pages';
 
@@ -26,7 +27,11 @@ import type { PagesController } from './pages';
  */
 export const PREFS_KEY = 'marp-notes-prefs-v1';
 
-/** Prefs as stored: per-tool color and size, and the current tool. */
+/**
+ * Prefs as stored: per-tool color and size, and the current tool. A tool's size is stored twice:
+ * `step` is the step of the size scale (SIZES), `size` the nearest preset S, M, L, XL (0..3), the
+ * value earlier versions and the Marp decks read. Prefs without a `step` load their preset.
+ */
 export interface StoredPrefs {
   prefs: Prefs;
   tool: ToolId;
@@ -43,7 +48,9 @@ export function loadPrefs(storage: Pick<Storage, 'getItem'> | null = safeStorage
         const into = prefs[k as keyof Prefs] as { color?: string; size?: number };
         const from = saved.prefs[k] || {};
         if ('color' in into && typeof from.color === 'string') into.color = from.color;
-        if ('size' in into && Number.isInteger(from.size) && SIZES[k as SizedTool][from.size] !== undefined) into.size = from.size;
+        if (!('size' in into)) continue;
+        if (Number.isInteger(from.step) && SIZES[k as SizedTool][from.step] !== undefined) into.size = from.step;
+        else if (Number.isInteger(from.size) && SIZE_PRESETS[from.size as number] !== undefined) into.size = SIZE_PRESETS[from.size as number];
       }
     }
     return { prefs, tool: saved && TOOLS.some(t => t.id === saved.tool) ? saved.tool : 'pen' };
@@ -52,10 +59,43 @@ export function loadPrefs(storage: Pick<Storage, 'getItem'> | null = safeStorage
   }
 }
 
+/** The preset (0..3) nearest to a size step; the smaller one when two are as near. */
+export function nearestPreset(step: number): number {
+  let best = 0;
+  SIZE_PRESETS.forEach((p, i) => { if (Math.abs(p - step) < Math.abs(SIZE_PRESETS[best] - step)) best = i; });
+  return best;
+}
+
 function savePrefs(storage: Pick<Storage, 'setItem'> | null, app: StoredPrefs): void {
+  const prefs: Record<string, object> = {};
+  for (const [k, v] of Object.entries(app.prefs)) {
+    prefs[k] = 'size' in v ? { ...v, size: nearestPreset(v.size), step: v.size } : v;
+  }
   try {
-    if (storage) storage.setItem(PREFS_KEY, JSON.stringify({ tool: app.tool, prefs: app.prefs }));
+    if (storage) storage.setItem(PREFS_KEY, JSON.stringify({ tool: app.tool, prefs }));
   } catch (_) { /* storage blocked: prefs are a convenience only */ }
+}
+
+const systemClipboard = (): Clipboard | undefined => {
+  try { return typeof navigator !== 'undefined' ? navigator.clipboard : undefined; } catch (_) { return undefined; }
+};
+
+/** Put text on the system clipboard if the platform allows it; resolves to whether it did. */
+async function writeSystemClipboard(text: string): Promise<boolean> {
+  try {
+    const clipboard = systemClipboard();
+    if (!clipboard || !clipboard.writeText) return false;
+    await clipboard.writeText(text);
+    return true;
+  } catch (_) { return false; } // not allowed: the window's clip still works
+}
+
+/** Text of the system clipboard; null where the platform does not allow reading it (or the user declined). */
+async function readSystemClipboard(): Promise<string | null> {
+  try {
+    const clipboard = systemClipboard();
+    return clipboard && clipboard.readText ? await clipboard.readText() : null;
+  } catch (_) { return null; }
 }
 
 function safeStorage(): Storage | null {
@@ -89,7 +129,7 @@ export interface Annotator {
   toolbar: Toolbar | null;
   keymap: Shortcut[];
   pages: PagesController | null;
-  overview: { open(): void; prompt?(): string | null; refresh?(): void } | null;
+  overview: { open(): void; isOpen?(): boolean; prompt?(): string | null; refresh?(): void } | null;
   /** Called after model page changes (insert/delete/paper/undo/load). */
   onPagesChanged: ((pageId: string | null) => void) | null;
   /** Called on every refresh (after the toolbar update). */
@@ -104,11 +144,38 @@ export interface Annotator {
   currentColor(): string | null;
   currentSize(): number | null;
   setColor(color: string): void;
+  /** Set size step i of the current tool, or restyle the selection to it. */
   setSize(i: number): void;
+  /** One size step smaller (-1) or larger (1): the current tool's size, or each selected stroke's. */
+  stepSize(dir: -1 | 1): void;
+  /** Whether stepSize(dir) changes something (false at the end of the scale). */
+  canStepSize(dir: -1 | 1): boolean;
   selectedStrokes(): Stroke[];
   select(sel: { pageId: string; ids: readonly string[] } | null): void;
   refreshSelection(): void;
-  deleteSelection(): void;
+  /** Remove the selected strokes (one undo step, labelled `label`, default 'delete'). */
+  deleteSelection(label?: string): void;
+  /** Copy the selection to this window's clip (and, if allowed, the system clipboard). */
+  copySelection(): void;
+  /** Copy the selection, then remove it (one undo step). */
+  cutSelection(): void;
+  /**
+   * Paste onto the shown page: a clip on the system clipboard if it can be read (it may come
+   * from another window), else this window's clip (see clipboard.clipForPaste).
+   */
+  paste(): Promise<void>;
+  /** Paste `clip` onto the shown page in one undo step; the pasted strokes become the selection (with the select tool). */
+  pasteClip(clip: Clip): void;
+  /** Paste a copy of the selection onto its page, offset, without touching the clip. */
+  duplicateSelection(): void;
+  canPaste(): boolean;
+  /**
+   * Ctrl/Cmd+C, X or V. Returns false, so the browser goes on to fire its copy, cut or paste
+   * event, which reads and writes the system clipboard without asking for permission; the event
+   * does the work. Where no event comes (Electron on macOS has no Edit menu), the key does it
+   * right after with this window's clip.
+   */
+  clipboardKey(kind: 'copy' | 'cut' | 'paste'): boolean;
   undo(): void;
   redo(): void;
   clearPage(): void;
@@ -135,6 +202,45 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     return surface ? surface.layer.unit ?? 1 : 1;
   };
   const { prefs, tool } = loadPrefs(storage);
+  /** The tool a size command changes: the current one if it has a size, else the pen. */
+  const sizedTool = (): SizedTool => (toolInfo(app.tool).size ? app.tool as SizedTool : 'pen');
+  /** The selection as a clip; null without one. */
+  const selectionClip = (): Clip | null =>
+    app.selection && makeClip(app.selectedStrokes(), doc.pageSize(app.selection.pageId));
+  /** Add the strokes of `clip` to page `pageId` and select them. */
+  const pasteOnto = (pageId: string, clip: Clip, label: string): void => {
+    if (!doc.hasPage(pageId)) return;
+    const size = doc.pageSize(pageId);
+    const step = PASTE_OFFSET * render.pageUnit(size);
+    const strokes = placeClip(clip, { size, strokes: doc.strokes(pageId), step });
+    if (!doc.addStrokes(pageId, strokes, label)) return;
+    if (app.tool !== 'selector') app.setTool('selector');
+    app.select({ pageId, ids: strokes.map(s => s.id) });
+  };
+  // The clipboard key waiting for the browser's copy, cut or paste event (see clipboardKey).
+  let pendingKey: 'copy' | 'cut' | 'paste' | null = null;
+  const onClipboardEvent = (e: ClipboardEvent): void => {
+    if (e.type !== pendingKey) return;
+    pendingKey = null;
+    e.preventDefault();
+    const data = e.clipboardData;
+    if (e.type === 'paste') {
+      // An image or files on the clipboard have types but no text.
+      const clip = clipForPaste(data ? data.getData('text/plain') : null, !!(data && data.types && data.types.length));
+      if (clip) app.pasteClip(clip);
+      return;
+    }
+    const clip = selectionClip();
+    if (!clip) return;
+    setClip(clip);
+    if (data) {
+      const text = serializeClip(clip);
+      data.setData('text/plain', text);
+      markClipSynced(text);
+    }
+    if (e.type === 'cut') app.deleteSelection('cut');
+    app.refresh();
+  };
 
   const app = {
     doc, surfaces, prefs, tool,
@@ -224,6 +330,24 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       app.refresh();
     },
 
+    stepSize(dir) {
+      if (app.tool === 'selector' && app.selection) {
+        const unit = selectionUnit();
+        doc.restyleStrokes(app.selection.pageId, app.selection.ids, { size: s => nextSize(s.tool, s.size, dir, unit) });
+        return;
+      }
+      // A tool without a size steps the pen's (as the size buttons did).
+      const i = app.prefs[sizedTool()].size + dir;
+      if (SIZES[sizedTool()][i] !== undefined) app.setSize(i);
+    },
+    canStepSize(dir) {
+      if (app.tool === 'selector' && app.selection) {
+        const unit = selectionUnit();
+        return app.selectedStrokes().some(s => nextSize(s.tool, s.size, dir, unit) !== s.size);
+      }
+      return SIZES[sizedTool()][app.prefs[sizedTool()].size + dir] !== undefined;
+    },
+
     // Selection
 
     selectedStrokes() {
@@ -252,11 +376,60 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       sel.box = unionBBox(strokes.map(strokeBBox));
       render.setSelectionBox(surface.layer, sel.box);
     },
-    deleteSelection() {
+    deleteSelection(label) {
       const sel = app.selection;
       if (!sel) return;
       app.select(null);
-      doc.removeStrokes(sel.pageId, sel.ids);
+      doc.removeStrokes(sel.pageId, sel.ids, label);
+    },
+
+    // Clipboard
+
+    copySelection() {
+      const clip = selectionClip();
+      if (!clip) return;
+      setClip(clip);
+      const text = serializeClip(clip);
+      void writeSystemClipboard(text).then(ok => { if (ok && getClip() === clip) markClipSynced(text); });
+      app.refresh();
+    },
+    cutSelection() {
+      if (!app.selection) return;
+      app.copySelection();
+      app.deleteSelection('cut');
+    },
+    async paste() {
+      // Reading may wait for a browser prompt: a paste after a page turn or a new stroke started meanwhile is dropped.
+      const s = app.activeSurface();
+      const busy = app.input.busy;
+      const text = await readSystemClipboard();
+      const now = app.activeSurface();
+      if (!s || !now || now.pageId !== s.pageId || (app.input.busy && !busy)) return;
+      const clip = clipForPaste(text);
+      if (clip) app.pasteClip(clip);
+    },
+    pasteClip(clip) {
+      const s = app.activeSurface();
+      if (!s) return;
+      if (app.input.busy) app.input.cancel();
+      pasteOnto(s.pageId, clip, 'paste');
+    },
+    duplicateSelection() {
+      const sel = app.selection;
+      const clip = selectionClip();
+      if (sel && clip) pasteOnto(sel.pageId, clip, 'duplicate');
+    },
+    canPaste() { return !!getClip(); },
+    clipboardKey(kind) {
+      pendingKey = kind;
+      setTimeout(() => {
+        if (pendingKey !== kind) return; // the event came
+        pendingKey = null;
+        if (kind === 'copy') app.copySelection();
+        else if (kind === 'cut') app.cutSelection();
+        else void app.paste();
+      }, 0);
+      return false;
     },
 
     // Commands
@@ -288,9 +461,14 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
 
     mount(parent) {
       const unbind = bindKeys(app, app.keymap);
+      const events = ['copy', 'cut', 'paste'] as const;
+      for (const type of events) window.addEventListener(type, onClipboardEvent, true);
       app.toolbar = createToolbar(app, parent);
       app.refresh();
-      return unbind;
+      return () => {
+        unbind();
+        for (const type of events) window.removeEventListener(type, onClipboardEvent, true);
+      };
     },
   } as Annotator;
 
@@ -308,7 +486,8 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     } else if (kind === 'strokes') {
       surfaces.forEach(s => render.syncLayer(s.layer, doc.strokes(s.pageId))); // every page (load)
     }
-    if (app.selection && (pageId === null || app.selection.pageId === pageId)) app.refreshSelection();
+    // A save changes no strokes: redrawing the box would undo a running drag's offset.
+    if (kind !== 'saved' && app.selection && (pageId === null || app.selection.pageId === pageId)) app.refreshSelection();
     app.refresh();
   });
   doc.history.onChange(() => app.refresh());

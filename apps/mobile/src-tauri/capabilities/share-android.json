@@ -1,17 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "share-android",
-  "description": "Android: print through the share sheet, from a PDF in cache/share/ (the plugin copies it for its FileProvider), removed afterwards.",
+  "description": "Android: print through the share sheet, from a PDF the app writes to cache/share/ (the plugin copies it for its FileProvider), removed afterwards.",
   "windows": ["main"],
   "platforms": ["android"],
   "permissions": [
-    {
-      "identifier": "fs:scope",
-      "allow": [
-        { "path": "$APPCACHE/share" },
-        { "path": "$APPCACHE/share/*.pdf" }
-      ]
-    },
+    "allow-write-share-file",
+    "allow-remove-share-file",
     "sharekit:allow-share-file"
   ]
 }

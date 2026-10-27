@@ -142,7 +142,7 @@ try {
     check('nothing but the PDF and its notes in its folder (legacy backup removed)',
       readdirSync(dirname(pdf)).sort().join(',') === 'deck.pdf,deck.pdf.notes.json', readdirSync(dirname(pdf)).join(','));
     check('recent files list has the PDF',
-      existsSync(join(userData, 'recent-files.json')) && readFileSync(join(userData, 'recent-files.json'), 'utf8').includes('deck.pdf'));
+      existsSync(join(userData, 'recent-files.v2.json')) && readFileSync(join(userData, 'recent-files.v2.json'), 'utf8').includes('deck.pdf'));
   }
 
   // 2. Read-only folder: notes fall back to app storage.

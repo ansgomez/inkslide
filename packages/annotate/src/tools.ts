@@ -26,21 +26,28 @@ export const COLORS = [
   { id: 'purple', value: '#7a3c96', label: 'Purple' },
 ] as const;
 
-/** Labels of the four sizes. */
+/** Labels of the four preset sizes (keys 1–4). */
 export const SIZE_LABELS = ['S', 'M', 'L', 'XL'] as const;
-/** The four sizes per tool, in units of a 1280×720 slide (scaled by layer.unit). */
+/**
+ * The size scale per tool, in units of a 1280×720 slide (scaled by layer.unit); − and + step
+ * through it. Every tool has the same number of steps, so a selection of pen and highlighter
+ * strokes restyles to the same step. The four sizes of earlier versions (S, M, L, XL) are
+ * steps 1, 3, 5 and 7 (SIZE_PRESETS), so their strokes and stored prefs keep their size.
+ */
 export const SIZES = {
-  pen: [2, 4, 7, 12],           // stroke width
-  highlighter: [12, 20, 32, 48],
-  eraser: [8, 16, 32, 64],      // eraser radius
-  partial: [8, 16, 32, 64],
+  pen: [1, 2, 3, 4, 5.5, 7, 9.5, 12, 16],           // stroke width
+  highlighter: [8, 12, 16, 20, 26, 32, 40, 48, 64],
+  eraser: [4, 8, 12, 16, 24, 32, 48, 64, 96],       // eraser radius
+  partial: [4, 8, 12, 16, 24, 32, 48, 64, 96],
 } as const;
+/** Steps of SIZES that are the presets S, M, L, XL (keys 1–4; the sizes of earlier versions). */
+export const SIZE_PRESETS = [1, 3, 5, 7] as const;
 
 /** Every tool. */
 export type ToolId = 'pen' | 'highlighter' | 'selector' | 'laser' | 'eraser' | 'partial';
 /** Tools with a size setting. */
 export type SizedTool = keyof typeof SIZES;
-/** Index into SIZES[tool] (0..3). */
+/** Index into SIZES[tool] (a step of the size scale). */
 export type SizeIndex = number;
 
 /** Per-tool settings (color, size index). */
@@ -55,10 +62,10 @@ export interface Prefs {
 
 /** Prefs before the user changes anything. */
 export const DEFAULT_PREFS: Readonly<Prefs> = {
-  pen: { color: '#000000', size: 1 },
-  highlighter: { color: '#ffd200', size: 1 },
-  eraser: { size: 1 },
-  partial: { size: 1 },
+  pen: { color: '#000000', size: 3 },
+  highlighter: { color: '#ffd200', size: 3 },
+  eraser: { size: 3 },
+  partial: { size: 3 },
   selector: {},
   laser: {},
 };
@@ -88,7 +95,7 @@ export interface ToolHost {
   select(sel: { pageId: string; ids: readonly string[] } | null): void;
   /** Every surface with a layer (Map or array). */
   surfaces: { forEach(fn: (s: Surface) => void): void };
-  /** Mirror of the laser to another window (presenter view, later). */
+  /** Mirror of the laser to another window (presenter mode: the web app's presenter.ts). */
   sync?: { laser(pageId: string, pt: Point): void } | null;
 }
 
@@ -128,6 +135,18 @@ export const toolSize = (tool: SizedTool, i: SizeIndex, unit = 1): number => SIZ
 /** Index of a stroke size among a tool's sizes on a page with scale `unit`; -1 if it is none of them. */
 export function sizeIndex(tool: SizedTool, size: number, unit = 1): SizeIndex {
   return SIZES[tool].findIndex(v => Math.abs(v * unit - size) <= 1e-3 * v * unit);
+}
+
+/**
+ * The size one step smaller (dir -1) or larger (dir 1) than `size` on a tool's scale, on a page
+ * with scale `unit`. A size between two steps goes to the nearer step in that direction; at the
+ * end of the scale `size` itself comes back.
+ */
+export function nextSize(tool: SizedTool, size: number, dir: -1 | 1, unit = 1): number {
+  const steps = SIZES[tool].map(v => v * unit);
+  const tol = 1e-3 * size;
+  const next = dir > 0 ? steps.find(v => v > size + tol) : steps.reverse().find(v => v < size - tol);
+  return next ?? size;
 }
 
 /** Size of a tool on a surface's page, in its page units (unscaled if the page has no usable scale). */
@@ -194,10 +213,35 @@ function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
 
 // ── Erasers ────────────────────────────────────────────────────
 
-/** Works on a private copy of the page; one command on release. */
+/** Same tool, color, size and points (the id is compared by the caller). */
+function sameStroke(a: Stroke, b: Stroke): boolean {
+  if (a === b) return true;
+  if (a.tool !== b.tool || a.color !== b.color || a.size !== b.size || a.points.length !== b.points.length) return false;
+  return a.points.every((p, i) => p[0] === b.points[i][0] && p[1] === b.points[i][1] && p[2] === b.points[i][2]);
+}
+
+/**
+ * Works on a private copy of the page; one command on release, which applies
+ * only what was erased to the page as it is then (edits made meanwhile stay).
+ */
 function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): Tool {
   const partial = id === 'partial';
   let working: Stroke[] | null = null, last: Point | null = null;
+  let base: Map<string, Stroke> | null = null; // the page's strokes at down
+  let origin: Map<string, string> | null = null; // piece id -> id of the stroke it was cut from
+
+  /** The page's current strokes with this gesture's erasing applied. */
+  function erased(current: readonly Stroke[]): Stroke[] {
+    const left = new Map<string, Stroke[]>(); // erased stroke id -> its remaining pieces
+    for (const s of base!.values()) left.set(s.id, []);
+    for (const s of working!) {
+      if (base!.get(s.id) === s) left.delete(s.id); // untouched
+      else left.get(origin!.get(s.id)!)!.push(s);
+    }
+    // A stroke changed meanwhile (moved, restyled) is kept as it is now. Compared by
+    // content: another window's push or undo rebuilds equal strokes as new objects.
+    return current.flatMap(s => (left.has(s.id) && sameStroke(base!.get(s.id)!, s) ? left.get(s.id)! : [s]));
+  }
 
   const radius = (surface: Surface): number => sizeOf(app, id, surface);
 
@@ -214,7 +258,11 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       const pieces = splitByEraser(s, a, b, r);
       if (pieces === null) { next.push(s); continue; }
       changed = true;
-      for (const points of pieces) next.push(createStroke({ ...s, id: null, points }));
+      for (const points of pieces) {
+        const piece = createStroke({ ...s, id: null, points });
+        origin!.set(piece.id, origin!.get(s.id) || s.id);
+        next.push(piece);
+      }
     }
     if (changed) {
       working = next;
@@ -226,6 +274,8 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
     id,
     down(surface, pt) {
       working = app.doc.strokes(surface.pageId).slice();
+      base = new Map(working.map(s => [s.id, s]));
+      origin = new Map();
       last = pt;
       R.setEraserCursor(surface.layer, pt, radius(surface));
       eraseAlong(surface, pt, pt);
@@ -238,12 +288,12 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
     },
     up(surface) {
       if (!working) return;
-      const result = working;
-      working = last = null;
-      if (app.doc.hasPage(surface.pageId)) app.doc.replaceStrokes(surface.pageId, result, partial ? 'partial-erase' : 'erase');
+      const result = app.doc.hasPage(surface.pageId) ? erased(app.doc.strokes(surface.pageId)) : null;
+      working = last = base = origin = null;
+      if (result) app.doc.replaceStrokes(surface.pageId, result, partial ? 'partial-erase' : 'erase');
     },
     cancel(surface) {
-      working = last = null;
+      working = last = base = origin = null;
       R.syncLayer(surface.layer, app.doc.strokes(surface.pageId));
       R.setEraserCursor(surface.layer, null);
     },
@@ -259,6 +309,17 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
   let mode: 'move' | 'select' | null = null, path: Point[] | null = null;
   let start: Point | null = null, offset: [number, number] = [0, 0];
   let moving: Selection | null = null; // the selection being dragged
+  let len = 0, frame = 0; // length of the select path so far; pending marquee redraw
+
+  // Redraw the marquee at most once per frame (moves only collect points).
+  const drawMarquee = (surface: Surface): void => {
+    frame = 0;
+    if (mode === 'select' && path) R.setMarquee(surface.layer, isLasso(path, len) ? path : rectPolygon(path[0], path[path.length - 1]));
+  };
+  const stopMarquee = (): void => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+  };
 
   const sel = (): Selection | null => app.selection;
   const insideSelection = (surface: Surface, pt: Point): boolean => {
@@ -291,6 +352,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
       app.select(null);
       mode = 'select';
       path = [pt];
+      len = 0;
     },
     move(surface, pt) {
       if (mode === 'move') {
@@ -299,8 +361,9 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
         R.translateStrokes(surface.layer, moving!.ids, offset[0], offset[1]);
         R.setSelectionBox(surface.layer, moving!.box, offset[0], offset[1]);
       } else if (mode === 'select') {
+        len += pathLength([path![path!.length - 1], pt]);
         path!.push(pt);
-        R.setMarquee(surface.layer, isLasso(path!) ? path : rectPolygon(path![0], pt));
+        if (!frame) frame = requestAnimationFrame(() => drawMarquee(surface));
       }
     },
     up(surface, pt) {
@@ -320,6 +383,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
       mode = null;
       const p = path!;
       if (pt) p.push(pt);
+      stopMarquee();
       R.setMarquee(surface.layer, null);
       const strokes = app.doc.strokes(surface.pageId);
       let ids: string[];
@@ -339,6 +403,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
         R.translateStrokes(surface.layer, moving!.ids, 0, 0);
         R.setSelectionBox(surface.layer, moving!.box);
       }
+      stopMarquee();
       R.setMarquee(surface.layer, null);
       mode = null;
       moving = null;

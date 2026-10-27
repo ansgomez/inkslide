@@ -96,3 +96,31 @@ export function pageScroll(ty: number, minTy: number, screen: number, dir: -1 | 
   if (atEnd) return null;
   return Math.min(0, Math.max(minTy, ty - dir * Math.max(1, screen * (1 - overlap))));
 }
+
+/**
+ * Zoom steps of the − and + buttons next to the page counter, as factors of
+ * the fit (the view's zoom): 1 is the fitted page (whole page or width, the
+ * smallest zoom), the last is the largest pinch zoom (gestures.ts MAX_ZOOM).
+ */
+export const ZOOM_STEPS: readonly number[] = [1, 1.25, 1.5, 2, 3, 4, 6];
+
+/**
+ * The zoom step above (dir 1) or below (dir -1) `zoom`; a zoom between two
+ * steps (after a pinch) goes to the nearer one in that direction. Null at
+ * the end of the steps.
+ */
+export function zoomStep(zoom: number, dir: -1 | 1, steps: readonly number[] = ZOOM_STEPS): number | null {
+  const tol = 1e-3 * zoom;
+  const next = dir > 0 ? steps.find(z => z > zoom + tol) : [...steps].reverse().find(z => z < zoom - tol);
+  return next ?? null;
+}
+
+/**
+ * The view translation for a new zoom that keeps the page point at (cx, cy)
+ * (CSS px in the unzoomed page box, e.g. the middle of the visible part)
+ * where it is. Clamp the result with clampPan.
+ */
+export function zoomAround(view: { zoom: number; tx: number; ty: number }, zoom: number, cx: number, cy: number): [number, number] {
+  const px = (cx - view.tx) / view.zoom, py = (cy - view.ty) / view.zoom;
+  return [cx - px * zoom, cy - py * zoom];
+}

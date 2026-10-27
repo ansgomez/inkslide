@@ -4,12 +4,12 @@
  * The bar is built from groups in GROUP_ORDER. Each group builder is
  * registered with registerGroup(id, builder) and returns { id, label, items }
  * where an item is { id, title, icon | swatch | dot | text, onClick, active(),
- * disabled() }. The app registers its own builders for 'pages' (pages.ts
+ * disabled(), hidden() }. The app registers its own builders for 'pages' (pages.ts
  * pagesGroup) and 'file'; otherwise the disabled placeholders below are used.
  */
 import type { NotesDoc } from './model';
 import type { Stroke } from './geometry';
-import { COLORS, SIZE_LABELS, TOOLS, type ToolId } from './tools';
+import { COLORS, SIZE_LABELS, SIZE_PRESETS, SIZES, TOOLS, type ToolId } from './tools';
 
 // ── Icons (24×24, stroked with currentColor) ───────────────────
 
@@ -45,6 +45,11 @@ export const ICONS: Record<string, string> = {
   // Export: a page with an arrow out of it.
   pdf: '<path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/><path d="M9 14h7M13.5 11.5L16 14l-2.5 2.5"/>',
   print: '<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/>',
+  minus: '<path d="M5 12h14" stroke-width="2.4"/>',
+  plus: '<path d="M5 12h14M12 5v14" stroke-width="2.4"/>',
+  copy: '<rect x="8" y="8" width="12" height="13" rx="1.5"/><path d="M16 8V4.5A1.5 1.5 0 0014.5 3h-9A1.5 1.5 0 004 4.5v11A1.5 1.5 0 005.5 17H8"/>',
+  cut: '<circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.2 15.8L19 3M15.8 15.8L5 3"/>',
+  paste: '<path d="M9 4H6.5A1.5 1.5 0 005 5.5v14A1.5 1.5 0 006.5 21h11a1.5 1.5 0 001.5-1.5v-14A1.5 1.5 0 0017.5 4H15"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M9 12h6M9 16h4"/>',
 };
 
 /** Inline SVG markup of icon `name`. */
@@ -64,8 +69,10 @@ export interface ToolbarItem {
   caption?: string;
   /** Color swatch (CSS color). */
   swatch?: string;
-  /** Size dot index 0..3. */
-  dot?: number;
+  /** Size preview: a dot for a step of the size scale (SIZES); null shows an empty ring. */
+  dot?: Dyn<number | null>;
+  /** Color of the size preview's dot (CSS color); null: the bar's text color. */
+  dotColor?: () => string | null;
   /** Text item (label, or a button with a label's look if it has onClick). */
   text?: () => string;
   /** Put the button at one end of the bar (large prev/next). */
@@ -73,6 +80,8 @@ export interface ToolbarItem {
   onClick?: () => void;
   active?: () => boolean;
   disabled?: () => boolean;
+  /** Hide the button, keeping its place (a group whose buttons are all hidden is hidden too). */
+  hidden?: () => boolean;
 }
 
 /** A group of toolbar items. */
@@ -89,12 +98,14 @@ export interface ToolbarHost {
   tool: ToolId;
   doc: NotesDoc;
   selection: unknown;
-  overview?: { open(): void } | null;
+  overview?: { open(): void; isOpen?(): boolean } | null;
   toggle(on?: boolean): void;
   refresh(): void;
   setTool(id: ToolId): void;
   setColor(color: string): void;
   setSize(i: number): void;
+  stepSize(dir: -1 | 1): void;
+  canStepSize(dir: -1 | 1): boolean;
   currentColor(): string | null;
   currentSize(): number | null;
   undo(): void;
@@ -103,6 +114,14 @@ export interface ToolbarHost {
   activeStrokes(): readonly Stroke[];
   deleteSelection(): void;
   select(sel: null): void;
+  copySelection(): void;
+  cutSelection(): void;
+  paste(): unknown;
+  duplicateSelection(): void;
+  /** Whether this window has strokes to paste. */
+  canPaste(): boolean;
+  /** Ctrl/Cmd+C, X or V; false leaves the key to the browser (see Annotator.clipboardKey). */
+  clipboardKey(kind: 'copy' | 'cut' | 'paste'): boolean;
 }
 
 /** Builds a group for an app; called once by createToolbar. */
@@ -111,7 +130,7 @@ export type GroupBuilder<A = ToolbarHost> = (app: A) => ToolbarGroup;
 // ── Groups ─────────────────────────────────────────────────────
 
 /** Toolbar groups, in bar order. */
-export const GROUP_ORDER = ['mode', 'tools', 'colors', 'sizes', 'history', 'pages', 'file'] as const;
+export const GROUP_ORDER = ['mode', 'tools', 'colors', 'sizes', 'history', 'edit', 'pages', 'file'] as const;
 const groups: Record<string, GroupBuilder<any>> = {};
 
 /** Register (or replace) the builder of a toolbar group. */
@@ -176,13 +195,22 @@ registerGroup('colors', app => ({
   })),
 }));
 
+/** Tooltip of the size preview: the step, and its preset name if it is one. */
+function sizeTitle(app: ToolbarHost): string {
+  const i = app.currentSize();
+  if (i === null) return app.selection ? 'Size: the selected strokes differ' : 'Size: this tool has none';
+  const preset = SIZE_PRESETS.indexOf(i as typeof SIZE_PRESETS[number]);
+  return `Size ${i + 1} of ${SIZES.pen.length}${preset < 0 ? '' : ` (${SIZE_LABELS[preset]}, key ${preset + 1})`}`;
+}
+
+// One size control: − and + step through the size scale, the dot between them shows the size.
 registerGroup('sizes', app => ({
-  id: 'sizes', label: 'Sizes',
-  items: SIZE_LABELS.map((label, i) => ({
-    id: `size-${i}`, title: `Size ${label} (${i + 1})`, dot: i,
-    onClick: () => app.setSize(i),
-    active: () => app.currentSize() === i,
-  })),
+  id: 'sizes', label: 'Size',
+  items: [
+    { id: 'size-down', title: 'Thinner ([)', icon: 'minus', onClick: () => app.stepSize(-1), disabled: () => !app.canStepSize(-1) },
+    { id: 'size', title: () => sizeTitle(app), dot: () => app.currentSize(), dotColor: () => app.currentColor() },
+    { id: 'size-up', title: 'Thicker (])', icon: 'plus', onClick: () => app.stepSize(1), disabled: () => !app.canStepSize(1) },
+  ],
 }));
 
 registerGroup('history', app => ({
@@ -191,6 +219,16 @@ registerGroup('history', app => ({
     { id: 'undo', title: 'Undo (Ctrl/Cmd+Z)', icon: 'undo', onClick: () => app.undo(), disabled: () => !app.doc.history.canUndo() },
     { id: 'redo', title: 'Redo (Ctrl/Cmd+Shift+Z)', icon: 'redo', onClick: () => app.redo(), disabled: () => !app.doc.history.canRedo() },
     { id: 'clear', title: 'Clear page (undoable)', icon: 'clear', onClick: () => app.clearPage(), disabled: () => !app.activeStrokes().length },
+  ],
+}));
+
+// Shown only when there is something to copy or paste, for writing with the pen alone.
+registerGroup('edit', app => ({
+  id: 'edit', label: 'Edit',
+  items: [
+    { id: 'copy', title: 'Copy (Ctrl/Cmd+C)', icon: 'copy', onClick: () => app.copySelection(), hidden: () => !app.selection },
+    { id: 'cut', title: 'Cut (Ctrl/Cmd+X)', icon: 'cut', onClick: () => app.cutSelection(), hidden: () => !app.selection },
+    { id: 'paste', title: 'Paste (Ctrl/Cmd+V)', icon: 'paste', onClick: () => void app.paste(), hidden: () => !app.canPaste() },
   ],
 }));
 
@@ -203,9 +241,8 @@ registerGroup('pages', () => ({
   items: [
     soon('page-prev', 'Previous page', 'prev'),
     soon('page-next', 'Next page', 'next'),
-    soon('blank-plain', 'Insert plain page (B)', 'pagePlain'),
-    soon('blank-lined', 'Insert lined page', 'pageLined'),
-    soon('blank-grid', 'Insert grid page', 'pageGrid'),
+    soon('page-insert', 'Insert blank page (B)', 'pageInsert'),
+    soon('page-paper', 'Paper of blank pages', 'pagePlain'),
     soon('page-delete', 'Delete blank page', 'pageDelete'),
   ],
 }));
@@ -221,6 +258,31 @@ registerGroup('file', () => ({
 
 // ── DOM ────────────────────────────────────────────────────────
 
+/** Dot diameters (CSS px) of the size steps; S, M, L, XL keep the dots of the old size buttons. */
+const DOT_PX = [3, 4, 6, 8, 10, 13, 16, 19, 23];
+
+function setDot(el: HTMLElement, item: ToolbarItem): void {
+  const i = typeof item.dot === 'function' ? item.dot() : item.dot;
+  const color = item.dotColor ? item.dotColor() : null;
+  el.classList.toggle('is-none', i == null);
+  el.style.setProperty('--dot', `${i == null ? 12 : DOT_PX[Math.max(0, Math.min(DOT_PX.length - 1, i))]}px`);
+  if (color) el.style.setProperty('--dot-color', color);
+  else el.style.removeProperty('--dot-color');
+}
+
+/** The size preview: not a button, only a picture of the size (named by its title). */
+function buildPreview(item: ToolbarItem): HTMLElement {
+  const span = document.createElement('span');
+  span.className = 'ann-preview ann-size';
+  span.dataset.id = item.id;
+  span.setAttribute('role', 'img');
+  span.title = (typeof item.title === 'function' ? item.title() : item.title) || '';
+  span.setAttribute('aria-label', span.title);
+  span.innerHTML = '<span></span>';
+  setDot(span, item);
+  return span;
+}
+
 function buildLabel(item: ToolbarItem): HTMLElement {
   if (item.onClick) return buildButton(item, 'ann-label');
   const span = document.createElement('span');
@@ -234,6 +296,7 @@ function buildLabel(item: ToolbarItem): HTMLElement {
 /** A text item with onClick becomes a button with the label's look (extraClass). */
 function buildButton(item: ToolbarItem, extraClass?: string): HTMLElement {
   if (item.text && !extraClass) return buildLabel(item);
+  if (item.dot !== undefined && !item.onClick) return buildPreview(item);
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = extraClass ? `ann-btn ${extraClass}` : 'ann-btn';
@@ -248,9 +311,10 @@ function buildButton(item: ToolbarItem, extraClass?: string): HTMLElement {
     btn.classList.add('ann-swatch');
     btn.style.setProperty('--swatch', item.swatch);
     btn.innerHTML = '<span></span>';
-  } else if (item.dot != null) {
+  } else if (item.dot !== undefined) {
     btn.classList.add('ann-size');
-    btn.innerHTML = `<span style="--dot:${[4, 8, 13, 19][item.dot]}px"></span>`;
+    btn.innerHTML = '<span></span>';
+    setDot(btn, item);
   }
   // Do not take focus: a focused button would swallow Space meant for page turns.
   btn.addEventListener('pointerdown', e => e.preventDefault());
@@ -265,6 +329,8 @@ function buildButton(item: ToolbarItem, extraClass?: string): HTMLElement {
 export interface Toolbar {
   el: HTMLDivElement;
   update(): void;
+  /** Remove the bar and stop watching its size. */
+  destroy(): void;
 }
 
 /** Build the toolbar from the registered groups (in GROUP_ORDER) and add it to `parent`. */
@@ -274,6 +340,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
   bar.setAttribute('role', 'toolbar');
   bar.setAttribute('aria-label', 'Lecture notes');
   const entries: { item: ToolbarItem; btn: HTMLElement }[] = [];
+  const hiding = new Set<HTMLElement>(); // groups with buttons that hide
   // Previous/next page sit large at the two ends of the bar, easy to hit
   // on a tablet; every other button stays in its group.
   const edge = {} as Record<'start' | 'end', HTMLDivElement>;
@@ -297,6 +364,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
       const btn = buildButton(item);
       (item.edge ? edge[item.edge] : g).appendChild(btn);
       entries.push({ item, btn });
+      if (item.hidden && !item.edge) hiding.add(g);
     }
     bar.appendChild(g);
   }
@@ -313,10 +381,13 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
     style.setProperty('--ann-bar-w', `${bar.offsetWidth}px`);
   };
   if (!document.body.dataset.annDock) document.body.dataset.annDock = loadDock();
-  if ('ResizeObserver' in window) new ResizeObserver(setOffset).observe(bar);
+  const resize = 'ResizeObserver' in window ? new ResizeObserver(setOffset) : null;
+  if (resize) resize.observe(bar);
   setOffset();
 
+  let destroyed = false;
   function update(): void {
+    if (destroyed) return; // a detached bar would set the bar size to 0 for the next one
     for (const { item, btn } of entries) {
       if (item.text) {
         const t = item.text();
@@ -334,15 +405,26 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
           btn.dataset.icon = name;
         }
       }
+      if (item.dot !== undefined) setDot(btn, item);
       const on = item.active ? !!item.active() : false;
       btn.classList.toggle('is-active', on);
       if (item.active) btn.setAttribute('aria-pressed', String(on));
       (btn as HTMLButtonElement).disabled = item.disabled ? !!item.disabled() : false;
+      if (item.hidden) btn.hidden = !!item.hidden(); // keeps its place (toolbar.css): the bar does not reflow
     }
+    for (const g of hiding) g.hidden = [...g.children].every(b => (b as HTMLElement).hidden);
     setOffset();
   }
   update();
-  return { el: bar, update };
+  return {
+    el: bar,
+    update,
+    destroy() {
+      destroyed = true;
+      if (resize) resize.disconnect();
+      bar.remove();
+    },
+  };
 }
 
 // ── Keyboard ───────────────────────────────────────────────────
@@ -370,9 +452,12 @@ export const letter = (e: KeyboardEvent, k: string): boolean => e.code === `Key$
 const labelOrCode = (e: KeyboardEvent, k: string): boolean =>
   e.key.toLowerCase() === k || (!/^[a-z]$/i.test(e.key) && letter(e, k));
 
-/** Shortcuts of annotate mode: tools, sizes 1–4, undo/redo, delete or drop the selection. */
+/** Shortcuts of annotate mode: tools, sizes 1–4 and [ ], undo/redo, copy/cut/paste/duplicate, delete or drop the selection. */
 export function defaultKeymap(app: ToolbarHost): Shortcut[] {
   const mod = (e: KeyboardEvent): boolean => (e.ctrlKey || e.metaKey) && !e.altKey;
+  // Copy, cut, paste and duplicate act on the shown page: not while the overview covers it.
+  const edit = (e: KeyboardEvent, k: string): boolean => mod(e) && labelOrCode(e, k) && !e.shiftKey &&
+    !(app.overview && app.overview.isOpen && app.overview.isOpen());
   const tool = (k: string, id: ToolId, shift = false): Shortcut => ({
     test: e => letter(e, k) && noMods(e) && e.shiftKey === shift,
     run: () => app.setTool(id),
@@ -380,11 +465,20 @@ export function defaultKeymap(app: ToolbarHost): Shortcut[] {
   return [
     { test: e => mod(e) && labelOrCode(e, 'z') && !e.shiftKey, run: () => app.undo() },
     { test: e => mod(e) && ((labelOrCode(e, 'z') && e.shiftKey) || labelOrCode(e, 'y')), run: () => app.redo() },
+    { test: e => edit(e, 'c') && !!app.selection, run: () => app.clipboardKey('copy') },
+    { test: e => edit(e, 'x') && !!app.selection, run: () => app.clipboardKey('cut') },
+    { test: e => edit(e, 'v'), run: () => app.clipboardKey('paste') },
+    { test: e => edit(e, 'd') && !!app.selection, run: () => app.duplicateSelection() },
     tool('p', 'pen'), tool('h', 'highlighter'), tool('s', 'selector'),
     tool('l', 'laser'), tool('e', 'eraser'), tool('e', 'partial', true),
-    ...[0, 1, 2, 3].map((i): Shortcut => ({
+    ...SIZE_PRESETS.map((step, i): Shortcut => ({
       test: e => (e.code === `Digit${i + 1}` || e.code === `Numpad${i + 1}`) && noMods(e),
-      run: () => app.setSize(i),
+      run: () => app.setSize(step),
+    })),
+    // [ and ] by their label (on some layouts behind AltGr, which reports Ctrl+Alt on Windows).
+    ...([['[', -1], [']', 1]] as const).map(([key, dir]): Shortcut => ({
+      test: e => e.key === key && !e.metaKey && (!e.ctrlKey || e.altKey),
+      run: () => app.stepSize(dir),
     })),
     { test: e => (e.key === 'Delete' || e.key === 'Backspace') && !!app.selection, run: () => app.deleteSelection() },
     { test: e => e.key === 'Escape' && !!app.selection, run: () => app.select(null) },

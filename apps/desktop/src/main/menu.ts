@@ -1,4 +1,4 @@
-/* Inkslide desktop - the native menu (Open, Open Recent, Export, Print, notes backup, Quit) */
+/* Inkslide desktop - the native menu (Open, Open Recent, Export, Print, notes backup, Quit, Presenter Mode) */
 import { Menu, type MenuItemConstructorOptions } from 'electron';
 import { basename } from 'node:path';
 import type { MenuCommand } from '../shared/bridge';
@@ -16,6 +16,12 @@ export interface MenuActions {
   backups(): boolean;
   /** Backups are on and the open PDF has one. */
   canRevert(): boolean;
+  /** View → Presenter Mode: open or close the audience window. */
+  togglePresenter(): void;
+  /** The audience window is open. */
+  presenting(): boolean;
+  /** There is an app window to present (macOS keeps running without one). */
+  canPresent(): boolean;
 }
 
 /** Where the menu runs. */
@@ -26,7 +32,8 @@ export interface MenuOptions {
 }
 
 /**
- * The application menu: File (Open, Open Recent, Import Notes, Export, Print, Revert to Backup, Keep a Backup, Quit) and View.
+ * The application menu: File (Open, Open Recent, Import Notes, Export, Print, Revert to Backup, Keep a Backup, Quit) and View
+ * (with Presenter Mode).
  * Rebuild it when the recent files change.
  */
 export const buildMenu = (a: MenuActions, dev: boolean): Menu =>
@@ -80,6 +87,12 @@ export function menuTemplate(a: MenuActions, { isMac, dev }: MenuOptions): MenuI
           checked: a.menuHidden(), click: () => a.toggleMenuBar(),
         }]),
         { role: 'togglefullscreen' },
+        {
+          // F5 starts a presentation in most slide apps, and presenter remotes send it.
+          label: '&Presenter Mode', type: 'checkbox', checked: a.presenting(), enabled: a.canPresent(), accelerator: 'F5',
+          toolTip: 'Mirror the page, the ink and the laser in a second window, full screen on the other display',
+          click: () => a.togglePresenter(),
+        },
         { type: 'separator' },
         ...(dev ? [{ role: 'reload' as const }] : []),
         { role: 'toggleDevTools' },

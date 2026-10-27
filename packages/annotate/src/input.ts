@@ -63,6 +63,9 @@ export function swipeDirection(dx: number, dy: number, ms: number): -1 | 0 | 1 {
   return dx < 0 ? 1 : -1;
 }
 
+/** No two-finger swipe this long after the pen's last event (a palm resting while writing). */
+export const PEN_GRACE_MS = 500;
+
 /** What the input router needs from the app. */
 export interface InputHost {
   /** Annotate mode on; when off, events pass through. */
@@ -83,7 +86,7 @@ export interface InputController {
   cancel(): void;
   /** Drop the running gesture (if any). */
   discard(): void;
-  /** Remove the window listeners (surfaces keep theirs until removed). */
+  /** Drop the running gesture and remove all listeners (window and surfaces). */
   destroy(): void;
   readonly busy: boolean;
   /** Pointer type ("pen", "touch", "mouse") of the running gesture; null if none. */
@@ -98,6 +101,8 @@ type Method = 'down' | 'move' | 'up' | 'cancel' | 'hover' | 'leave';
  */
 export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): InputController {
   let penSeen = false;
+  let penLast = -Infinity; // timeStamp of the pen's last event
+  const fingers = new Set<number>(); // touch pointers that are down
   let active: { pointerId: number; pointerType: string; tool: Tool; slide: Surface } | null = null;
 
   /**
@@ -154,16 +159,20 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
   }
 
   function onDown(slide: Surface, e: PointerEvent): void {
+    if (e.pointerType === 'touch') fingers.add(e.pointerId);
     if (!app.enabled) return;
     e.stopPropagation();
-    if (e.pointerType === 'pen') penSeen = true;
+    if (e.pointerType === 'pen') { penSeen = true; penLast = e.timeStamp; }
     // Palm rejection: once a pen has been used, touch never draws.
     if (penSeen && e.pointerType === 'touch') { e.preventDefault(); return; }
     if (active) {
       if (e.pointerType === 'pen' && active.pointerType !== 'pen') finish(true); // palm replaced by pen
+      else if (e.pointerType === 'touch' && active.pointerType === 'touch') { finish(true); return; } // a second finger: no stroke
       else if (e.pointerType === active.pointerType) finish(); // stale gesture (lost its pointerup)
       else return;
     }
+    // Another finger is still down (after a second finger dropped the stroke): no stroke either.
+    if (e.pointerType === 'touch' && fingers.size > 1) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     const pt = toSlidePoint(slide.svg, e);
@@ -176,8 +185,9 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
 
   // Move and up go to the surface the gesture started on, also if pointer capture failed.
   function onMove(slide: Surface, e: PointerEvent): void {
-    if (e.pointerType === 'pen') penSeen = true; // a hovering pen counts: the palm may land first
+    if (e.pointerType === 'pen') { penSeen = true; penLast = e.timeStamp; } // a hovering pen counts: the palm may land first
     if (!app.enabled) return;
+    if (e.pointerType === 'pen' && active && active.pointerType === 'touch') finish(true); // the "finger" was a palm
     if (active && active.pointerId === e.pointerId) {
       e.stopPropagation();
       const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
@@ -193,6 +203,7 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
   }
 
   function onUp(e: PointerEvent, cancelled: boolean): void {
+    fingers.delete(e.pointerId);
     if (!active || active.pointerId !== e.pointerId) return;
     e.stopPropagation();
     const { tool, slide } = active;
@@ -201,31 +212,41 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
     end(tool, 'up', slide, cancelled ? null : toSlidePoint(slide.svg, e), e);
   }
 
-  const onBlur = (): void => finish();
+  const onBlur = (): void => { fingers.clear(); finish(); };
   window.addEventListener('blur', onBlur);
 
   // Two-finger swipe changes the page, but only once a pen has been seen:
   // touch never draws then, and one finger (or a resting palm) never pages.
+  // Neither while a gesture runs nor right after a pen event: that is a palm
+  // resting while writing.
+  const penNear = (e: Event): boolean => !!active || e.timeStamp - penLast < PEN_GRACE_MS;
   let swipeStart: { mid: { x: number; y: number }; time: number; last?: { x: number; y: number } } | null = null;
   function swipe(e: TouchEvent): void {
     const t = e.touches;
     if (e.type === 'touchstart') {
-      swipeStart = penSeen && t.length === 2 ? { mid: midpoint(t), time: e.timeStamp } : null;
+      swipeStart = penSeen && t.length === 2 && !penNear(e) ? { mid: midpoint(t), time: e.timeStamp } : null;
     } else if (e.type === 'touchmove') {
       if (swipeStart && t.length === 2) swipeStart.last = midpoint(t);
       else if (t.length > 2) swipeStart = null;
     } else if (swipeStart && t.length === 0) {
       const { mid, last, time } = swipeStart;
       swipeStart = null;
-      if (!last || e.type === 'touchcancel') return;
+      if (!last || e.type === 'touchcancel' || penNear(e)) return;
       const dir = swipeDirection(last.x - mid.x, last.y - mid.y, e.timeStamp - time);
       if (dir && app.pages) app.pages.step(dir);
     }
   }
 
+  // Every surface listener is added with this signal, so destroy() removes them all.
+  const listeners = new AbortController();
+  const listenOn = (el: SVGSVGElement): Pick<SVGSVGElement, 'addEventListener'> => ({
+    addEventListener: ((type: string, fn: EventListener) =>
+      el.addEventListener(type, fn, { signal: listeners.signal })) as SVGSVGElement['addEventListener'],
+  });
+
   /** Route events of one surface (PDF page, blank page or slide) to the tools. */
   function attach(slide: Surface): void {
-    const svg = slide.svg;
+    const svg = listenOn(slide.svg);
     svg.addEventListener('pointerdown', e => onDown(slide, e));
     svg.addEventListener('pointermove', e => onMove(slide, e));
     svg.addEventListener('pointerup', e => onUp(e, false));
@@ -233,7 +254,7 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
     svg.addEventListener('lostpointercapture', e => {
       if (active && active.pointerId === e.pointerId) finish();
     });
-    svg.addEventListener('pointerover', e => { if (e.pointerType === 'pen') penSeen = true; });
+    svg.addEventListener('pointerover', e => { if (e.pointerType === 'pen') { penSeen = true; penLast = e.timeStamp; } });
     svg.addEventListener('pointerleave', e => {
       if (app.enabled && !active) call(app.currentTool(), 'leave', slide, null, e);
     });
@@ -253,7 +274,11 @@ export function attachInput(app: InputHost, surfaces: Iterable<Surface> = []): I
     attach,
     cancel: () => finish(),
     discard: () => finish(true),
-    destroy: () => window.removeEventListener('blur', onBlur),
+    destroy: () => {
+      finish(true);
+      listeners.abort();
+      window.removeEventListener('blur', onBlur);
+    },
     get busy() { return !!active; },
     get activePointerType() { return active ? active.pointerType : null; },
     get penSeen() { return penSeen; },

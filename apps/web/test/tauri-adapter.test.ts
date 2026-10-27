@@ -1,60 +1,104 @@
 // @vitest-environment happy-dom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import type { PdfFile } from '@inkslide/annotate';
-import { createTauriAdapter, fileUrl, mobileOs, nameFromPath, notesFile, shareName } from '../src/platform/tauri';
+import { base64, createTauriAdapter, fileArgs, fileUrl, mobileOs, nameFromPath, notesFile, notesKey, shareName } from '../src/platform/tauri';
 
 const SHA = 'a'.repeat(64);
 const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
-/** BaseDirectory values of @tauri-apps/api/path. */
-const DIRS: Record<number, string> = { 12: '/tmp', 14: '/data', 16: '/cache' };
 
 type Reply = unknown | ((args: Record<string, unknown>) => unknown);
 
 /**
- * A fake Tauri backend behind mockIPC: an in-memory file system for the fs
- * plugin, path resolution, and canned dialog / share replies (an Error
- * rejects). invoke's headers (fs writes) reach it, unlike mockIPC's handler.
+ * Names for write_share_file: what shareName makes of each input, and inputs
+ * that write_share_file must refuse as they are. The Rust tests of
+ * apps/mobile/src-tauri/src/lib.rs check the same list.
+ */
+const SHARE_NAMES = JSON.parse(readFileSync(join(__dirname, '../../mobile/test/share-names.json'), 'utf8')) as
+  { input: string; output: string; bad?: boolean }[];
+
+/**
+ * A fake Tauri backend behind mockIPC: the app's commands
+ * (apps/mobile/src-tauri/src/lib.rs, with their checks) on an in-memory file
+ * system, and canned picker / share replies (an Error rejects). The page has
+ * no fs plugin permission, so the fake has no fs plugin. invoke's headers
+ * reach it, unlike mockIPC's handler.
  */
 function fakeBackend() {
   const files = new Map<string, Uint8Array>();
+  /** The share folder of write_share_file: iOS tmp/, Android cache/share/. */
+  const share = { dir: '/tmp' };
+  /** The file save_pdf's own dialog picks; null: cancelled. */
+  const save: { target: string | null } = { target: null };
+  /** What pick_file's picker returns (null: cancelled); picked files are the only ones read_picked reads. */
+  const picker: { next: string | null } = { next: null };
+  const picked = new Set<string>();
+  /** read_picked answers with a number array, as where the IPC has no raw responses. */
+  const numberArrays = { on: false };
+  /** How each file payload came: raw (body and name header) or base64 (Android JSON). */
+  const forms: string[] = [];
   const calls: { cmd: string; args: Record<string, unknown> }[] = [];
   const replies = new Map<string, Reply>();
-  /** Commands that fail (also the fs ones the fake implements), with Tauri's plain message. */
+  /** Commands that fail, with Tauri's plain message. */
   const failing = new Map<string, string>();
-  const resolve = (path: string, options?: { baseDir?: number }): string =>
-    options?.baseDir !== undefined ? `${DIRS[options.baseDir]}/${path}` : path;
-  const bytes = (data: unknown): Uint8Array => (data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer));
+
+  const shareName = (name: string): string => {
+    if (!/^[^./\\: ][^/\\:\0-\x1f\x7f-\x9f]*\.pdf$/.test(name)) throw `invalid file name: ${name}`;
+    return name;
+  };
+  const notesKey = (key: string): string => {
+    if (!/^[A-Za-z0-9_-]{1,200}$/.test(key)) throw `invalid notes key: ${key}`;
+    return key;
+  };
+  /** The file bytes and name of a request, in either form (see payload() in lib.rs). */
+  function payload(args: unknown, headers?: Record<string, string>): { bytes: Uint8Array; name: string } {
+    if (args instanceof Uint8Array) {
+      forms.push('raw');
+      return { bytes: args, name: decodeURIComponent(headers!.name) };
+    }
+    const { name, data } = args as { name: string; data: string };
+    forms.push('base64');
+    return { bytes: Uint8Array.from(atob(data), c => c.charCodeAt(0)), name };
+  }
 
   function handle(cmd: string, args: Record<string, unknown>, headers?: Record<string, string>): unknown {
     calls.push({ cmd, args });
     if (failing.has(cmd)) throw failing.get(cmd);
-    const opts = args?.options as { baseDir?: number } | undefined;
     switch (cmd) {
-      case 'plugin:fs|exists': return files.has(resolve(args.path as string, opts));
-      case 'plugin:fs|read_file':
-      case 'plugin:fs|read_text_file': {
-        const data = files.get(resolve(args.path as string, opts));
-        if (!data) throw `failed to open file at path: ${args.path as string}`;
-        return Array.from(data);
+      case 'pick_file': {
+        if (!['pdf', 'notes'].includes(args.kind as string)) throw `unknown kind of file: ${args.kind as string}`;
+        if (picker.next) picked.add(picker.next);
+        return picker.next;
       }
-      case 'plugin:fs|write_file':
-      case 'plugin:fs|write_text_file': {
-        const options = JSON.parse(headers!.options || '{}') as { baseDir?: number };
-        files.set(resolve(decodeURIComponent(headers!.path), options), bytes(args));
+      case 'read_picked': {
+        const id = args.id as string;
+        if (!picked.has(id)) throw 'not a file picked in this session';
+        const data = files.get(id);
+        if (!data) throw `failed to open file: ${id}`;
+        return numberArrays.on ? Array.from(data) : data.slice().buffer;
+      }
+      case 'read_notes': {
+        const data = files.get(`/data/notes/${notesKey(args.key as string)}.notes.json`);
+        return data ? new TextDecoder().decode(data) : null;
+      }
+      case 'write_notes':
+        files.set(`/data/notes/${notesKey(args.key as string)}.notes.json`, new TextEncoder().encode(args.text as string));
         return null;
+      case 'write_share_file': {
+        const { bytes, name } = payload(args, headers);
+        const path = `${share.dir}/${shareName(name)}`;
+        files.set(path, bytes);
+        return path;
       }
-      case 'plugin:fs|rename': {
-        const o = args.options as { oldPathBaseDir?: number; newPathBaseDir?: number };
-        const from = resolve(args.oldPath as string, { baseDir: o.oldPathBaseDir });
-        files.set(resolve(args.newPath as string, { baseDir: o.newPathBaseDir }), files.get(from)!);
-        files.delete(from);
-        return null;
+      case 'remove_share_file': files.delete(`${share.dir}/${shareName(args.name as string)}`); return null;
+      case 'save_pdf': {
+        const { bytes } = payload(args, headers);
+        if (!save.target) return false;
+        files.set(save.target, bytes);
+        return true;
       }
-      case 'plugin:fs|remove': files.delete(resolve(args.path as string, opts)); return null;
-      case 'plugin:fs|mkdir': return null;
-      case 'plugin:path|resolve_directory': return DIRS[args.directory as number];
-      case 'plugin:path|join': return (args.paths as string[]).join('/');
     }
     if (!replies.has(cmd)) throw new Error(`unexpected command ${cmd}`);
     const reply = replies.get(cmd);
@@ -71,7 +115,9 @@ function fakeBackend() {
     const data = files.get(path);
     return data && new TextDecoder().decode(data);
   };
-  return { files, calls, replies, failing, text, commands: () => calls.map(c => c.cmd) };
+  return {
+    files, calls, replies, failing, share, save, picker, numberArrays, forms, text, commands: () => calls.map(c => c.cmd),
+  };
 }
 
 let backend: ReturnType<typeof fakeBackend>;
@@ -102,6 +148,8 @@ describe('helpers', () => {
     expect(notesFile(pdf, SHA)).toBe(`notes/${SHA}.notes.json`);
     expect(notesFile({ name: '../x.pdf' })).toBe('notes/name-___x_pdf.notes.json');
     expect(notesFile({ name: 'a.pdf' }, '../../etc')).toBe('notes/name-a_pdf.notes.json');
+    // Keys are what write_notes accepts: [A-Za-z0-9_-] only.
+    for (const name of ['../x.pdf', 'a b/c:d.pdf', '講義.pdf', '']) expect(notesKey({ name })).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
   it('names shared files safely, always as a PDF', () => {
@@ -116,6 +164,25 @@ describe('helpers', () => {
     expect(shareName(`${'講'.repeat(100)}.pdf`)).toBe(`${'講'.repeat(66)}.pdf`);
     expect(shareName(`${'x'.repeat(199)}😀.pdf`)).toBe(`${'x'.repeat(199)}.pdf`);
     expect(shareName('a\uD800b.pdf')).toBe('a_b.pdf');
+    // C1 controls too, as Rust's char::is_control (write_share_file).
+    expect(shareName('a\u0085b\u009f.pdf')).toBe('a_b_.pdf');
+  });
+
+  it('makes names write_share_file accepts (the cases its Rust tests check too)', () => {
+    expect(SHARE_NAMES.length).toBeGreaterThan(10);
+    for (const { input, output } of SHARE_NAMES) expect(shareName(input), JSON.stringify(input)).toBe(output);
+  });
+
+  it('sends file bytes raw with the name in a header, on Android as base64 JSON', () => {
+    const bytes = new Uint8Array([0, 37, 255, 128]);
+    expect(fileArgs('ios', bytes, 'Deck #1.pdf')).toEqual([bytes, { headers: { name: 'Deck%20%231.pdf' } }]);
+    expect(fileArgs(null, bytes, 'a.pdf')[0]).toBe(bytes);
+    expect(fileArgs('android', bytes, 'Deck #1.pdf')).toEqual([{ name: 'Deck #1.pdf', data: 'ACX/gA==' }, undefined]);
+    // Large files in chunks (String.fromCharCode has an argument limit).
+    const big = Uint8Array.from({ length: 200_000 }, (_, i) => i % 256);
+    // Compared as Buffers: a deep toEqual over 200 000 elements takes seconds.
+    expect(Buffer.from(atob(base64(big)), 'latin1').equals(Buffer.from(big))).toBe(true);
+    expect(base64(new Uint8Array())).toBe('');
   });
 
   it('percent-encodes file URLs per segment', () => {
@@ -134,26 +201,28 @@ describe('notes', () => {
     expect(await a.readNotes(pdf, SHA)).toBe('{"v":2}');
   });
 
-  it('writes through a temp file and creates the directory once', async () => {
+  it('writes through the write_notes command with a key, never a path, and no fs plugin write', async () => {
     const a = createTauriAdapter(null);
     await a.writeNotes(pdf, 'x', SHA);
-    await a.writeNotes(pdf, 'y', SHA);
-    expect(backend.commands().filter(c => c.startsWith('plugin:fs|'))).toEqual([
-      'plugin:fs|mkdir', 'plugin:fs|write_text_file', 'plugin:fs|rename', 'plugin:fs|write_text_file', 'plugin:fs|rename',
+    await a.writeNotes({ ...pdf, name: '../../x.pdf' }, 'y');
+    expect(backend.calls.filter(c => c.cmd === 'write_notes').map(c => c.args)).toEqual([
+      { key: SHA, text: 'x' }, { key: 'name-______x_pdf', text: 'y' },
     ]);
-    const renames = backend.calls.filter(c => c.cmd === 'plugin:fs|rename').map(c => c.args);
-    expect(renames[0]).toMatchObject({ newPath: `notes/${SHA}.notes.json` });
-    expect(renames[0]!.oldPath).toMatch(new RegExp(`^notes/${SHA}\\.notes\\.json\\.[a-z0-9]+\\.tmp$`));
-    expect(renames[1]!.oldPath).not.toBe(renames[0]!.oldPath); // overlapping writes do not share a temp file
+    expect(backend.commands().filter(c => c.startsWith('plugin:fs|'))).toEqual([]);
   });
 
-  it('removes the temp file when the rename fails', async () => {
+  it('passes a failed write on', async () => {
     const a = createTauriAdapter(null);
     await a.writeNotes(pdf, 'old', SHA);
-    backend.failing.set('plugin:fs|rename', 'Permission denied');
+    backend.failing.set('write_notes', 'Permission denied');
     await expect(a.writeNotes(pdf, 'new', SHA)).rejects.toBe('Permission denied');
-    expect([...backend.files.keys()]).toEqual([`/data/notes/${SHA}.notes.json`]);
     expect(backend.text(`/data/notes/${SHA}.notes.json`)).toBe('old');
+  });
+
+  it('reads through read_notes with a key, never a path', async () => {
+    backend.files.set(`/data/notes/${SHA}.notes.json`, new TextEncoder().encode('{"v":1}'));
+    expect(await createTauriAdapter(null).readNotes(pdf, SHA)).toBe('{"v":1}');
+    expect(backend.calls).toEqual([{ cmd: 'read_notes', args: { key: SHA } }]);
   });
 
   it('counts an empty notes file as none', async () => {
@@ -163,31 +232,43 @@ describe('notes', () => {
 });
 
 describe('files', () => {
-  it('opens the picked PDF', async () => {
+  it('opens the PDF picked with pick_file through read_picked', async () => {
     backend.files.set('file:///private/var/Inbox/Deck%201.pdf', new Uint8Array([37, 80]));
-    backend.replies.set('plugin:dialog|open', 'file:///private/var/Inbox/Deck%201.pdf');
+    backend.picker.next = 'file:///private/var/Inbox/Deck%201.pdf';
     const file = await createTauriAdapter('ios').openPdf();
     expect(file).toEqual({ path: null, name: 'Deck 1.pdf', bytes: new Uint8Array([37, 80]) });
-    expect(backend.calls[0]!.args).toMatchObject({ options: { filters: [{ extensions: ['pdf'] }], multiple: false } });
+    expect(backend.calls).toEqual([
+      { cmd: 'pick_file', args: { kind: 'pdf' } },
+      { cmd: 'read_picked', args: { id: 'file:///private/var/Inbox/Deck%201.pdf' } },
+    ]);
   });
 
-  it('returns null when the picker is cancelled (iOS: null, Android: a rejection)', async () => {
-    backend.replies.set('plugin:dialog|open', null);
+  it('reads a number array too (where the IPC has no raw responses)', async () => {
+    backend.numberArrays.on = true;
+    backend.files.set('content://x/document/7', new Uint8Array([1, 2, 255]));
+    backend.picker.next = 'content://x/document/7';
+    expect((await createTauriAdapter('android').openPdf())!.bytes).toEqual(new Uint8Array([1, 2, 255]));
+  });
+
+  it('can not read a file that was not picked in this session', async () => {
+    backend.files.set('/home/me/secret.pdf', new Uint8Array([1]));
+    await expect(createTauriAdapter('android').openPdf('/home/me/secret.pdf')).rejects.toBe('not a file picked in this session');
+  });
+
+  it('returns null when the picker is cancelled; other errors are passed on', async () => {
     expect(await createTauriAdapter('ios').openPdf()).toBeNull();
-    backend.replies.set('plugin:dialog|open', new Error('File picker cancelled'));
-    expect(await createTauriAdapter('android').openPdf()).toBeNull();
     expect(await createTauriAdapter('android').importNotes!()).toBeNull();
-  });
-
-  it('passes other picker errors on', async () => {
-    backend.replies.set('plugin:dialog|open', new Error('no activity'));
+    backend.failing.set('pick_file', 'File picker cancelled');
+    expect(await createTauriAdapter('android').openPdf()).toBeNull();
+    backend.failing.set('pick_file', 'no activity');
     await expect(createTauriAdapter('android').openPdf()).rejects.toBe('no activity');
   });
 
   it('imports a picked notes file', async () => {
     backend.files.set('content://x/document/primary%3Anotes.json', new TextEncoder().encode('{"format":"marp-notes"}'));
-    backend.replies.set('plugin:dialog|open', 'content://x/document/primary%3Anotes.json');
+    backend.picker.next = 'content://x/document/primary%3Anotes.json';
     expect(await createTauriAdapter('android').importNotes!()).toEqual({ name: 'notes.json', text: '{"format":"marp-notes"}' });
+    expect(backend.calls[0]).toEqual({ cmd: 'pick_file', args: { kind: 'notes' } });
   });
 
   it('asks through the native dialog', async () => {
@@ -201,19 +282,30 @@ describe('files', () => {
 describe('export and print', () => {
   const pdfBytes = new Uint8Array([1, 2, 3]);
 
-  it('Android: saves through the save dialog', async () => {
-    backend.replies.set('plugin:dialog|save', 'content://downloads/document/42');
+  it('Android: saves through save_pdf, which opens the save dialog itself', async () => {
+    backend.save.target = 'content://downloads/document/42';
     const a = createTauriAdapter('android');
-    expect(await a.exportPdf(pdfBytes, 'deck-notes.pdf')).toBe(true);
+    expect(await a.exportPdf(pdfBytes, 'Lecture 3: Graphs-notes.pdf')).toBe(true);
     expect(backend.files.get('content://downloads/document/42')).toEqual(pdfBytes);
-    expect(backend.calls.find(c => c.cmd === 'plugin:dialog|save')!.args).toMatchObject({ options: { defaultPath: 'deck-notes.pdf' } });
+    expect(backend.commands()).toEqual(['save_pdf']); // no dialog or fs plugin call from the page
+    // Android's IPC has no raw bodies: the bytes go as base64 JSON.
+    expect(backend.forms).toEqual(['base64']);
+    expect(backend.calls[0]!.args).toEqual({ name: 'Lecture 3: Graphs-notes.pdf', data: 'AQID' });
   });
 
-  it('Android: a cancelled save dialog is no export', async () => {
-    backend.replies.set('plugin:dialog|save', new Error('File picker cancelled'));
+  it('desktop: saves through save_pdf with a raw body', async () => {
+    backend.save.target = '/home/me/a.pdf';
+    expect(await createTauriAdapter(null).exportPdf(pdfBytes, 'a.pdf')).toBe(true);
+    expect(backend.forms).toEqual(['raw']);
+    expect(backend.files.get('/home/me/a.pdf')).toEqual(pdfBytes);
+  });
+
+  it('Android: a cancelled save dialog is no export; other errors are passed on', async () => {
     expect(await createTauriAdapter('android').exportPdf(pdfBytes, 'a.pdf')).toBe(false);
-    backend.replies.set('plugin:dialog|save', null);
+    backend.failing.set('save_pdf', 'File picker cancelled');
     expect(await createTauriAdapter(null).exportPdf(pdfBytes, 'a.pdf')).toBe(false);
+    backend.failing.set('save_pdf', 'No space left on device');
+    await expect(createTauriAdapter(null).exportPdf(pdfBytes, 'a.pdf')).rejects.toBe('No space left on device');
   });
 
   it('iOS: shares tmp/<name>, the file the share plugin would copy it to', async () => {
@@ -227,9 +319,11 @@ describe('export and print', () => {
       url: 'file:///tmp/My%20deck-notes.pdf', mimeType: 'application/pdf', title: 'My deck-notes.pdf',
     });
     expect([...backend.files.keys()]).toEqual(['/tmp/My deck-notes.pdf']); // kept until the next share
+    expect(backend.commands()).toEqual(['write_share_file', 'plugin:sharekit|share_file']);
   });
 
   it('Android: prints through the share sheet from a cache subdirectory', async () => {
+    backend.share.dir = '/cache/share';
     backend.replies.set('plugin:sharekit|share_file', null);
     const a = createTauriAdapter('android');
     let shared: Uint8Array | undefined;
@@ -238,6 +332,8 @@ describe('export and print', () => {
     expect(shared).toEqual(pdfBytes);
     expect(backend.files.size).toBe(0);
     expect(backend.calls.find(c => c.cmd === 'plugin:sharekit|share_file')!.args).toMatchObject({ url: 'file:///cache/share/a_b_c.pdf' });
+    expect(backend.calls.find(c => c.cmd === 'remove_share_file')!.args).toEqual({ name: 'a_b_c.pdf' });
+    expect(backend.forms).toEqual(['base64']);
   });
 
   it('a dismissed share sheet is no export; other share errors are passed on', async () => {
@@ -258,12 +354,14 @@ describe('export and print', () => {
     expect([...backend.files.keys()]).toEqual(['/tmp/two.pdf']);
   });
 
-  it('Android: creates the share folder for every share (the cache may have been cleared)', async () => {
+  it('sends the shared file name percent-encoded in a header, with the bytes as the body', async () => {
     backend.replies.set('plugin:sharekit|share_file', null);
-    const a = createTauriAdapter('android');
-    await a.print!(pdfBytes, 'a.pdf');
-    await a.print!(pdfBytes, 'a.pdf');
-    expect(backend.calls.filter(c => c.cmd === 'plugin:fs|mkdir')).toHaveLength(2);
+    await createTauriAdapter('ios').exportPdf(pdfBytes, '講義 #1.pdf');
+    expect(backend.files.get('/tmp/講義 #1.pdf')).toEqual(pdfBytes);
+    expect(backend.forms).toEqual(['raw']);
+    expect(backend.calls.find(c => c.cmd === 'plugin:sharekit|share_file')!.args).toMatchObject({
+      url: `file:///tmp/${encodeURIComponent('講義 #1.pdf')}`,
+    });
   });
 
   it('leaves printing to the front end on the desktop', () => {

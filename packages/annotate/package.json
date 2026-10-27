@@ -29,7 +29,9 @@
     "./pages": "./src/pages.ts",
     "./app": "./src/app.ts",
     "./io": "./src/io.ts",
+    "./clipboard": "./src/clipboard.ts",
     "./autosave": "./src/autosave.ts",
+    "./presenter": "./src/presenter.ts",
     "./toolbar.css": "./src/toolbar.css"
   },
   "scripts": {

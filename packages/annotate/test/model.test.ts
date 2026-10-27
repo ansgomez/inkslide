@@ -15,7 +15,7 @@ const ids = (doc: NotesDoc, page: string) => doc.strokes(page).map(s => s.id);
 
 describe('createStroke', () => {
   it('validates and normalises', () => {
-    const s = createStroke({ tool: 'highlighter', color: 5, size: '3', points: [[1, 2], [3, 4, 0.9]] });
+    const s = createStroke({ tool: 'highlighter', color: 5, size: 3, points: [[1, 2], [3, 4, 0.9]] });
     expect(s.id).toMatch(/-/);
     expect(s.color).toBe('5');
     expect(s.size).toBe(3);
@@ -32,6 +32,13 @@ describe('createStroke', () => {
 
   it('mints unique ids', () => {
     expect(stroke('').id).not.toBe(stroke('').id);
+  });
+
+  it('rejects a size that is not a number and replaces an id that is not a string', () => {
+    expect(() => createStroke({ tool: 'pen', color: '', size: '4', points: pts })).toThrow(/positive number/);
+    const s = createStroke({ id: 7 as unknown as string, tool: 'pen', color: '', size: 4, points: pts });
+    expect(typeof s.id).toBe('string');
+    expect(s.id).not.toBe('7');
   });
 });
 
@@ -74,6 +81,24 @@ describe('History', () => {
     expect(h.canRedo()).toBe(false);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('onChange returns a function that removes the listener, also during an emit', () => {
+    const h = new History();
+    const fn = vi.fn(), other = vi.fn();
+    const off = h.onChange(() => { fn(); off(); });
+    h.onChange(other);
+    h.execute(counter().cmd());
+    h.undo();
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(other).toHaveBeenCalledTimes(2);
+    const doc = marpDoc();
+    const seen = vi.fn();
+    const stop = doc.onChange(seen);
+    doc.addStroke('s1', stroke('a'));
+    stop();
+    doc.addStroke('s1', stroke('b'));
+    expect(seen).toHaveBeenCalledTimes(1);
   });
 
   it('notifies listeners', () => {
@@ -398,6 +423,37 @@ describe('serialization', () => {
     expect(() => checkFormat({ format: 'marp-notes', version: '2' })).toThrow(/Unsupported notes version/);
     expect(() => checkFormat({ format: 'marp-notes' })).toThrow(/Unsupported notes version/);
     expect(() => checkFormat({ format: 'marp-notes', version: 2 })).not.toThrow();
+    expect(() => checkFormat({ format: 'marp-notes', version: 1 })).not.toThrow();
+    for (const version of [0, -3, 1.5, NaN]) {
+      expect(() => checkFormat({ format: 'marp-notes', version })).toThrow(/Unsupported notes version/);
+    }
+  });
+
+  it('load skips pages and strokes that are not arrays, and loads the rest', () => {
+    const base = { format: 'marp-notes', version: 1, deck: { title: 'Deck', slides: 3, size: [1280, 720] } };
+    for (const pages of ['s1', { s1: {} }, 5]) {
+      const doc = marpDoc();
+      expect(doc.load({ ...base, pages }).warnings).toEqual(['Skipped the pages: not a list']);
+      expect(doc.hasNotes()).toBe(false);
+    }
+    const doc = marpDoc();
+    const { warnings } = doc.load({ ...base, pages: [
+      { id: 's1', kind: 'slide', slide: 1, strokes: 'abc' },
+      { id: 's2', kind: 'slide', slide: 2, strokes: { 0: {} } },
+      { id: 's3', kind: 'slide', slide: 3, strokes: [{ id: 'ok', tool: 'pen', color: '#000', size: 4, points: pts }] },
+    ] });
+    expect(warnings).toEqual(['Skipped the strokes of page s1: not a list', 'Skipped the strokes of page s2: not a list']);
+    expect(ids(doc, 's3')).toEqual(['ok']);
+  });
+
+  it('deckWarnings survives a size or pageSizes that is not an array', () => {
+    const deck = pdfDoc().deck;
+    const file = { source: 'pdf' as const, title: 'a.pdf', slides: 3, sha256: 'abc' };
+    expect(deckWarnings({ ...file, size: 'big' as unknown as [number, number], pageSizes: deck.pageSizes }, deck))
+      .toEqual(['Page size differs ( vs 960x540)']);
+    expect(deckWarnings({ ...file, size: [960, 540], pageSizes: 'x' as unknown as [number, number][] }, deck)).toEqual([]);
+    expect(deckWarnings({ ...file, size: [960, 540], pageSizes: [[960, 540], 'x', null] as unknown as [number, number][] }, deck))
+      .toEqual(['2 more page sizes differ']);
   });
 
   it('deckWarnings for PDFs: checksum wins over the title', () => {
@@ -424,5 +480,27 @@ describe('serialization', () => {
     expect(doc.sequence()).toContain(b);
     expect(doc.history.canUndo()).toBe(false);
     expect(doc.isDirty()).toBe(true);
+  });
+});
+
+describe('applyRemoteStrokes keeps the strokes it has', () => {
+  it('reuses a stroke given again as the same object or with the same id and content', () => {
+    const doc = pdfDoc();
+    doc.applyRemoteStrokes('p1', [stroke('a'), stroke('b', { color: '#f00' })]);
+    const [a1, b1] = doc.strokes('p1');
+    // The same object, and the same content from a message (no pressure: 0.5).
+    doc.applyRemoteStrokes('p1', [a1, { id: 'b', tool: 'pen', color: '#f00', size: 4, points: [[0, 0], [10, 10]] }, stroke('c')]);
+    const [a2, b2, c2] = doc.strokes('p1');
+    expect(a2).toBe(a1);
+    expect(b2).toBe(b1);
+    expect(c2.id).toBe('c');
+    // Changed content under the same id: a new stroke.
+    doc.applyRemoteStrokes('p1', [{ ...a1, color: '#00f' }]);
+    expect(doc.strokes('p1')[0]).not.toBe(a1);
+    expect(doc.strokes('p1')[0].color).toBe('#00f');
+  });
+  it('still checks new strokes', () => {
+    const doc = pdfDoc();
+    expect(() => doc.applyRemoteStrokes('p1', [{ id: 'x', tool: 'pen', color: '', size: 1, points: [[NaN, 0]] }])).toThrow(/finite/);
   });
 });

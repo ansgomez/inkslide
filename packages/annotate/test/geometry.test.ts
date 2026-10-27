@@ -219,6 +219,30 @@ describe('splitByEraser', () => {
   it('returns [] when the whole stroke is erased', () => {
     expect(g.splitByEraser(pen(line(0, 10), 2), [5, 0], [5, 0], 50)).toEqual([]);
   });
+
+  it('samples only near the eraser: a huge segment is cut fast and precisely', () => {
+    const huge = pen([[-1e6, 0, 0.5], [1e6, 0, 0.5]], 2);
+    const t = performance.now();
+    let pieces: Point[][] | null = null;
+    for (let i = 0; i < 20; i++) pieces = g.splitByEraser(huge, [i, -1], [i + 1, 1], 5);
+    expect(performance.now() - t).toBeLessThan(200);
+    expect(pieces).toHaveLength(2);
+    const [left, right] = pieces!;
+    expect(left[0]).toEqual([-1e6, 0, 0.5]);
+    expect(right[right.length - 1]).toEqual([1e6, 0, 0.5]);
+    expect(left[left.length - 1][0]).toBeGreaterThan(19 - 5 - 1 - 2);
+    expect(right[0][0]).toBeLessThan(20 + 5 + 1 + 2);
+  });
+
+  it('a long eraser move along a huge segment stays bounded', () => {
+    const huge = pen([[-1e6, 0, 0.5], [1e6, 0, 0.5]], 2);
+    const t = performance.now();
+    const pieces = g.splitByEraser(huge, [-5e5, 0], [5e5, 0], 5)!;
+    expect(performance.now() - t).toBeLessThan(200);
+    expect(pieces).toHaveLength(2);
+    expect(pieces[0][pieces[0].length - 1][0]).toBeLessThan(-5e5);
+    expect(pieces[1][0][0]).toBeGreaterThan(5e5);
+  });
 });
 
 describe('selection', () => {

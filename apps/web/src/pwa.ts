@@ -11,7 +11,7 @@
  */
 import { banner } from './banner';
 import type { WebAdapter } from './platform/web';
-import { mountRecentList } from './recent-list';
+import { mountRecentList, webRecentSource } from './recent-list';
 import type { Viewer } from './viewer';
 
 /** Look for a new version when the app comes back to the front, at most this often. */
@@ -129,7 +129,7 @@ export function setupPwa(viewer: Viewer, adapter: WebAdapter, empty: HTMLElement
     });
   }
 
-  void mountRecentList(empty, { adapter, open: file => viewer.open(file) });
+  void mountRecentList(empty, { source: webRecentSource(adapter), open: file => viewer.open(file) });
 
   // iPad Safari: pinching the toolbar or the start screen would zoom the whole app.
   document.addEventListener('gesturestart', e => e.preventDefault());
