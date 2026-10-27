@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -151,8 +152,9 @@ describe('electron version', () => {
   // pointer focus (ui::WaylandEventSource::OnHoldEvent, native Wayland): the
   // app crashes with SIGSEGV. Chromium 148 (Electron 42) checks for it.
   it('is at least 42 (Wayland hold-gesture crash fixed)', () => {
-    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { devDependencies: Record<string, string> };
-    const major = Number(/^\D*(\d+)\./.exec(pkg.devDependencies.electron)?.[1]);
-    expect(major).toBeGreaterThanOrEqual(42);
+    // The installed package, not the spec in package.json (package.json only, so
+    // this does not download the Electron binary).
+    const { version } = createRequire(import.meta.url)('electron/package.json') as { version: string };
+    expect(Number(version.split('.')[0])).toBeGreaterThanOrEqual(42);
   });
 });

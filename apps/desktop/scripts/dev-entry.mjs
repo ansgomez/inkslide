@@ -7,14 +7,23 @@
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataHome, DEV_ICON_NAMES, devDesktopEntry, devEntryPaths } from './desktop-entry.mjs';
 
 const appDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 const buildDir = join(appDir, 'build');
-// node_modules/electron is a stable link; the binary inside stays put across reinstalls.
-const electron = join(appDir, 'node_modules', 'electron', 'dist', 'electron');
+/**
+ * The Electron binary the entry runs. Since Electron 42 the package downloads it
+ * on the first require, not at install, so require it once. The entry uses the
+ * path through node_modules/electron, a stable link, not the store path that
+ * require returns: that changes with every Electron update.
+ */
+function electronBinary() {
+  const real = createRequire(import.meta.url)('electron');
+  return join(appDir, 'node_modules', 'electron', 'dist', basename(real));
+}
 
 const cmd = process.argv[2];
 if (cmd !== 'install' && cmd !== 'uninstall') {
@@ -39,10 +48,17 @@ function refreshCaches() {
 }
 
 if (cmd === 'install') {
+  let electron;
+  try {
+    electron = electronBinary();
+  } catch (err) {
+    console.error(`${err.message}\n  run: pnpm --filter @inkslide/desktop exec install-electron`);
+    process.exit(1);
+  }
   const missing = [
     [join(appDir, 'out', 'main.js'), 'pnpm --filter @inkslide/desktop build'],
     [join(appDir, '..', 'web', 'dist', 'index.html'), 'pnpm --filter @inkslide/web build'],
-    [electron, 'pnpm install'],
+    [electron, 'pnpm --filter @inkslide/desktop exec install-electron'],
   ].filter(([p]) => !existsSync(p));
   for (const [p, fix] of missing) console.error(`missing ${p}\n  run: ${fix}`);
   if (missing.length) process.exit(1);
