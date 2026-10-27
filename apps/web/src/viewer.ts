@@ -18,7 +18,7 @@
  * One document session per opened PDF: a NotesDoc (deckFromPdf), an
  * Annotator (tools, input, toolbar, keys), surfaces created on demand per
  * page and kept, the overview, and the save target. Rendered pages are kept
- * as ImageBitmaps (LRU, at most 6): the page shown plus the pages before and
+ * as ImageBitmaps (LRU, at most 6 and 160 MB): the page shown plus the pages before and
  * after it, pre-rendered at their fit size, so a page turn only draws a
  * bitmap.
  */
@@ -41,7 +41,7 @@ import { attachGestures } from './gestures';
 import { createLiveInk } from './live-ink';
 import { createOverview, type Overview } from './overview';
 import { bitmapKey, createPageBitmaps } from './page-bitmaps';
-import { openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
+import { isCancelled, openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
 import { flushSave, pageTurned, saveState, scheduleSave, setSaveTarget } from './persist';
 import type { AppAdapter } from './platform';
 import type { ViewerMirror } from './presenter';
@@ -50,6 +50,8 @@ import { printPageImages } from './print';
 /** Gap around the fitted page, CSS px. */
 const PAGE_MARGIN = 6;
 const CACHE_LIMIT = 6;
+/** Bytes of rendered pages kept (a page at the render cap is 64 MB). */
+const CACHE_BYTES = 160 * 2 ** 20;
 const FIT_KEY = 'inkslide-fit-mode';
 /** Paper for new blank pages (the paper button), remembered like the fit mode. */
 const PAPER_KEY = 'inkslide-blank-paper';
@@ -152,7 +154,7 @@ export interface Viewer {
 export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: ViewerMirror | null = null): Viewer {
   const { stage, page: pageEl, pdfCanvas, liveCanvas } = els;
   const pdfCtx = pdfCanvas.getContext('2d', { alpha: false })!;
-  const bitmaps = createPageBitmaps(CACHE_LIMIT);
+  const bitmaps = createPageBitmaps(CACHE_LIMIT, CACHE_BYTES);
   const liveInk = createLiveInk(liveCanvas, pageEl);
   let s: Session | null = null;
   let fit: FitRect | null = null;
@@ -303,7 +305,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     const id = s.current;
     bitmaps.get(n, scale, PRIORITY.current).then(bmp => {
       if (s && s.current === id && bitmaps.cached(n, scale) === bmp) drawBitmap(bmp, key);
-    }, e => console.error(`Rendering page ${n} failed`, e));
+    }, e => { if (!isCancelled(e)) console.error(`Rendering page ${n} failed`, e); });
   }
 
   /** Pre-render the PDF pages before and after the shown one at their fit size. */
@@ -311,12 +313,14 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     if (!s) return;
     const own = s.doc.ownerSlide(s.current);
     if (own == null) return;
+    const pages: [number, number][] = [];
     for (const n of [own + 1, own - 1]) {
       if (n < 1 || n > s.doc.deck.slides) continue;
       const id = `p${n}`;
       const f = fitFor(id);
-      bitmaps.get(n, renderScale(sizeOf(id), f.scale, dpr()), PRIORITY.neighbor).catch(() => { /* closed */ });
+      pages.push([n, renderScale(sizeOf(id), f.scale, dpr())]);
     }
+    bitmaps.prefetch(pages);
   }
 
   // ── Layout and zoom ──────────────────────────────────────────
@@ -690,12 +694,22 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         }
       }
       if (queued) return; // a newer request replaces this one
-      // Strokes made on the open PDF while this one loaded.
-      if (!(await saveOpen())) return;
       const kept = saved.problem ? await keepUnreadable(file, sha256) : '';
       if (kept === null || queued) return;
       const keptMsg = kept ? `The notes file that could not be read was kept as ${kept}.` : '';
+      // The open PDF again: its notes written below (or by autosave meanwhile) came after the read.
+      const reread = !!s && s.sha256 === sha256 && s.file.path === file.path && !saved.problem;
+      // Strokes made on the open PDF while this one loaded, or during a write:
+      // write until nothing is unsaved, then close with no await in between.
+      do {
+        if (!(await saveOpen())) return;
+      } while (!loseUnsaved && saveState() !== 'saved');
+      if (queued) return; // a newer request replaces this one
       closeSession();
+      if (reread) {
+        const again = await loadSaved(file, sha256, newDoc);
+        if (!again.problem) doc = again.doc; // else the notes read before, the most there is
+      }
       startSession(file, sha256, pdf, doc);
       if (fromBackup) banner([`Opened the backup from ${fromBackup.when}.`, keptMsg, ...fromBackup.warnings].filter(Boolean).join('\n'), 'warn');
       else if (kept) banner(keptMsg, 'warn');
@@ -837,10 +851,18 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     },
 
     async openFile(file) {
-      const path = adapter.pathForFile ? adapter.pathForFile(file) : '';
-      if (path) return viewer.openFrom(path);
-      await open(adapter.fromFile ? await adapter.fromFile(file)
-        : { path: null, name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+      let pdf: PdfFile;
+      try {
+        const path = adapter.pathForFile ? adapter.pathForFile(file) : '';
+        if (path) return await viewer.openFrom(path);
+        // Reading can fail (the file was moved or changed since it was picked or dropped).
+        pdf = adapter.fromFile ? await adapter.fromFile(file)
+          : { path: null, name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+      } catch (e) {
+        banner(`Could not open ${file.name}: ${(e as Error).message || e}`, 'error');
+        return;
+      }
+      await open(pdf);
     },
 
     show,

@@ -39,6 +39,8 @@ function fakeOpfs() {
   const textReads = new Map<string, number>();
   const state = {
     failWrites: false, failNames: null as RegExp | null, failReads: null as RegExp | null,
+    /** Opening the notes directory fails with this. */
+    dirError: null as DOMException | null,
     failWrite: null as ((name: string) => boolean) | null,
     afterList: null as (() => void) | null,
   };
@@ -82,7 +84,12 @@ function fakeOpfs() {
       state.afterList?.();
     },
   };
-  const root = { getDirectoryHandle: async () => dir };
+  const root = {
+    getDirectoryHandle: async () => {
+      if (state.dirError) throw state.dirError;
+      return dir;
+    },
+  };
   // The page can write OPFS (createWritable: Chromium, Firefox, Safari 26+).
   vi.stubGlobal('FileSystemFileHandle', class { createWritable() {} });
   return { files, times, writes, textReads, state, storage: { getDirectory: async () => root } };
@@ -155,6 +162,24 @@ describe('web adapter notes storage', () => {
     localStorage.setItem(notesKey(pdf, 'abc'), 'kept');
     opfs.files.set(notesKey(pdf, 'abc').replace(/[^A-Za-z0-9_-]/g, '_') + '.json', '');
     expect(await createWebAdapter().readNotes(pdf, 'abc')).toBe('kept');
+  });
+
+  it('a notes directory that can not be opened is an error, not "no notes" (unless there is no OPFS here)', async () => {
+    const opfs = fakeOpfs();
+    vi.stubGlobal('navigator', { storage: opfs.storage });
+    vi.stubGlobal('localStorage', fakeLocalStorage());
+    const a = createWebAdapter();
+    await a.writeNotes(pdf, 'mine', 'abc');
+    opfs.state.dirError = new DOMException('broken', 'UnknownError');
+    await expect(a.readNotes(pdf, 'abc')).rejects.toThrow('broken');
+    await expect(a.readBackup!(pdf, 'abc')).rejects.toThrow('broken'); // the same for the backup
+    // No notes file, or no OPFS here (private browsing): no notes, or those in localStorage.
+    opfs.state.dirError = null;
+    expect(await a.readNotes(pdf, 'other')).toBeNull();
+    opfs.state.dirError = new DOMException('denied', 'SecurityError');
+    expect(await a.readBackup!(pdf, 'abc')).toBeNull();
+    localStorage.setItem(notesKey(pdf, 'abc'), 'kept');
+    expect(await a.readNotes(pdf, 'abc')).toBe('kept');
   });
 });
 
@@ -443,6 +468,40 @@ describe('web adapter export', () => {
       createObjectURL.mockRestore();
       document.body.replaceChildren();
     }
+  });
+});
+
+describe('web adapter export with the save dialog', () => {
+  it('downloads the PDF when the save dialog is blocked (no recent tap)', async () => {
+    vi.stubGlobal('showSaveFilePicker', vi.fn(async () => { throw new DOMException('must be handling a user gesture', 'SecurityError'); }));
+    vi.stubGlobal('navigator', { maxTouchPoints: 0 });
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:x');
+    try {
+      expect(await createWebAdapter().exportPdf(new Uint8Array([1, 2]), 'a-notes.pdf')).toBe(true);
+      expect(createObjectURL).toHaveBeenCalledTimes(1);
+    } finally {
+      createObjectURL.mockRestore();
+    }
+  });
+
+  it('a cancelled dialog exports nothing; other dialog errors reject', async () => {
+    const picker = vi.fn(async () => { throw new DOMException('cancelled', 'AbortError'); });
+    vi.stubGlobal('showSaveFilePicker', picker);
+    expect(await createWebAdapter().exportPdf(new Uint8Array([1]), 'a.pdf')).toBe(false);
+    picker.mockImplementation(async () => { throw new TypeError('bad options'); });
+    await expect(createWebAdapter().exportPdf(new Uint8Array([1]), 'a.pdf')).rejects.toThrow('bad options');
+  });
+
+  it('a failed write aborts the writable', async () => {
+    const w = {
+      write: vi.fn(async () => { throw new DOMException('disk full', 'QuotaExceededError'); }),
+      close: vi.fn(async () => {}),
+      abort: vi.fn(async () => {}),
+    };
+    vi.stubGlobal('showSaveFilePicker', vi.fn(async () => ({ createWritable: async () => w })));
+    await expect(createWebAdapter().exportPdf(new Uint8Array([1]), 'a.pdf')).rejects.toThrow('disk full');
+    expect(w.abort).toHaveBeenCalledTimes(1);
+    expect(w.close).not.toHaveBeenCalled();
   });
 });
 

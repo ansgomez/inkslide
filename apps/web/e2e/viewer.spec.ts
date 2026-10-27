@@ -236,6 +236,24 @@ test('a file that is not a PDF shows an error; no PDF.js worker stays behind', a
   await expect.poll(() => page.workers().length).toBe(1);
 });
 
+test('a dropped file that can not be read shows an error (no unhandled rejection)', async ({ page }) => {
+  await page.evaluate(() => {
+    const w = window as unknown as { unhandled: string[] };
+    w.unhandled = [];
+    window.addEventListener('unhandledrejection', e => w.unhandled.push(String(e.reason)));
+    // A dropped file moved or changed since: reading it fails.
+    const file = new File([], 'gone.pdf', { type: 'application/pdf' });
+    file.arrayBuffer = () => Promise.reject(new DOMException('the file was changed', 'NotReadableError'));
+    const e = new DragEvent('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'dataTransfer', { value: { types: ['Files'], files: [file] } });
+    window.dispatchEvent(e);
+  });
+  await expect(page.locator('.ann-banner-error')).toContainText('Could not open gone.pdf: the file was changed');
+  // unhandledrejection is dispatched in a task after the microtasks that settled the promise:
+  // read the list one task after the banner.
+  expect(await page.evaluate(() => new Promise(r => setTimeout(() => r((window as unknown as { unhandled: string[] }).unhandled))))).toEqual([]);
+});
+
 test('a PDF asked for while another opens is opened next', async ({ page }) => {
   const two = await PDFDocument.create();
   two.addPage([400, 300]);
@@ -352,8 +370,10 @@ test('overview grid and G + number jump', async ({ page }) => {
   await expect(page.locator('#ann-ov')).toBeVisible();
   await expect(page.locator('#ann-ov .ann-ov-item')).toHaveCount(3);
   await expect(page.locator('#ann-ov .ann-ov-item.is-current')).toHaveAttribute('data-n', '3');
-  // Thumbnails are PDF.js renders.
-  await expect.poll(() => page.locator('#ann-ov .ann-ov-item[data-n="1"] canvas').evaluate(c => (c as HTMLCanvasElement).width)).toBeGreaterThan(100);
+  // Thumbnails are PDF.js renders, kept as images (the render canvas is freed).
+  const thumb = page.locator('#ann-ov .ann-ov-item[data-n="1"] img.ink-ov-pdf');
+  await expect.poll(() => thumb.evaluate(i => (i as HTMLImageElement).naturalWidth)).toBeGreaterThan(100);
+  await expect(page.locator('#ann-ov .ann-ov-item[data-n="1"] canvas')).toHaveCount(0);
   await page.locator('#ann-ov .ann-ov-item[data-n="2"]').click();
   await expect(page.locator('#ann-ov')).toBeHidden();
   await expectCounter(page, '2 / 3');

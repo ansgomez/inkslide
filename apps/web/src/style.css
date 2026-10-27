@@ -321,6 +321,7 @@ body.ann-on[data-ann-dock="right"] .ann-group-pages .ann-label { order: -1; }
 /* Thumbnail: the PDF render with the notes SVG on top. */
 .ann-ov-tile { position: relative; background: #fff; }
 .ann-ov-tile > canvas,
+.ann-ov-tile > img,
 .ann-ov-tile > svg {
   position: absolute;
   inset: 0;

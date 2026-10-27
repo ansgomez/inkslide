@@ -30,7 +30,7 @@ import {
 import { banner } from '../banner';
 import { storedItem, storeItem } from '../dom';
 import { createRecentFiles, type RecentFiles } from '../recent';
-import { canWriteOpfs, opfsDir, safeFileName, writeOpfsFile } from './opfs';
+import { canWriteOpfs, isNotFound, opfsDir, readOpfsFile, safeFileName, writeOpfsFile } from './opfs';
 import { createRecentStorage } from './recent-storage';
 
 /** localStorage key prefix of notes. */
@@ -58,23 +58,14 @@ export const notesKey = (pdf: Pick<PdfFile, 'name'>, sha256?: string): string =>
 
 const fileName = (key: string): string => safeFileName(key, '.json');
 
-/** A file or directory that is not there (any other error is a real failure). */
-const isNotFound = (e: unknown): boolean => (e as Error | null)?.name === 'NotFoundError';
-
 /**
  * The notes in OPFS; an empty file (left by a failed write of an older build)
- * counts as none. Rejects if they are there but can not be read.
+ * counts as none. Rejects if they are there but can not be read: taken for
+ * "no notes", the first autosave would replace them.
  */
 async function opfsRead(key: string): Promise<string | null> {
-  const dir = await opfsDir(OPFS_DIR);
-  if (!dir) return null;
-  try {
-    const handle = await dir.getFileHandle(fileName(key));
-    return (await (await handle.getFile()).text()) || null;
-  } catch (e) {
-    if (isNotFound(e)) return null;
-    throw e;
-  }
+  const file = await readOpfsFile(OPFS_DIR, fileName(key));
+  return file ? (await file.text()) || null : null;
 }
 
 async function opfsWrite(key: string, text: string): Promise<boolean> {
@@ -140,16 +131,9 @@ async function fileTime(dir: FileSystemDirectoryHandle, name: string): Promise<n
 
 /** The backup with its modification time; null if there is none (an empty file is a failed write). */
 async function readBackupOf(key: string): Promise<NotesBackup | null> {
-  const dir = await opfsDir(OPFS_DIR);
-  if (!dir) return null;
-  try {
-    const file = await (await dir.getFileHandle(backupName(key))).getFile();
-    const text = await file.text();
-    return text ? { text, time: file.lastModified } : null;
-  } catch (e) {
-    if (isNotFound(e)) return null;
-    throw e;
-  }
+  const file = await readOpfsFile(OPFS_DIR, backupName(key));
+  const text = file ? await file.text() : '';
+  return file && text ? { text, time: file.lastModified } : null;
 }
 
 /**
@@ -428,17 +412,28 @@ export function createWebAdapter(): WebAdapter {
     async exportPdf(bytes, suggestedName) {
       const picker = (window as unknown as { showSaveFilePicker?: SavePicker }).showSaveFilePicker;
       if (typeof picker === 'function') {
-        let handle: FileSystemFileHandle;
+        let handle: FileSystemFileHandle | null = null;
         try {
           handle = await picker({ suggestedName, types: PDF_TYPES });
         } catch (e) {
           if (isAbort(e)) return false;
-          throw e;
+          // Blocked (no recent tap after a long export, cross-origin frame,
+          // permissions policy): share or download as without the dialog.
+          const name = (e as Error | null)?.name;
+          if (name !== 'SecurityError' && name !== 'NotAllowedError') throw e;
+          console.warn('The save dialog is not available, sharing or downloading instead', e);
         }
-        const w = await handle.createWritable();
-        await w.write(bytes as Uint8Array<ArrayBuffer>);
-        await w.close();
-        return true;
+        if (handle) {
+          const w = await handle.createWritable();
+          try {
+            await w.write(bytes as Uint8Array<ArrayBuffer>);
+            await w.close();
+          } catch (e) {
+            await w.abort().catch(() => {}); // leave the file as it was, not locked
+            throw e;
+          }
+          return true;
+        }
       }
       const shared = await share(bytes, suggestedName);
       if (shared !== null) return shared;

@@ -4,7 +4,14 @@
  * nothing is fetched from a CDN. Renders go through one queue: the page on
  * screen jumps ahead of pre-renders and thumbnails, and at most one page is
  * rendered at a time (PDF.js work happens in the worker; the queue keeps
- * prefetching from delaying the page the user waits for).
+ * prefetching from delaying the page the user waits for). A queued render
+ * can be moved up (a pre-render becomes the page on screen) or cancelled
+ * (queued: dropped; running: PDF.js's RenderTask is cancelled).
+ *
+ * All pages are fetched up front: their sizes make the notes document
+ * (deckFromPdf), and PDF.js keeps the page objects anyway. What a render
+ * leaves behind on a page (operator list, images) is freed with
+ * page.cleanup() once the page is not among the last few rendered.
  *
  * The legacy build: the modern one uses Map.getOrInsertComputed, which
  * older iPad Safari versions lack (Electron 43 has it).
@@ -19,6 +26,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 /** Directory of the bundled PDF.js data files, relative to the page. */
 const assetUrl = (dir: string): string => new URL(`./pdfjs/${dir}/`, document.baseURI).href;
 
+/** Pages whose render resources are kept (the page shown, its neighbours, one more). */
+const KEEP_RENDERED = 4;
+
 /** Render queue priorities, lower first. */
 export const PRIORITY = { current: 0, neighbor: 1, thumb: 2 } as const;
 
@@ -28,6 +38,26 @@ interface Job {
   run(): Promise<void>;
 }
 
+/** A queued render (renderBitmap). */
+export interface RenderJob<T> {
+  readonly promise: Promise<T>;
+  /** Move it in the queue (no effect once it runs). */
+  setPriority(priority: number): void;
+  /** Drop it from the queue, or stop it if it runs: the promise rejects (isCancelled). */
+  cancel(): void;
+}
+
+/** What a running render needs to be cancelled. */
+interface RenderControl {
+  cancelled: boolean;
+  task: { cancel(): void } | null;
+}
+
+const cancelledError = (): Error => new DOMException('rendering cancelled', 'AbortError');
+
+/** The render was cancelled (RenderJob.cancel), not failed. */
+export const isCancelled = (e: unknown): boolean => (e as Error | null)?.name === 'AbortError';
+
 /** An open PDF: page sizes and queued rendering. */
 export interface PdfDoc {
   readonly numPages: number;
@@ -35,7 +65,7 @@ export interface PdfDoc {
   /** Page sizes in points (rotation applied), page 1 first. */
   readonly pageSizes: readonly Size[];
   /** Render page n (1-based) at `scale` device px per point into an ImageBitmap. */
-  renderBitmap(n: number, scale: number, priority?: number): Promise<ImageBitmap>;
+  renderBitmap(n: number, scale: number, priority?: number): RenderJob<ImageBitmap>;
   /** Render page n into an existing canvas (thumbnails). */
   renderInto(canvas: HTMLCanvasElement, n: number, scale: number, priority?: number): Promise<void>;
   destroy(): Promise<void>;
@@ -73,6 +103,16 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
 
   const queue: Job[] = [];
   let seq = 0, running = false, destroyed = false;
+  /** Pages rendered last, oldest first. */
+  const rendered: number[] = [];
+
+  /** Page n was rendered: free the render resources of the page that drops out of the last KEEP_RENDERED. */
+  function renderedPage(n: number): void {
+    const i = rendered.indexOf(n);
+    if (i >= 0) rendered.splice(i, 1);
+    rendered.push(n);
+    if (rendered.length > KEEP_RENDERED && !destroyed) pages[rendered.shift()! - 1].cleanup();
+  }
 
   async function pump(): Promise<void> {
     if (running) return;
@@ -85,21 +125,49 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
     running = false;
   }
 
-  function enqueue<T>(priority: number, work: () => Promise<T>): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      queue.push({ priority, seq: seq++, run: () => work().then(resolve, e => { reject(e); throw e; }) });
-      void pump();
-    });
+  function enqueue<T>(priority: number, work: (ctl: RenderControl) => Promise<T>): RenderJob<T> {
+    let resolve!: (v: T) => void, reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    const ctl: RenderControl = { cancelled: false, task: null };
+    const job: Job = {
+      priority, seq: seq++,
+      run: () => work(ctl).then(resolve, e => {
+        reject(ctl.cancelled ? cancelledError() : e);
+        throw e;
+      }),
+    };
+    queue.push(job);
+    void pump();
+    return {
+      promise,
+      setPriority(p) { job.priority = p; }, // pump() sorts before each job
+      cancel() {
+        if (ctl.cancelled) return;
+        ctl.cancelled = true;
+        const i = queue.indexOf(job);
+        if (i >= 0) {
+          queue.splice(i, 1);
+          reject(cancelledError());
+        } else if (ctl.task) ctl.task.cancel(); // running: its render rejects
+      },
+    };
   }
 
-  async function draw(canvas: HTMLCanvasElement, n: number, scale: number): Promise<void> {
+  async function draw(canvas: HTMLCanvasElement, n: number, scale: number, ctl?: RenderControl): Promise<void> {
     if (destroyed) throw new Error('document closed');
     const page = pages[n - 1];
     if (!page) throw new Error(`no page ${n}`);
     const vp = page.getViewport({ scale });
     canvas.width = Math.max(1, Math.round(vp.width));
     canvas.height = Math.max(1, Math.round(vp.height));
-    await page.render({ canvas, viewport: vp, background: '#ffffff' }).promise;
+    const task = page.render({ canvas, viewport: vp, background: '#ffffff' });
+    if (ctl) ctl.task = task;
+    try {
+      await task.promise;
+    } finally {
+      if (ctl) ctl.task = null;
+      renderedPage(n);
+    }
   }
 
   return {
@@ -107,10 +175,11 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
     title,
     pageSizes,
     renderBitmap(n, scale, priority = PRIORITY.current) {
-      return enqueue(priority, async () => {
+      return enqueue(priority, async ctl => {
         const canvas = document.createElement('canvas');
         try {
-          await draw(canvas, n, scale);
+          await draw(canvas, n, scale, ctl);
+          if (ctl.cancelled) throw cancelledError();
           return await createImageBitmap(canvas);
         } finally {
           canvas.width = canvas.height = 0; // free the backing store at once (WebKit keeps it otherwise)
@@ -118,7 +187,7 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
       });
     },
     renderInto(canvas, n, scale, priority = PRIORITY.thumb) {
-      return enqueue(priority, () => draw(canvas, n, scale));
+      return enqueue(priority, ctl => draw(canvas, n, scale, ctl)).promise;
     },
     async destroy() {
       destroyed = true;
