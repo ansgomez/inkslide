@@ -201,7 +201,8 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     e.preventDefault();
     const data = e.clipboardData;
     if (e.type === 'paste') {
-      const clip = clipForPaste(data ? data.getData('text/plain') : null);
+      // An image or files on the clipboard have types but no text.
+      const clip = clipForPaste(data ? data.getData('text/plain') : null, !!(data && data.types && data.types.length));
       if (clip) app.pasteClip(clip);
       return;
     }
@@ -209,8 +210,9 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     if (!clip) return;
     setClip(clip);
     if (data) {
-      data.setData('text/plain', serializeClip(clip));
-      markClipSynced();
+      const text = serializeClip(clip);
+      data.setData('text/plain', text);
+      markClipSynced(text);
     }
     if (e.type === 'cut') app.deleteSelection('cut');
     app.refresh();
@@ -345,7 +347,8 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       const clip = selectionClip();
       if (!clip) return;
       setClip(clip);
-      void writeSystemClipboard(serializeClip(clip)).then(ok => { if (ok && getClip() === clip) markClipSynced(); });
+      const text = serializeClip(clip);
+      void writeSystemClipboard(text).then(ok => { if (ok && getClip() === clip) markClipSynced(text); });
       app.refresh();
     },
     cutSelection() {
@@ -354,7 +357,13 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       app.deleteSelection('cut');
     },
     async paste() {
-      const clip = clipForPaste(await readSystemClipboard());
+      // Reading may wait for a browser prompt: a paste after a page turn or a new stroke started meanwhile is dropped.
+      const s = app.activeSurface();
+      const busy = app.input.busy;
+      const text = await readSystemClipboard();
+      const now = app.activeSurface();
+      if (!s || !now || now.pageId !== s.pageId || (app.input.busy && !busy)) return;
+      const clip = clipForPaste(text);
       if (clip) app.pasteClip(clip);
     },
     pasteClip(clip) {

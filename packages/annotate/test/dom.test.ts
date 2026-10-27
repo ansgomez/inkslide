@@ -428,6 +428,68 @@ describe('annotator, toolbar and keys', () => {
       expect(doc.strokes('p1').length).toBe(2);
     });
 
+    it('a paste event with only an image after a synced copy pastes nothing', () => {
+      const { app, doc } = setup();
+      app.mount();
+      app.toggle(true);
+      doc.addStroke('p1', stroke('a'));
+      app.setTool('selector');
+      app.select({ pageId: 'p1', ids: ['a'] });
+      let types: string[] = [];
+      let text = '';
+      const clipboardData = {
+        setData: (_t: string, v: string) => { text = v; types = ['text/plain']; },
+        getData: () => text,
+        get types() { return types; },
+      };
+      const fire = (type: string) => {
+        const ev = new Event(type, { cancelable: true });
+        Object.defineProperty(ev, 'clipboardData', { value: clipboardData });
+        document.body.dispatchEvent(ev);
+      };
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', key: 'c', ctrlKey: true }));
+      fire('copy');
+      text = ''; types = ['image/png']; // a screenshot
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true }));
+      fire('paste');
+      expect(doc.strokes('p1').length).toBe(1);
+      types = []; // empty clipboard: the window's clip
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true }));
+      fire('paste');
+      expect(doc.strokes('p1').length).toBe(2);
+    });
+
+    it('a paste waiting for the clipboard is dropped after a page turn or a new stroke', async () => {
+      let release: (t: string) => void = () => {};
+      fakeSystemClipboard(() => new Promise<string>(r => { release = r; }));
+      const doc = new NotesDoc(deckFromPdf({ title: 't.pdf', pageSizes: [[960, 540], [960, 540]] }));
+      const surfaces = ['p1', 'p2'].map(pageId => ({ pageId, ...createPageSurface(doc.pageSize(pageId)) }));
+      let shown = surfaces[0];
+      const app = createAnnotator({ doc, activeSurface: () => shown, storage: null });
+      surfaces.forEach(s => app.surfaces.set(s.pageId, s));
+      cleanup.push(() => app.input.destroy());
+      setClip(makeClip([stroke('a')], [960, 540]));
+      const turned = app.paste();
+      shown = surfaces[1];
+      release('');
+      await turned;
+      expect(doc.strokes('p1')).toEqual([]);
+      expect(doc.strokes('p2')).toEqual([]);
+      let busy = false;
+      const spy = vi.spyOn(app.input, 'busy', 'get').mockImplementation(() => busy);
+      cleanup.push(() => spy.mockRestore());
+      const drawing = app.paste();
+      busy = true; // a stroke started while the browser asked
+      release('');
+      await drawing;
+      expect(doc.strokes('p2')).toEqual([]);
+      busy = false;
+      const ok = app.paste();
+      release('');
+      await ok;
+      expect(doc.strokes('p2').length).toBe(1);
+    });
+
     it('a denied clipboard read falls back to the window clip', async () => {
       fakeSystemClipboard(() => Promise.reject(new Error('denied')));
       const { app, doc } = setup();

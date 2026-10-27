@@ -138,19 +138,39 @@ describe('clip text', () => {
     expect(parseClip(JSON.stringify({ format: CLIP_FORMAT, version: 1, size: [10, 10], strokes: many }))).toBeNull();
     const long = { ...one, points: Array.from({ length: 1000001 }, () => [0, 0]) };
     expect(parseClip(JSON.stringify({ format: CLIP_FORMAT, version: 1, size: [10, 10], strokes: [long] }))).toBeNull();
-  });
+  }, 30000); // builds a 1M-point text
 
   it('clipForPaste: a system clip wins; other text pastes nothing once the clip was on the system clipboard', () => {
     const mine = makeClip([line('a', 1, 2, 3, 4)], [10, 10])!;
     setClip(mine);
     expect(clipForPaste('other text')).toBe(mine); // never reached the system clipboard
-    markClipSynced();
+    markClipSynced(serializeClip(mine));
     expect(clipForPaste('other text')).toBeNull(); // copied over since
     expect(clipForPaste('')).toBe(mine);
     expect(clipForPaste(null)).toBe(mine);
     const theirs = clipForPaste(serializeClip(makeClip([line('b', 5, 5, 6, 6)], [10, 10])!))!;
     expect(xy(theirs.strokes[0])).toEqual([[5, 5], [6, 6]]);
     expect(getClip()).toBe(theirs);
+    setClip(null);
+  });
+
+  it('clipForPaste: our own text gives our clip, also one too large to read back', () => {
+    const big = makeClip(Array.from({ length: MAX_CLIP_STROKES + 1 }, (_, i) => line(`s${i}`, 1, 1, 2, 2)), [10, 10])!;
+    const text = serializeClip(big);
+    expect(parseClip(text)).toBeNull();
+    setClip(big);
+    markClipSynced(text);
+    expect(clipForPaste(text)).toBe(big);
+    setClip(null);
+  });
+
+  it('clipForPaste: an image or files copied after the clip paste nothing', () => {
+    const mine = makeClip([line('a', 1, 2, 3, 4)], [10, 10])!;
+    setClip(mine);
+    expect(clipForPaste('', true)).toBe(mine); // the clip never reached the system clipboard
+    markClipSynced(serializeClip(mine));
+    expect(clipForPaste('', true)).toBeNull();
+    expect(clipForPaste('', false)).toBe(mine); // empty clipboard
     setClip(null);
   });
 

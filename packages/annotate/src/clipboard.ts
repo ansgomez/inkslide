@@ -46,35 +46,39 @@ export function makeClip(strokes: readonly Stroke[], size: Size): Clip | null {
 
 // The clip of this window: copy in one document, paste in another.
 let current: Clip | null = null;
-// Whether the clip also went to the system clipboard (see clipForPaste).
-let synced = false;
+// The text this window put on the system clipboard for the current clip; null if it did not get there (see clipForPaste).
+let syncedText: string | null = null;
 
 /** The clip of this window; null before the first copy. */
 export const getClip = (): Clip | null => current;
 /** Replace the clip of this window (not yet on the system clipboard). */
 export function setClip(clip: Clip | null): void {
   current = clip;
-  synced = false;
+  syncedText = null;
 }
-/** The current clip is on the system clipboard too. */
-export function markClipSynced(): void { synced = !!current; }
+/** The current clip is on the system clipboard too, as `text`. */
+export function markClipSynced(text: string): void { syncedText = current ? text : null; }
 
 /**
- * What to paste, given the text of the system clipboard (null: unreadable).
- * A clip there wins (it may come from another window) and becomes this
- * window's clip. Other text means something else was copied after the
- * clip went to the system clipboard: nothing to paste. Without readable text,
- * or if the clip never reached the system clipboard (the platform refused),
- * this window's clip.
+ * What to paste, given the text of the system clipboard (null: unreadable)
+ * and whether it holds something other than text (an image, files). The text
+ * this window wrote gives this window's clip (also one too large to read
+ * back). Another clip there wins (it may come from another window) and
+ * becomes this window's clip. Other text or other content means something
+ * else was copied after the clip went to the system clipboard: nothing to
+ * paste. Without readable content, or if the clip never reached the system
+ * clipboard (the platform refused), this window's clip.
  */
-export function clipForPaste(text: string | null | undefined): Clip | null {
+export function clipForPaste(text: string | null | undefined, otherContent = false): Clip | null {
+  if (syncedText !== null && text === syncedText) return current;
   const fromSystem = parseClip(text);
   if (fromSystem) {
     current = fromSystem;
-    synced = true;
+    syncedText = text as string;
     return fromSystem;
   }
-  if (typeof text === 'string' && text.trim() && synced) return null;
+  const hasText = typeof text === 'string' && !!text.trim();
+  if ((hasText || otherContent) && syncedText !== null) return null;
   return current;
 }
 
