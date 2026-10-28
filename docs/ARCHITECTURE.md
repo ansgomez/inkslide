@@ -138,6 +138,10 @@ Main checks every call:
   `pathForFile` (`webUtils.getPathForFile`, synchronous IPC so the grant is in place before
   the following `openPdf`). Main cannot tell a real drop from a renderer that names a path, so
   only `.pdf` files are granted that way; others open from their bytes;
+- a PDF hash in a notes, backup or revert call must be one main computed itself
+  (`HashGrants` in `access.ts`): of a PDF it read, or of the bytes a PDF without a path
+  comes with (the preload sends them until main has taken that hash). A hash alone, of a
+  PDF never opened, reaches no notes in app storage;
 - hashes must be 64 hex characters, text and PDFs have size limits (notes in UTF-8 bytes,
   256 MB; PDFs 2 GB). Main reads a PDF, an imported notes file or a sidecar through one
   handle: only a regular file (no FIFO or device), its size taken from that handle, and the

@@ -23,7 +23,7 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 | `src/main/main.ts` | App and window lifecycle, single instance, IPC handlers, save-before-close, smoke mode; `crashReporter` keeps minidumps of native crashes in `userData/Crashpad/` (never uploaded). |
 | `src/main/notes.ts` | Where notes are read and written: sidecar `<pdf>.notes.json`, or `userData/notes/<sha256>.notes.json` when the sidecar cannot be written; reads the newer ([NOTES-FORMAT.md](../../docs/NOTES-FORMAT.md#desktop-electron)). The backup, `userData/notes/<sha256>.notes.backup.json`: copied from the saved notes before a save, swapped back by Revert to Backup; the kept copy of an unreadable notes file (`<sha256>.notes.unreadable.json`); cleanup of backups and copies older than 90 days at startup. |
 | `src/main/fsutil.ts` | Atomic writes (temp file, fsync, rename, fsync the folder; on Windows the rename is retried briefly while another program holds the file), writability checks. |
-| `src/main/access.ts` | `PathGrants`: the renderer may only read PDFs the user chose. |
+| `src/main/access.ts` | `PathGrants`: the renderer may only read PDFs the user chose; `HashGrants`: notes only of PDFs whose hash main computed; checks of IPC arguments. |
 | `src/main/crashRecovery.ts` | After the page's renderer dies: reload it (the PDF reopens), or ask when it dies again within 5 minutes or before it saved. |
 | `src/main/openRequests.ts` | PDFs to open before the page has loaded: the first through `initialPath()`, the others sent once it has. |
 | `src/main/paths.ts` | Front end location (dev, packaged, override) and the `app://inkslide/` URLs it is served under, the test-only environment variables, the PDF in a command line, the app-storage notes path. |
@@ -39,7 +39,8 @@ The bridge implements `PlatformAdapter` from `@inkslide/annotate` plus `initialP
 `pathForFile`, `onMenuCommand`, `onCloseRequest` and, for presenter mode, `onPresenter`,
 `presenterSend` and `onAudience`. Every handler checks that the call comes
 from the app's window and that PDF paths were granted (open dialog, command line, OS open
-request, recent files, a dropped `.pdf` file). See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
+request, recent files, a dropped `.pdf` file), and notes calls that their PDF hash is one main
+computed (from a PDF it read, or from the bytes of a PDF without a path). See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
 Environment variables (mostly for tests): `INKSLIDE_DEV_URL` (load a dev server; ignored by packaged builds),
 `INKSLIDE_PAGE` (load another HTML file), `INKSLIDE_USER_DATA` (another `userData` folder),

@@ -27,7 +27,7 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
-import { checkDroppedPdf, checkPath, checkPdfBytes, checkText, PathGrants } from './access';
+import { checkDroppedPdf, checkPath, checkPdfBytes, checkText, HashGrants, notesTargetFor, PathGrants } from './access';
 import { CrashRecovery } from './crashRecovery';
 import { MAX_PDF_BYTES, MAX_TEXT_BYTES, readFileLimited, writeExport } from './fsutil';
 import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
@@ -87,6 +87,8 @@ function start(): void {
   let notesTarget: NotesTarget | null = null;
   let canRevert = false;
   const grants = new PathGrants(p => recent.has(p));
+  /** Hashes of the PDFs main read or was sent: the only ones notes calls may use. */
+  const hashes = new HashGrants();
 
   let win: BrowserWindow | null = null;
   let state: WindowState = loadWindowState(stateFile);
@@ -454,7 +456,7 @@ function start(): void {
     return value;
   }
 
-  const checkTarget = (ref: unknown, sha256: unknown): NotesTarget => ({ ...checkRef(ref), sha256: checkSha(sha256) });
+  const checkTarget = (ref: unknown, sha256: unknown): NotesTarget => notesTargetFor(checkRef(ref), checkSha(sha256), hashes);
 
   handle(IPC.openPdf, async (path?: unknown): Promise<PdfFile | null> => {
     let p: string | null;
@@ -481,6 +483,7 @@ function start(): void {
   /** Read a granted PDF and make it the current and most recent file. */
   async function readPdf(p: string): Promise<PdfFile> {
     const { bytes: buf, ...st } = await readFileLimited(p, MAX_PDF_BYTES);
+    hashes.grantBytes(buf); // the page's notes calls name this hash
     grants.grant(p); // also a recent file: its notes stay writable after Clear Recent
     void removeLegacyBackup(p);
     current = p;
