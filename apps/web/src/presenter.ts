@@ -141,7 +141,7 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
     if (active && doc) {
       for (const id of dirty) {
         if (doc.hasPage(id)) sendPage(doc, id);
-        else sent.delete(id); // a deleted blank page
+        else { sent.delete(id); sentImages.delete(id); } // a deleted blank page: the audience drops it with its images
       }
     }
     dirty.clear();

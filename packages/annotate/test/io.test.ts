@@ -50,6 +50,15 @@ describe('inkedPages', () => {
     const doc = new NotesDoc(pdfDeck());
     expect(inkedPages(serializeNotes(doc))).toEqual({ pages: 0, blank: 0 });
   });
+  it('counts pages with only images', () => {
+    const image = { id: 'i', x: 0, y: 0, w: 1, h: 1, src: 'data:image/png;base64,iVBORw0KGgo=' };
+    const file = { format: 'marp-notes', version: 3, deck: { source: 'pdf', title: 't', slides: 2, size: [960, 540] }, pages: [
+      { id: 'p1', kind: 'slide', slide: 1, strokes: [], images: [image] },
+      { id: 'b-1', kind: 'blank', after: 1, paper: 'plain', strokes: [], images: [image] },
+      { id: 'p2', kind: 'slide', slide: 2, strokes: [], images: 'x' },
+    ] };
+    expect(inkedPages(JSON.stringify(file))).toEqual({ pages: 1, blank: 1 });
+  });
   it('counts nothing in a file that cannot be read', () => {
     expect(inkedPages('{ not json')).toEqual({ pages: 0, blank: 0 });
     expect(inkedPages('{"format":"other"}')).toEqual({ pages: 0, blank: 0 });
@@ -89,6 +98,23 @@ describe('v1 load', () => {
     expect(hl.size).toBe(15);
     expect((doc.getPage('b-xy-1') as BlankPage).after).toBe(1);
     expect(doc.sequence()).toEqual(['p1', 'b-xy-1', 'p2', 'p3']);
+  });
+
+  it('scales v3 Marp notes (with images) too: strokes and images', () => {
+    const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP8z8DAwMDAyPCfgYGBiQEJAAAqNwIDlBYW1QAAAABJRU5ErkJggg==';
+    const file = v1File();
+    file.version = 3;
+    file.pages[0].images = [{ id: 'i', x: 100, y: 200, w: 400, h: 100, src: PNG }];
+    file.pages.push({ id: 's2', kind: 'slide', slide: 2, strokes: [], images: [{ id: 'j', x: 40, y: 40, w: 80, h: 80, src: PNG }] });
+    const doc = new NotesDoc(pdfDeck());
+    const res = loadNotes(doc, file);
+    expect(res.scaled).toBe(0.75);
+    expect(doc.strokes('p1')[0].points[0]).toEqual([75, 150, 0.5]);
+    expect(doc.images('p1')[0]).toMatchObject({ x: 75, y: 150, w: 300, h: 75 });
+    expect(doc.images('p2')[0]).toMatchObject({ x: 30, y: 30, w: 60, h: 60 }); // a page with only images
+    // PDF notes (deck.source "pdf") are never scaled, whatever their version.
+    const pdfNotes = { ...file, deck: { ...file.deck, source: 'pdf' as const } };
+    expect(scaleV1ToPdf(pdfNotes, new NotesDoc(pdfDeck())).scale).toBeNull();
   });
 
   it('does not scale across different aspect ratios (warns instead)', () => {

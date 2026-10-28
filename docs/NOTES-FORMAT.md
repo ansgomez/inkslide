@@ -159,8 +159,8 @@ tool and pasted onto a page. They live in an `images` array next to `strokes`:
 |---|---|---|
 | `id` | string | Unique within the file, among stroke and image ids. A missing, non-string, longer than 200 characters or duplicate id gets a new one on load. |
 | `x`, `y` | number, ≤ 10⁶ in size | Top-left corner, page units (origin top-left, y down). |
-| `w`, `h` | number, 0 < w, h ≤ 10⁶ | Size on the page, page units. The image is stretched to fill it. |
-| `src` | string | A base64 `data:` URL of type `image/png` or `image/jpeg`; the data must start with the PNG or JPEG signature, and its size in pixels must be readable from the start of the data (PNG: the IHDR chunk; JPEG: the first frame header, SOFn, within the first 256 KB). Nothing else (no SVG, no GIF, no links). |
+| `w`, `h` | number, 0.01 ≤ w, h ≤ 10⁶ | Size on the page, page units. The image is stretched to fill it. Smaller sizes would round to 0 when saved, so they are invalid. |
+| `src` | string | A base64 `data:` URL of type `image/png` or `image/jpeg`; the data must start with the PNG or JPEG signature, and its size in pixels must be readable from the start of the data (PNG: the IHDR chunk; JPEG: the first frame header, SOFn, within the first 256 KB). A PNG must not be animated (no `acTL` chunk; at most 10 000 chunks are walked). Nothing else (no SVG, no GIF, no links). |
 
 Images are drawn below all ink (highlighter and pen strokes), in the order of the array.
 Position and size are rounded to 2 decimals when saved.
@@ -177,7 +177,9 @@ next to `strokes`, so a reader that skips the version check keeps the ink.
 page holds at most 32 images, a file at most 256, with at most 24 000 000 characters of `src`
 in all (kept pages count). An image is at most 4096 pixels on a side and 16 000 000 pixels in
 all, whatever its file size: a small PNG can hold a huge image, and decoding one (on screen, in
-a snapshot, in the export) would take seconds and gigabytes. The limits keep the notes file small
+a snapshot, in the export) would take seconds and gigabytes. The images of a page have at most
+64 000 000 pixels in all, those of a file 256 000 000 (each pixel decodes to 4 bytes: 256 MB and
+1 GB); a snapshot has at most 2048 × 2048, about 4 MP. The limits keep the notes file small
 enough to autosave: every save serializes the whole file, base64 image data included, so 24 MB
 of images means writing about 24 MB a few seconds after each change.
 The snapshot tool makes images of at most 2048 px on the long side (PNG; JPEG at 0.9 quality
@@ -209,7 +211,9 @@ units, so it keeps its look if the scaling rules change later; files store no si
 
 A v1 file (for example the notes of a Marp HTML deck) can be opened with or imported into the
 PDF exported from that deck. Its strokes are in slide px; the PDF is in points. Before loading,
-`scaleV1ToPdf` scales them:
+`scaleV1ToPdf` scales them. The same applies to version 3 notes of a Marp deck (a `deck` without
+`source`): Marp notes are told by their deck, not their version, and their images are scaled
+too (`x`, `y`, `w`, `h` by the page's `s`).
 
 - per page, `s = pageWidth / deck.size[0]`, but only if the aspect ratio matches within 1 %
   (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays.

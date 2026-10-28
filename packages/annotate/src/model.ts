@@ -76,6 +76,8 @@ export type Page = SlidePage | BlankPage;
 export interface Command {
   label?: string;
   pageId?: string;
+  /** Characters of image data the command keeps (for undo or redo); see History.maxRetained. */
+  retained?: number;
   do(): void;
   undo(): void;
 }
@@ -223,6 +225,11 @@ export function createStroke({ id, tool, color, size, points }: StrokeInput): St
 
 // ── Images ─────────────────────────────────────────────────────
 
+/**
+ * Smallest width and height of an image, in page units: the rounding of a
+ * saved file (2 decimals) keeps it positive, so a saved image always loads.
+ */
+export const MIN_IMAGE_SIZE = 0.01;
 /** Image types a notes file may contain, with the start of their base64 data (the file signature). */
 const IMAGE_MAGIC: Readonly<Record<string, string>> = { 'image/png': 'iVBORw0KGgo', 'image/jpeg': '/9j/' };
 /** Longest data URL of one image, in characters (about 2.2 MB of image data). */
@@ -255,10 +262,43 @@ export interface ImageInfo {
 
 /** The first `bytes` bytes of base64 `data` (fewer if it is shorter). */
 function headBytes(data: string, bytes: number): Uint8Array {
-  const head = atob(data.slice(0, Math.ceil(bytes / 3) * 4));
-  const out = new Uint8Array(head.length);
-  for (let i = 0; i < head.length; i++) out[i] = head.charCodeAt(i);
+  return bytesAt(data, 0, bytes);
+}
+
+/** `n` bytes from byte `offset` of base64 `data`, decoding only the base64 groups that hold them. */
+function bytesAt(data: string, offset: number, n: number): Uint8Array {
+  const first = Math.floor(offset / 3);
+  const raw = atob(data.slice(first * 4, Math.ceil((offset + n) / 3) * 4));
+  const skip = offset - first * 3;
+  const out = new Uint8Array(Math.max(0, Math.min(n, raw.length - skip)));
+  for (let i = 0; i < out.length; i++) out[i] = raw.charCodeAt(skip + i);
   return out;
+}
+
+/** Most chunks of a PNG walked; canvas PNGs have a handful plus one IDAT per 8–64 KB. */
+const MAX_PNG_CHUNKS = 10_000;
+
+/**
+ * Why a PNG (base64 `data`) is refused for its chunks, or '': animated (an
+ * acTL chunk: pdf-lib decodes every frame of an APNG before it rejects it,
+ * so many large frames in a small file exhaust memory) or more than
+ * MAX_PNG_CHUNKS chunks. Walks the chunk headers by their lengths, decoding
+ * only the 8 bytes of each header, not the chunk data.
+ */
+function pngChunkProblem(data: string): string {
+  const pad = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  const size = (data.length / 4) * 3 - pad;
+  let offset = 8; // after the signature
+  for (let chunks = 0; offset + 8 <= size; chunks++) {
+    if (chunks >= MAX_PNG_CHUNKS) return 'Image has too many PNG chunks';
+    const h = bytesAt(data, offset, 8);
+    const length = ((h[0] << 24) >>> 0) + (h[1] << 16) + (h[2] << 8) + h[3];
+    const type = String.fromCharCode(h[4], h[5], h[6], h[7]);
+    if (type === 'acTL') return 'Animated PNG images are not supported';
+    if (type === 'IEND') break;
+    offset += 12 + length; // length, type, data, CRC
+  }
+  return '';
 }
 
 /**
@@ -316,6 +356,8 @@ function inspectImage(src: unknown): ImageInfo | string {
   if (size.width > MAX_IMAGE_SIDE || size.height > MAX_IMAGE_SIDE || size.width * size.height > MAX_IMAGE_PIXELS) {
     return `Image too large (${size.width}×${size.height} pixels; at most ${MAX_IMAGE_SIDE} on a side)`;
   }
+  const chunks = type === 'image/png' ? pngChunkProblem(data) : '';
+  if (chunks) return chunks;
   return { type, ...size };
 }
 
@@ -334,7 +376,7 @@ export function imageInfo(src: unknown): ImageInfo | null {
 /**
  * A checked image: a PNG or JPEG data URL of at most MAX_IMAGE_CHARS and
  * MAX_IMAGE_SIDE × MAX_IMAGE_SIDE pixels (MAX_IMAGE_PIXELS in all), finite x
- * and y within ±MAX_COORD, positive finite w and h up to MAX_COORD. Throws on
+ * and y within ±MAX_COORD, w and h from MIN_IMAGE_SIZE to MAX_COORD. Throws on
  * bad input; a missing or unusable id (not a string, longer than
  * MAX_ID_LENGTH) gets newId().
  */
@@ -344,14 +386,43 @@ export function createImage(input: ImageInput): PageImage {
   if (typeof info === 'string') throw new Error(info);
   const coord = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= MAX_COORD;
   if (!coord(x) || !coord(y)) throw new Error('Image position must be finite numbers in range');
-  if (!coord(w) || !coord(h) || !(w > 0) || !(h > 0)) throw new Error('Image size must be positive numbers in range');
-  return { id: itemId(id), x, y, w, h, src: src as string };
+  if (!coord(w) || !coord(h) || !(w >= MIN_IMAGE_SIZE) || !(h >= MIN_IMAGE_SIZE)) {
+    throw new Error(`Image size must be numbers from ${MIN_IMAGE_SIZE} to ${MAX_COORD}`);
+  }
+  const image: PageImage = { id: itemId(id), x, y, w, h, src: src as string };
+  pixelCache.set(image, info.width * info.height);
+  return image;
 }
 
 /** Images and data URL characters in use (see NotesDoc.imageRoom). */
 interface ImageBudget {
   count: number;
   chars: number;
+  /** Decoded pixels of all images (see imagePixels). */
+  pixels: number;
+}
+
+/**
+ * Most decoded pixels of the images of one page, and of a document. Each
+ * image is limited (MAX_IMAGE_PIXELS), but 32 large ones on a page decode to
+ * about 2 GB (4 bytes a pixel) on screen, in a snapshot or in the export. A
+ * snapshot is at most 2048×2048 (4.2 MP), usually much less: a page holds 15
+ * of the largest, a document 61.
+ */
+export const MAX_PAGE_IMAGE_PIXELS = 64_000_000, MAX_DOC_IMAGE_PIXELS = 256_000_000;
+
+/** Pixels of images by object (images are immutable), so the budgets do not read every image header again. */
+const pixelCache = new WeakMap<object, number>();
+
+/** Decoded pixels of an image (width × height from its data); 0 if its data is not a valid image. */
+export function imagePixels(image: { src?: unknown }): number {
+  let n = pixelCache.get(image);
+  if (n === undefined) {
+    const info = imageInfo(image && image.src);
+    n = info ? info.width * info.height : 0;
+    if (image && typeof image === 'object') pixelCache.set(image, n);
+  }
+  return n;
 }
 
 // ── History ────────────────────────────────────────────────────
@@ -359,19 +430,32 @@ interface ImageBudget {
 /** Command stack; a command is { do(), undo(), label }. */
 export class History {
   limit: number;
+  /**
+   * Most characters of image data the undo history keeps (Command.retained):
+   * deleted or replaced images live on only in their commands, so many large
+   * pastes and deletes would otherwise keep hundreds of MB. Past it the
+   * oldest commands are dropped (the latest one always stays).
+   */
+  maxRetained: number;
   undoStack: Command[] = [];
   redoStack: Command[] = [];
   private listeners: ((h: History) => void)[] = [];
 
-  constructor(limit = 500) {
+  constructor(limit = 500, maxRetained = 2 * MAX_DOC_IMAGE_CHARS) {
     this.limit = limit;
+    this.maxRetained = maxRetained;
   }
-  /** Run a command and push it on the undo stack (dropping the oldest past `limit`); clears redo. */
+  /**
+   * Run a command and push it on the undo stack (dropping the oldest past `limit`, and past
+   * `maxRetained` characters of image data); clears redo.
+   */
   execute<C extends Command>(cmd: C): C {
     cmd.do();
     this.undoStack.push(cmd);
     if (this.undoStack.length > this.limit) this.undoStack.shift();
     this.redoStack.length = 0;
+    let retained = this.undoStack.reduce((n, c) => n + (c.retained || 0), 0);
+    while (retained > this.maxRetained && this.undoStack.length > 1) retained -= this.undoStack.shift()!.retained || 0;
     this.emit();
     return cmd;
   }
@@ -554,7 +638,7 @@ export class NotesDoc {
     if (!page || page.kind !== 'blank') return null;
     const idx = this.blankOrder.indexOf(id);
     return this.history.execute({
-      label: 'delete-page', pageId: id,
+      label: 'delete-page', pageId: id, retained: page.images.reduce((n, i) => n + i.src.length, 0),
       do: () => { this.removeBlank(id); this.emit(id, 'pages'); },
       undo: () => { this.pages.set(id, page); this.blankOrder.splice(idx, 0, id); this.emit(id, 'pages'); },
     });
@@ -593,16 +677,25 @@ export class NotesDoc {
     if (used.chars + chars > MAX_DOC_IMAGE_CHARS) {
       return `The images of a document can take at most ${Math.round(MAX_DOC_IMAGE_CHARS / 1e6)} MB of the notes file.`;
     }
+    const pixels = images.reduce((n, i) => n + imagePixels(i), 0);
+    const pagePixels = this.images(pageId).reduce((n, i) => n + imagePixels(i), 0);
+    if (pagePixels + pixels > MAX_PAGE_IMAGE_PIXELS) {
+      return `The images of a page can have at most ${MAX_PAGE_IMAGE_PIXELS / 1e6} megapixels in all.`;
+    }
+    if (used.pixels + pixels > MAX_DOC_IMAGE_PIXELS) {
+      return `The images of a document can have at most ${MAX_DOC_IMAGE_PIXELS / 1e6} megapixels in all.`;
+    }
     return null;
   }
 
   /** Images and their data URL characters on all pages (kept pages too: they are saved back). */
   private imageBudget(): ImageBudget {
-    const used: ImageBudget = { count: 0, chars: 0 };
+    const used: ImageBudget = { count: 0, chars: 0, pixels: 0 };
     const add = (list: readonly { src?: unknown }[]): void => {
       for (const i of list) {
         used.count++;
         used.chars += i && typeof i.src === 'string' ? i.src.length : 0;
+        used.pixels += i ? imagePixels(i) : 0;
       }
     };
     for (const page of this.pages.values()) add(page.images);
@@ -664,8 +757,10 @@ export class NotesDoc {
       const full = this.imageRoom(pageId, images.added);
       if (full) throw new Error(full);
     }
+    // Image data this command keeps alive: added, removed and replaced images (moves share their data).
+    const retained = images ? [...images.added, ...images.removed, ...images.replaced].reduce((n, i) => n + i.src.length, 0) : 0;
     return this.history.execute({
-      label, pageId,
+      label, pageId, retained,
       do: () => {
         if (strokes) this.mutate(pageId, strokes.redo);
         if (images) this.mutateImages(pageId, images.redo);
@@ -796,14 +891,19 @@ export class NotesDoc {
     if (!page) return false;
     const had = new Map(page.images.map(i => [i.id, i]));
     const list: PageImage[] = [];
+    let pixels = 0;
     for (const input of images) {
       if (list.length >= MAX_PAGE_IMAGES) break;
       const old = input && typeof input.id === 'string' ? had.get(input.id) : undefined;
+      let image: PageImage;
       if (old && old.x === input.x && old.y === input.y && old.w === input.w && old.h === input.h && old.src === input.src) {
-        list.push(old);
-        continue;
+        image = old;
+      } else {
+        try { image = createImage(input); } catch (_) { continue; } // skipped
       }
-      try { list.push(createImage(input)); } catch (_) { /* skipped */ }
+      if (pixels + imagePixels(image) > MAX_PAGE_IMAGE_PIXELS) continue; // over the page's pixel budget
+      pixels += imagePixels(image);
+      list.push(image);
     }
     if (!list.length && !page.images.length) return true;
     page.images = list;
@@ -924,7 +1024,7 @@ export class NotesDoc {
     const blanks: BlankPage[] = [];
     const strokeIds = new Set<string>(); // stroke and image ids
     // Image limits over the whole file; kept pages count too (they are saved back).
-    const budget: ImageBudget = { count: 0, chars: 0 };
+    const budget: ImageBudget = { count: 0, chars: 0, pixels: 0 };
     const seenPages = new Set<string>();
     const kept: PageJSON[] = [];
     const notices: string[] = [];
@@ -980,6 +1080,9 @@ interface ListChange<T> {
   checked: T[];
   /** Added items. */
   added: T[];
+  /** Removed items, and the old versions of replaced ones. */
+  removed: T[];
+  replaced: T[];
   redo(list: T[]): T[];
   undo(list: T[]): T[];
 }
@@ -1018,6 +1121,8 @@ function listChange<T extends { id: string }>(before: readonly T[], after: reado
   return {
     checked: [...added.map(a => a.item), ...newById.values()],
     added: added.map(a => a.item),
+    removed: before.filter(s => removedIds.has(s.id)),
+    replaced: [...oldById.values()],
     redo: list => {
       removedAt = [];
       list.forEach((s, index) => { if (removedIds.has(s.id)) removedAt.push({ item: s, index }); });
@@ -1108,6 +1213,7 @@ function parsePage(
     for (const i of Array.isArray(raw.images) ? raw.images : []) {
       budget.count++;
       budget.chars += i && typeof i.src === 'string' ? i.src.length : 0;
+      budget.pixels += i ? imagePixels(i) : 0;
     }
     const what = raw.kind === 'slide' ? `notes for slide ${beyond}` : `blank page ${raw.id} after slide ${beyond}`;
     notices.push(`Kept ${what} (deck has ${deck.slides}): saved with the notes, not shown`);
@@ -1149,6 +1255,7 @@ function parsePage(
   page.strokes = strokes;
   // Images: checked like strokes, within the limits per page and per file.
   const images: PageImage[] = [];
+  let pagePixels = 0;
   let rawImages: unknown = raw.images || [];
   if (!Array.isArray(rawImages)) { warnings.push(`Skipped the images of page ${raw.id}: not a list`); rawImages = []; }
   for (const i of rawImages as ImageJSON[]) {
@@ -1157,6 +1264,11 @@ function parsePage(
       if (images.length >= MAX_PAGE_IMAGES) throw new Error(`more than ${MAX_PAGE_IMAGES} images on the page`);
       if (budget.count >= MAX_DOC_IMAGES) throw new Error(`more than ${MAX_DOC_IMAGES} images in the file`);
       if (budget.chars + image.src.length > MAX_DOC_IMAGE_CHARS) throw new Error('too much image data in the file');
+      const pixels = imagePixels(image);
+      if (pagePixels + pixels > MAX_PAGE_IMAGE_PIXELS) throw new Error(`more than ${MAX_PAGE_IMAGE_PIXELS / 1e6} megapixels of images on the page`);
+      if (budget.pixels + pixels > MAX_DOC_IMAGE_PIXELS) throw new Error(`more than ${MAX_DOC_IMAGE_PIXELS / 1e6} megapixels of images in the file`);
+      pagePixels += pixels;
+      budget.pixels += pixels;
       budget.count++;
       budget.chars += image.src.length;
       strokeIds.add(image.id);

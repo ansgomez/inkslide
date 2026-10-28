@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_COLOR_LENGTH, MAX_DOC_IMAGES, MAX_ID_LENGTH, MAX_IMAGE_CHARS, MAX_IMAGE_PIXELS, MAX_IMAGE_SIDE, MAX_PAGE_IMAGES, NotesDoc,
+  MAX_COLOR_LENGTH, MAX_DOC_IMAGE_CHARS, MAX_DOC_IMAGE_PIXELS, MAX_DOC_IMAGES, MAX_PAGE_IMAGE_PIXELS, imagePixels, MAX_ID_LENGTH, MAX_IMAGE_CHARS, MAX_IMAGE_PIXELS, MAX_IMAGE_SIDE, MAX_PAGE_IMAGES, NotesDoc,
   VERSION, createImage, createStroke, imageInfo, imageType,
   type NotesJSON, type PageImage,
 } from '../src/model';
@@ -25,6 +25,11 @@ const pngHead = (w: number, h: number): Uint8Array => {
   b[24] = 8; b[25] = 2;
   return b;
 };
+/** A PNG chunk header: length and type (the data and CRC follow; their content is not checked here). */
+const chunkHead = (type: string, length: number): number[] =>
+  [length >>> 24, (length >> 16) & 255, (length >> 8) & 255, length & 255, ...Buffer.from(type, 'latin1')];
+/** A chunk of `length` zero bytes and a zero CRC. */
+const chunk = (type: string, length = 0): number[] => [...chunkHead(type, length), ...new Array(length + 4).fill(0)];
 const u16 = (v: number) => [v >> 8, v & 255];
 const APP0 = [0xff, 0xe0, ...u16(16), 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0];
 /** A JPEG start: SOI, APP0, a frame header (marker `sof`) of w×h, then a scan marker. */
@@ -60,6 +65,8 @@ describe('createImage', () => {
     expect(bad({ y: Infinity })).toThrow(/position/);
     expect(bad({ x: '3' })).toThrow(/position/);
     expect(bad({ w: 2e6 })).toThrow(/size/);
+    expect(bad({ w: 0.001 })).toThrow(/size/); // would save as 0
+    expect(createImage({ x: 0, y: 0, w: 0.01, h: 0.0149, src: PNG })).toMatchObject({ w: 0.01, h: 0.0149 });
     expect(() => createImage(null as never)).toThrow(/PNG or JPEG/);
   });
 });
@@ -84,6 +91,20 @@ describe('image size in pixels', () => {
     expect(err(dataUrl('image/png', pngHead(4096, 4096)))).toMatch(/too large/); // 16.8 MP
     expect(err(dataUrl('image/jpeg', jpegHead(65535, 65535)))).toMatch(/too large/);
     expect(MAX_IMAGE_PIXELS).toBe(16_000_000);
+  });
+
+  it('refuses animated PNGs (acTL anywhere) and PNGs of too many chunks, reading only chunk headers', () => {
+    const png = (...chunks: number[][]) => dataUrl('image/png', [...pngHead(10, 10), ...chunks.flat()]);
+    expect(info(png(chunk('IDAT', 20), chunk('IEND')))).toMatchObject({ width: 10, height: 10 });
+    expect(err(png(chunk('acTL', 8), chunk('IDAT', 20), chunk('IEND')))).toMatch(/Animated PNG/);
+    // acTL after the image data (UPNG, which pdf-lib uses, still reads it), and after a large chunk.
+    expect(err(png(chunk('IDAT', 100_000), chunk('acTL', 8), chunk('fdAT', 20), chunk('IEND')))).toMatch(/Animated PNG/);
+    // Chunks after IEND are not read.
+    expect(info(png(chunk('IDAT', 20), chunk('IEND'), chunk('acTL', 8)))).not.toBeNull();
+    // A truncated file (a chunk longer than the data) is no reason to refuse here: the decoder does.
+    expect(info(dataUrl('image/png', [...pngHead(10, 10), ...chunkHead('IDAT', 1e6), 1, 2, 3]))).not.toBeNull();
+    const many = Array.from({ length: 10_001 }, () => chunk('tEXt'));
+    expect(err(png(...many, chunk('IEND')))).toMatch(/too many PNG chunks/);
   });
 
   it('refuses images whose size cannot be read', () => {
@@ -142,6 +163,31 @@ describe('NotesDoc images', () => {
     expect(doc.images('p1')[0]).toMatchObject({ x: 15 });
   });
 
+  it('drops the oldest undo steps once they keep too much image data', () => {
+    const doc = pdfDoc();
+    expect(doc.history.maxRetained).toBe(2 * MAX_DOC_IMAGE_CHARS);
+    doc.history.maxRetained = 3 * PNG.length;
+    doc.addStroke('p1', pen('s')); // keeps no image data
+    expect(doc.history.top()!.retained).toBe(0);
+    doc.addItems('p1', [], [img('a')]);
+    expect(doc.history.top()!.retained).toBe(PNG.length);
+    doc.removeItems('p1', ['a']);
+    doc.moveItems('p1', ['s'], 1, 1);
+    expect(doc.history.undoStack.map(c => c.label)).toEqual(['draw', 'paste', 'delete', 'move']);
+    doc.addItems('p2', [], [img('b'), img('c')]); // 2 more: 4 in all, over 3
+    expect(doc.history.undoStack.map(c => c.label)).toEqual(['delete', 'move', 'paste']);
+    // The latest step stays, even alone over the budget.
+    doc.history.maxRetained = 1;
+    doc.removeItems('p2', ['b', 'c']);
+    expect(doc.history.undoStack.map(c => c.label)).toEqual(['delete']);
+    doc.undo();
+    expect(doc.images('p2')).toHaveLength(2);
+    // Deleting a blank page keeps its images too.
+    const { pageId } = doc.insertBlankPage('p1');
+    doc.addItems(pageId, [], [img('d')]);
+    expect(doc.deletePage(pageId)!.retained).toBe(PNG.length);
+  });
+
   it('clears images with the page and counts them as notes', () => {
     const doc = pdfDoc();
     expect(doc.hasNotes()).toBe(false);
@@ -171,9 +217,45 @@ describe('NotesDoc images', () => {
     expect(doc.imageRoom('p19', [img('y')])).toMatch(/document can hold at most/);
   });
 
+  it('limits the decoded pixels of the images per page and per document', () => {
+    expect([MAX_PAGE_IMAGE_PIXELS, MAX_DOC_IMAGE_PIXELS]).toEqual([64_000_000, 256_000_000]);
+    const big = dataUrl('image/png', pngHead(4000, 4000)); // 16 MP each
+    const at = (id: string) => createImage({ id, x: 0, y: 0, w: 10, h: 10, src: big });
+    expect(imagePixels(at('a'))).toBe(16_000_000);
+    const doc = pdfDoc(10);
+    doc.addItems('p1', [], ['a', 'b', 'c', 'd'].map(at));
+    expect(doc.imageRoom('p1', [at('e')])).toMatch(/page can have at most 64 megapixels/);
+    expect(() => doc.addItems('p1', [], [at('e')])).toThrow(/megapixels/);
+    expect(doc.imageRoom('p1', [img('small')])).toMatch(/megapixels/); // full: even a small one
+    for (const p of ['p2', 'p3', 'p4']) doc.addItems(p, [], [1, 2, 3, 4].map(k => at(`${p}-${k}`)));
+    expect(doc.imageRoom('p5', [at('f')])).toMatch(/document can have at most 256 megapixels/);
+    expect(doc.imageRoom('p5', [img('tiny')])).toMatch(/256 megapixels/); // exactly full: not even 8 pixels
+    doc.clearPage('p4');
+    expect(doc.imageRoom('p5', [at('f')])).toBeNull();
+  });
+
+  it('skips images over the pixel budgets on load, with a warning', () => {
+    const big = dataUrl('image/png', pngHead(4000, 4000));
+    const doc = pdfDoc(10);
+    const pages = Array.from({ length: 6 }, (_, k) => ({
+      id: `p${k + 1}`, kind: 'slide', slide: k + 1, strokes: [],
+      images: Array.from({ length: k === 0 ? 5 : 3 }, (_, i) => ({ id: `i${k}-${i}`, x: 0, y: 0, w: 1, h: 1, src: big })),
+    }));
+    const { warnings } = loadNotesText(doc, JSON.stringify({
+      format: 'marp-notes', version: 3, deck: { source: 'pdf', title: 'a', slides: 10, size: [960, 540], sha256: 'abc' }, pages,
+    }));
+    expect(doc.images('p1')).toHaveLength(4); // 64 MP
+    const total = [1, 2, 3, 4, 5, 6].reduce((n, k) => n + doc.images(`p${k}`).length, 0);
+    expect(total).toBe(16); // 256 MP
+    expect(warnings.filter(w => /megapixels of images on the page/.test(w))).toHaveLength(1);
+    expect(warnings.filter(w => /megapixels of images in the file/.test(w))).toHaveLength(3);
+  });
+
   it('refuses images whose data would make the notes file too large', () => {
     const doc = pdfDoc();
-    const big = dataUrl('image/png', pngHead(10, 10), Math.floor((MAX_IMAGE_CHARS - 40) / 4) * 3 - 33);
+    // One IDAT chunk as large as the data URL limit allows.
+    const n = Math.floor((MAX_IMAGE_CHARS - 40) / 4) * 3 - 45;
+    const big = dataUrl('image/png', [...pngHead(10, 10), ...chunkHead('IDAT', n)], n + 4);
     const fat = (id: string) => createImage({ id, x: 0, y: 0, w: 1, h: 1, src: big });
     for (let i = 0; i < 8; i++) doc.addItems('p1', [], [fat(`f${i}`)]);
     expect(doc.imageRoom('p2', [fat('g')])).toMatch(/MB/);
@@ -206,6 +288,14 @@ describe('notes file with images', () => {
     deck: { source: 'pdf', title: 'a', slides: 3, size: [960, 540], sha256: 'abc' },
     pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: [], images }],
     ...extra,
+  });
+
+  it('saves the smallest image so that it loads again', () => {
+    const doc = pdfDoc();
+    doc.addItems('p1', [], [createImage({ id: 'tiny', x: 1, y: 1, w: 0.01, h: 0.0149, src: PNG })]);
+    const again = pdfDoc();
+    expect(loadNotesText(again, serializeNotes(doc)).warnings).toEqual([]);
+    expect(again.images('p1')).toHaveLength(1);
   });
 
   it('round-trips images through save and load', () => {

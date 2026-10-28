@@ -14,7 +14,7 @@
  * browser OPFS "notes/inkslide-notes_<sha256>.notes.backup.json"
  * (apps/web/src/platform/web.ts). A notes file that could not be read is kept
  * the same way as "….notes.unreadable.json" before it is replaced.
- * v1 files load into a PDF document; their strokes are scaled from the slide
+ * v1 (and v3 Marp) files load into a PDF document; their strokes and images are scaled from the slide
  * size to the PDF page size when both have the same aspect ratio (Marp
  * exports 1280×720 px slides as 960×540 pt pages).
  */
@@ -93,13 +93,14 @@ export function parseNotes(text: string): NotesJSON {
   return data;
 }
 
-/** PDF pages and blank pages with at least one stroke in a notes file (recent files list); none if it cannot be read. */
+/** PDF pages and blank pages with at least one stroke or image in a notes file (recent files list); none if it cannot be read. */
 export function inkedPages(text: string): { pages: number; blank: number } {
   const counts = { pages: 0, blank: 0 };
   try {
     const { pages } = parseNotes(text);
     for (const p of Array.isArray(pages) ? pages : []) {
-      if (!p || !Array.isArray(p.strokes) || !p.strokes.length) continue;
+      const some = (list: unknown): boolean => Array.isArray(list) && list.length > 0;
+      if (!p || (!some(p.strokes) && !some(p.images))) continue;
       if (p.kind === 'blank') counts.blank++;
       else counts.pages++;
     }
@@ -112,19 +113,23 @@ export function inkedPages(text: string): { pages: number; blank: number } {
 const ASPECT_TOLERANCE = 0.01;
 
 /**
- * Scale a v1 (Marp slide units) file onto the pages of a PDF deck, deciding
+ * Scale a Marp file (slide units: v1, or v3 with images; its deck has no
+ * `source`) onto the pages of a PDF deck, deciding
  * per page: a page is scaled when its aspect ratio matches the slides'.
  * Returns a new object, the scale (page 1's, else that of the first page
  * scaled; null if nothing is scaled) and a warning naming the pages left
  * unscaled when page 1 or another page fits. The deck size counts as matching
  * whenever page 1 fits; otherwise the model's size warning stays. The data is
- * returned unchanged when no page fits. Only numbers are scaled; anything
- * else is passed on for the model to reject.
+ * returned unchanged when no page fits. Strokes (points, size) and images
+ * (x, y, w, h) are scaled; only numbers are, anything else is passed on for
+ * the model to reject.
  */
 export function scaleV1ToPdf(data: NotesJSON, doc: NotesDoc): { data: NotesJSON; scale: number | null; warnings: string[] } {
   const from = data.deck && data.deck.size;
   const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
-  if (data.version !== 1 || doc.deck.source !== 'pdf' || !Array.isArray(from) || !positive(from[0]) || !positive(from[1])) {
+  // Marp notes are told by their deck (no source), not the version: v3 Marp notes have images.
+  const marp = !!data.deck && data.deck.source !== 'pdf';
+  if (!marp || doc.deck.source !== 'pdf' || !Array.isArray(from) || !positive(from[0]) || !positive(from[1])) {
     return { data, scale: null, warnings: [] };
   }
   const scaleFor = (n: number): number | null => {
@@ -138,7 +143,8 @@ export function scaleV1ToPdf(data: NotesJSON, doc: NotesDoc): { data: NotesJSON;
   const unscaled: string[] = [];
   // Not an array: passed on for the model to warn about.
   const pages = !Array.isArray(data.pages) ? data.pages : data.pages.map((page: PageJSON): PageJSON => {
-    if (!page || !Array.isArray(page.strokes) || !page.strokes.length) return page;
+    const some = (list: unknown): boolean => Array.isArray(list) && list.length > 0;
+    if (!page || (!some(page.strokes) && !some(page.images))) return page;
     const n = Number(page.kind === 'blank' ? page.after : page.slide);
     if (!Number.isInteger(n) || n < 1) return page; // the model skips it
     // Pages beyond the PDF are kept and saved as v2 too: scaleFor scales them by the deck size.
@@ -150,14 +156,19 @@ export function scaleV1ToPdf(data: NotesJSON, doc: NotesDoc): { data: NotesJSON;
     matched = true;
     if (s === 1) return page;
     if (scale === null) scale = s;
-    return {
+    const scaled = {
       ...page,
-      strokes: page.strokes.map(st => (st && Array.isArray(st.points) ? {
+      strokes: !Array.isArray(page.strokes) ? page.strokes : page.strokes.map(st => (st && Array.isArray(st.points) ? {
         ...st,
         size: times(st.size, s),
         points: st.points.map(p => (Array.isArray(p) ? [times(p[0], s), times(p[1], s), p[2]] : p)),
       } : st)),
     } as PageJSON;
+    if (Array.isArray(page.images)) {
+      scaled.images = page.images.map(i => (i && typeof i === 'object'
+        ? { ...i, x: times(i.x, s), y: times(i.y, s), w: times(i.w, s), h: times(i.h, s) } : i) as typeof i);
+    }
+    return scaled;
   });
   // Nothing fits the PDF at all: the size warning says so.
   const warnings = (first !== null || matched) && unscaled.length
