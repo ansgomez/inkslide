@@ -22,6 +22,7 @@ import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import type { RectLike, Size } from '@inkslide/annotate';
+import { MAX_PDF_PAGES } from '@inkslide/annotate/model';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -33,8 +34,8 @@ const KEEP_RENDERED = 4;
 
 /** Pages asked of PDF.js at a time while a PDF opens. */
 const PAGE_FETCHES = 16;
-/** Most pages a PDF may have (as the desktop's recent files accept). */
-export const MAX_PAGES = 100_000;
+/** Most pages a PDF may have (the notes file holds that many, with blank pages; the desktop's recent files accept them). */
+export const MAX_PAGES = MAX_PDF_PAGES;
 
 /** Every page of `pdf`, at most `parallel` asked for at a time (not one request per page at once). */
 async function fetchPages(pdf: PDFDocumentProxy, parallel = PAGE_FETCHES): Promise<PDFPageProxy[]> {

@@ -2,6 +2,7 @@
 import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, resolve } from 'node:path';
 import { inkedPages } from '@inkslide/annotate/io';
+import { MAX_PDF_PAGES } from '@inkslide/annotate/model';
 import type { RecentFileInfo } from '../shared/bridge';
 import { readJson, writeJson } from './jsonStore';
 import { readNotesFor, readSidecarFor } from './notes';
@@ -9,8 +10,8 @@ import { isSha256 } from './paths';
 
 /** Longest recent files list. */
 export const RECENT_MAX = 10;
-/** Largest page count kept (anything above is not a real PDF's). */
-const MAX_PAGES = 100_000;
+/** Largest page count kept: the most pages of a PDF Inkslide opens (anything above is not a real PDF's). */
+const MAX_PAGES = MAX_PDF_PAGES;
 
 /** A recently opened PDF. Older builds saved bare paths; those load with openedAt 0. */
 export interface RecentRecord {

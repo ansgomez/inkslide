@@ -11,6 +11,9 @@ class FakeDoc {
   calls: { method: string; pageId: string; args: unknown[] }[] = [];
   strokes(pageId: string): Stroke[] { return this.pages.get(pageId) || []; }
   hasPage(_pageId: string): boolean { return true; }
+  /** Set to refuse new ink (as at a document limit). */
+  full: string | null = null;
+  inkRoom(): string | null { return this.full; }
   addStroke(pageId: string, s: Stroke) {
     this.calls.push({ method: 'addStroke', pageId, args: [s] });
     this.pages.set(pageId, [...this.strokes(pageId), s]);
@@ -137,6 +140,19 @@ describe('pen and highlighter', () => {
     pen.up!(surface, null);
     const { points } = doc.calls[0].args[0] as Stroke;
     expect(points[points.length - 1]).toEqual([501, 0, 0.5]);
+  });
+
+  it('a stroke beyond a document limit is not drawn, and the user is told', () => {
+    const notify = vi.fn();
+    app.notify = notify;
+    doc.full = 'A document can hold at most 200,000 strokes.';
+    const { pen } = createTools(app, R.r);
+    pen.down!(surface, [0, 0, 0.5]);
+    pen.move!(surface, [10, 0, 0.5]);
+    pen.up!(surface, [20, 0, 0.5]);
+    expect(R.live.remove).toHaveBeenCalled();
+    expect(doc.calls).toEqual([]);
+    expect(notify).toHaveBeenCalledWith('Not drawn: A document can hold at most 200,000 strokes.', 'warn');
   });
 
   it('Shift draws a straight line', () => {

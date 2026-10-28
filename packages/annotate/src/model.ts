@@ -174,13 +174,17 @@ export const newId = (): string => `${idPrefix}-${(idCounter++).toString(36)}`;
 export const MAX_ID_LENGTH = 200;
 /** Longest stroke color kept (a CSS color; presenter mode sends colors up to this length). */
 export const MAX_COLOR_LENGTH = 100;
+/** Most pages of a PDF Inkslide opens (the viewer; the desktop's recent files list). */
+export const MAX_PDF_PAGES = 100_000;
 /**
  * Most pages, strokes and points (all strokes together) a notes file may have;
- * kept pages count too. Real lecture notes stay far below them; a file
- * beyond them is rejected before any page is read, as it would take
- * gigabytes to load, draw and save.
+ * kept pages count too. Every page of the largest PDF fits, with 10 000 blank
+ * pages. Real lecture notes stay far below them; a file beyond them is
+ * rejected before any page is read, as it would take gigabytes to load, draw
+ * and save. Edits beyond them are refused (NotesDoc.inkRoom, pageRoom), so
+ * Inkslide never writes a file it would not read.
  */
-export const MAX_PAGES = 10_000, MAX_STROKES = 200_000, MAX_POINTS = 20_000_000;
+export const MAX_PAGES = MAX_PDF_PAGES + 10_000, MAX_STROKES = 200_000, MAX_POINTS = 20_000_000;
 /** Most warnings NotesDoc.load lists; the rest are counted in one last warning. */
 export const MAX_WARNINGS = 10_000;
 /** Longest text from a file quoted in a warning (ids, titles); the rest is cut. */
@@ -524,6 +528,40 @@ export const slidePrefix = (source: DeckSource): string => (source === 'pdf' ? '
 /** Whether n is the number of a source page of the deck (an integer in 1..slides). */
 const inDeck = (n: number, deck: Deck): boolean => Number.isInteger(n) && n >= 1 && n <= deck.slides;
 
+/** What a notes file of the document holds: page records, strokes and their points (see MAX_PAGES). */
+interface Usage {
+  pages: number;
+  strokes: number;
+  points: number;
+}
+
+// Strokes are immutable and every edit replaces a page's list, so its point count is cached per list.
+const pointCache = new WeakMap<readonly unknown[], number>();
+/** Points of all strokes of a list (raw ones too: a kept page's). */
+function pointCount(strokes: readonly unknown[]): number {
+  let n = pointCache.get(strokes);
+  if (n === undefined) {
+    n = 0;
+    for (const s of strokes) {
+      const pts = s && (s as { points?: unknown }).points;
+      if (Array.isArray(pts)) n += pts.length;
+    }
+    pointCache.set(strokes, n);
+  }
+  return n;
+}
+
+/** Why `after` is beyond a limit where it grew from `before`; null if it is not. */
+function overLimit(before: Usage, after: Usage): string | null {
+  const fmt = (n: number): string => n.toLocaleString('en');
+  if (after.pages > before.pages && after.pages > MAX_PAGES) {
+    return `Notes can cover at most ${fmt(MAX_PAGES)} pages (pages with ink or images, and blank pages).`;
+  }
+  if (after.strokes > before.strokes && after.strokes > MAX_STROKES) return `A document can hold at most ${fmt(MAX_STROKES)} strokes.`;
+  if (after.points > before.points && after.points > MAX_POINTS) return `A document can hold at most ${fmt(MAX_POINTS)} stroke points.`;
+  return null;
+}
+
 /** The notes of one document: pages, blank pages, undo history and change events. See the module comment. */
 export class NotesDoc {
   deck: Deck;
@@ -540,6 +578,10 @@ export class NotesDoc {
    */
   kept: PageJSON[] = [];
   private listeners: ChangeListener[] = [];
+  /** See usage(): the totals, each page's part, and the pages changed since (all: usageTotal null). */
+  private usageTotal: Usage | null = null;
+  private usageByPage = new Map<string, Usage>();
+  private usageChanged = new Set<string>();
   private readonly prefix: string;
   private readonly slideRe: RegExp;
 
@@ -622,11 +664,87 @@ export class NotesDoc {
     return s ? [s[0], s[1]] : [this.deck.size[0], this.deck.size[1]];
   }
 
-  /** Insert a blank page directly after `afterId` (a slide or blank page). */
+  /** Why no blank page can be inserted (the notes would have more than MAX_PAGES pages); null if one can. */
+  pageRoom(): string | null {
+    const now = this.usage();
+    return overLimit(now, { ...now, pages: now.pages + 1 });
+  }
+
+  /**
+   * Why `strokes` (and `images` images) cannot be added to page `pageId`: the
+   * document would hold more than MAX_STROKES strokes or MAX_POINTS points,
+   * or a page without notes would get some beyond MAX_PAGES. null if they can.
+   */
+  inkRoom(pageId: string, strokes: readonly { points: readonly unknown[] }[], images = 0): string | null {
+    if (!strokes.length && !images) return null;
+    const page = this.pages.get(pageId);
+    const now = this.usage();
+    const newPage = (!page || page.kind === 'slide') && !(page && (page.strokes.length || page.images.length));
+    return overLimit(now, {
+      pages: now.pages + (newPage ? 1 : 0),
+      strokes: now.strokes + strokes.length,
+      points: now.points + pointCount(strokes),
+    });
+  }
+
+  /**
+   * Page records, strokes and points the notes file would have now (kept
+   * pages too). Kept up to date from the change events: only the pages
+   * changed since the last call are counted again, so an edit costs no pass
+   * over a document of 100 000 pages.
+   */
+  private usage(): Usage {
+    let u = this.usageTotal;
+    if (!u) {
+      u = { pages: this.kept.length, strokes: 0, points: 0 };
+      for (const k of this.kept) {
+        if (!Array.isArray(k.strokes)) continue;
+        u.strokes += k.strokes.length;
+        u.points += pointCount(k.strokes);
+      }
+      this.usageByPage.clear();
+      for (const id of this.pages.keys()) this.usageChanged.add(id);
+      this.usageTotal = u;
+    }
+    for (const id of this.usageChanged) {
+      const old = this.usageByPage.get(id);
+      if (old) { u.pages -= old.pages; u.strokes -= old.strokes; u.points -= old.points; }
+      const p = this.pages.get(id);
+      if (!p) { this.usageByPage.delete(id); continue; }
+      const now = {
+        pages: p.kind === 'blank' || p.strokes.length || p.images.length ? 1 : 0,
+        strokes: p.strokes.length, points: pointCount(p.strokes),
+      };
+      this.usageByPage.set(id, now);
+      u.pages += now.pages; u.strokes += now.strokes; u.points += now.points;
+    }
+    this.usageChanged.clear();
+    return { ...u };
+  }
+
+  /**
+   * Run `change` (an undo or redo); if it takes the notes beyond a limit
+   * (MAX_PAGES, MAX_STROKES, MAX_POINTS), run `revert` and throw why. Edits
+   * check before they run (inkRoom, pageRoom); this catches an undo or redo
+   * that no longer fits after other edits.
+   */
+  private withinLimits(change: () => void, revert: () => void): void {
+    const before = this.usage();
+    change();
+    const why = overLimit(before, this.usage());
+    if (why) {
+      revert();
+      throw new Error(why);
+    }
+  }
+
+  /** Insert a blank page directly after `afterId` (a slide or blank page). Throws beyond MAX_PAGES (see pageRoom). */
   insertBlankPage(afterId: string, paper: Paper = 'plain'): Command & { pageId: string } {
     checkPaper(paper);
     const after = this.ownerSlide(afterId);
     if (after == null || !inDeck(after, this.deck)) throw new Error(`No page ${afterId}`);
+    const full = this.pageRoom();
+    if (full) throw new Error(full);
     let id: string;
     do { id = `b-${this.blankPrefix}-${++this.blankCounter}`; } while (this.pages.has(id) || this.kept.some(k => k.id === id));
     const page: BlankPage = { id, kind: 'blank', after, paper, strokes: [], images: [] };
@@ -634,10 +752,12 @@ export class NotesDoc {
     const idx = anchor && anchor.kind === 'blank'
       ? this.blankOrder.indexOf(afterId) + 1
       : this.blankOrder.filter(b => (this.pages.get(b) as BlankPage).after < after).length;
+    const insert = (): void => { this.pages.set(id, page); this.blankOrder.splice(idx, 0, id); this.emit(id, 'pages'); };
+    const remove = (): void => { this.removeBlank(id); this.emit(id, 'pages'); };
     return this.history.execute({
       label: 'insert-page', pageId: id,
-      do: () => { this.pages.set(id, page); this.blankOrder.splice(idx, 0, id); this.emit(id, 'pages'); },
-      undo: () => { this.removeBlank(id); this.emit(id, 'pages'); },
+      do: () => this.withinLimits(insert, remove),
+      undo: remove,
     });
   }
 
@@ -653,10 +773,12 @@ export class NotesDoc {
     const page = this.pages.get(id);
     if (!page || page.kind !== 'blank') return null;
     const idx = this.blankOrder.indexOf(id);
+    const remove = (): void => { this.removeBlank(id); this.emit(id, 'pages'); };
+    const restore = (): void => { this.pages.set(id, page); this.blankOrder.splice(idx, 0, id); this.emit(id, 'pages'); };
     return this.history.execute({
       label: 'delete-page', pageId: id, retained: page.images.reduce((n, i) => n + i.src.length, 0),
-      do: () => { this.removeBlank(id); this.emit(id, 'pages'); },
-      undo: () => { this.pages.set(id, page); this.blankOrder.splice(idx, 0, id); this.emit(id, 'pages'); },
+      do: remove,
+      undo: () => this.withinLimits(restore, remove),
     });
   }
 
@@ -726,7 +848,13 @@ export class NotesDoc {
     this.listeners.push(fn);
     return () => { this.listeners = this.listeners.filter(f => f !== fn); };
   }
-  emit(pageId: string | null, kind: ChangeKind = 'strokes'): void { notify(this.listeners, pageId, kind); }
+  emit(pageId: string | null, kind: ChangeKind = 'strokes'): void {
+    if (kind !== 'saved') {
+      if (pageId === null) this.usageTotal = null;
+      else this.usageChanged.add(pageId);
+    }
+    notify(this.listeners, pageId, kind);
+  }
 
   /** Apply fn to a page's stroke list; a page that is gone (deleted by a peer) is skipped. */
   mutate(pageId: string, fn: (list: Stroke[]) => Stroke[]): void {
@@ -759,6 +887,8 @@ export class NotesDoc {
    * replaceStrokes for strokes and images: change the lists given in `after`
    * in one undoable step (null if nothing changes). New and changed images
    * are checked like loaded ones, and added ones must fit (see imageRoom).
+   * Throws if the document would grow beyond MAX_PAGES, MAX_STROKES or
+   * MAX_POINTS (see inkRoom); an undo or redo that would is dropped.
    */
   replaceContent(pageId: string, after: { strokes?: readonly Stroke[]; images?: readonly PageImage[] }, label = 'edit'): Command | null {
     const page = this.pages.get(pageId) || this.pageOnDemand(pageId);
@@ -773,18 +903,35 @@ export class NotesDoc {
       const full = this.imageRoom(pageId, images.added);
       if (full) throw new Error(full);
     }
+    const now = this.usage();
+    const nextStrokes = after.strokes || page.strokes, nextImages = after.images || page.images;
+    const had = page.kind === 'blank' || page.strokes.length > 0 || page.images.length > 0;
+    const has = page.kind === 'blank' || nextStrokes.length > 0 || nextImages.length > 0;
+    const full = overLimit(now, {
+      pages: now.pages + (has ? 1 : 0) - (had ? 1 : 0),
+      strokes: now.strokes + nextStrokes.length - page.strokes.length,
+      points: now.points + pointCount(nextStrokes) - pointCount(page.strokes),
+    });
+    if (full) throw new Error(full);
     // Image data this command keeps alive: added, removed and replaced images (moves share their data).
     const retained = images ? [...images.added, ...images.removed, ...images.replaced].reduce((n, i) => n + i.src.length, 0) : 0;
+    const redo = (): void => {
+      if (strokes) this.mutate(pageId, strokes.redo);
+      if (images) this.mutateImages(pageId, images.redo);
+    };
+    const undo = (): void => {
+      if (images) this.mutateImages(pageId, images.undo);
+      if (strokes) this.mutate(pageId, strokes.undo);
+    };
+    let first = true; // checked above; a later redo is checked as it runs
     return this.history.execute({
       label, pageId, retained,
       do: () => {
-        if (strokes) this.mutate(pageId, strokes.redo);
-        if (images) this.mutateImages(pageId, images.redo);
+        if (first) redo();
+        else this.withinLimits(redo, undo);
+        first = false;
       },
-      undo: () => {
-        if (images) this.mutateImages(pageId, images.undo);
-        if (strokes) this.mutate(pageId, strokes.undo);
-      },
+      undo: () => this.withinLimits(undo, redo),
     });
   }
 

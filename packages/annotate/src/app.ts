@@ -272,7 +272,7 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     const size = doc.pageSize(pageId);
     const step = PASTE_OFFSET * render.pageUnit(size);
     const { strokes, images } = placeItems(clip, { size, strokes: doc.strokes(pageId), images: doc.images(pageId), step });
-    const full = doc.imageRoom(pageId, images);
+    const full = doc.imageRoom(pageId, images) || doc.inkRoom(pageId, strokes, images.length);
     if (full) return notify(`Not pasted: ${full}`, 'warn');
     if (!doc.addItems(pageId, strokes, images, label)) return;
     if (app.tool !== 'selector') app.setTool('selector');
@@ -340,6 +340,7 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     onPagesChanged: null,
     onRefresh: null,
     sync: null,
+    notify,
 
     currentTool() { return app.tools[app.tool]; },
     activeSurface() { return opts.activeSurface(); },
