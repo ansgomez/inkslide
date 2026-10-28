@@ -419,3 +419,6 @@ startup bundle. The adapter then saves the bytes.
   `INKSLIDE_USER_DATA`, `INKSLIDE_PRINT_TO_PDF`) are ignored by packaged builds unless they
   were packaged as test builds (`dist.mjs --test-build`, packages named `*-TEST*`), so a
   release cannot be pointed at another page.
+- Rust tests of the Tauri shell's commands (`apps/mobile/src-tauri/src/lib.rs`: names and
+  keys, payloads, picked-file grants, read limits, sharing, atomic writes); CI runs
+  `cargo check` and `cargo test` on Linux (job `rust` in `.github/workflows/ci.yml`).

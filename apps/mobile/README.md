@@ -184,10 +184,15 @@ The `ios` subcommands exist only in the CLI on macOS, so their flags above are f
 ```sh
 pnpm --filter @inkslide/mobile test     # config checks (node:test)
 pnpm --filter @inkslide/mobile check    # cargo check of src-tauri (desktop target)
-cargo test --manifest-path apps/mobile/src-tauri/Cargo.toml   # name, payload and picked-file checks of the commands
+cargo test --manifest-path apps/mobile/src-tauri/Cargo.toml   # name, payload, picked-file, read-limit, share and atomic-write checks of the commands
 pnpm --filter @inkslide/web build:tauri && pnpm --filter @inkslide/mobile smoke   # Linux, WebKitGTK; a window flashes
 pnpm --filter @inkslide/web test        # includes test/tauri-adapter.test.ts (mocked IPC)
 ```
+
+CI (`.github/workflows/ci.yml`, job `rust`) runs `cargo check --all-targets` and `cargo test`
+(also with `--features smoke`) on Ubuntu with the WebKitGTK, librsvg and appindicator
+development packages; it caches only the downloaded crates, saved from pushes to `main`. The
+smoke test needs a display and is not run there.
 
 The smoke test builds into `src-tauri/target/smoke` with `TAURI_CONFIG` pointing the frontend
 at a copy of `apps/web/dist` plus a test script, and a temporary `XDG_DATA_HOME`. It covers
