@@ -342,9 +342,15 @@ pointer and blank pages, filling the window on black, with no toolbar. You keep 
 the main window; the audience window takes no input.
 
 - With a second display (a projector or an external screen), the audience window opens full
-  screen on it. With one display, and always on Linux with Wayland (where apps cannot choose
-  the screen a window opens on), it opens as a small window: move it to the other screen and
-  press **F11** there to make it full screen.
+  screen on it. With one display, it opens as a small window; press **F11** in it to make it
+  full screen.
+- On Linux with Wayland, apps cannot choose the screen a window opens on, so it always opens
+  as a small window: drag it to the projector. It goes full screen there by itself when the
+  app can tell it has moved, which works when the two screens use different scaling (for
+  example a laptop at 125% or 200% and a projector at 100%). Otherwise, or if it stays a
+  window, press **F11** in it. If you leave full screen with F11, it stays a window until you
+  move it to another screen or start presenter mode again. It never goes full screen on its own
+  on the main window's screen.
 - The audience window always shows the whole page; zooming or fit width in the main window
   does not change it. Erasing and moving strokes show there once they are done.
 - **F5** again, View → Presenter Mode, or **Esc** in the audience window ends presenter mode,

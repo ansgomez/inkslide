@@ -36,7 +36,8 @@ export const AUDIENCE_SIZE = { width: 960, height: 540 };
  * `canPlace` false (Wayland): the compositor ignores window positions and the
  * app window's display is not known reliably, so a full-screen window could
  * cover the app window on its own display. Then it is always the window, for
- * the user to move to the projector.
+ * the user to move to the projector (audienceAutoFullScreen then makes it
+ * full screen there when it can tell).
  */
 export function audiencePlacement(displays: readonly DisplayInfo[], appDisplayId: number, canPlace = true): AudiencePlacement {
   const other = canPlace ? displays.find(d => d.id !== appDisplayId) : undefined;
@@ -66,4 +67,70 @@ export function audienceKey(input: { type: string; key: string; alt?: boolean; c
   if (input.type !== 'keyDown' || input.alt || input.control || input.meta) return null;
   if (input.key === 'Escape' || input.key === 'F5') return 'exit';
   return input.key === 'F11' ? 'fullscreen' : null;
+}
+
+/** What a page's `window.screen` says about the display it is on (CSS pixels, like display bounds). */
+export interface ScreenReport {
+  availLeft: number;
+  availTop: number;
+  availWidth: number;
+  availHeight: number;
+}
+
+/**
+ * The display a page's `window.screen` describes: the one whose work area
+ * starts there (or, failing that, whose bounds hold that corner); null if none.
+ */
+export function screenDisplay(displays: readonly DisplayInfo[], s: ScreenReport | null): number | null {
+  if (!s || !Number.isFinite(s.availLeft) || !Number.isFinite(s.availTop)) return null;
+  const exact = displays.find(d => d.workArea.x === s.availLeft && d.workArea.y === s.availTop
+    && d.workArea.width === s.availWidth && d.workArea.height === s.availHeight)
+    ?? displays.find(d => d.workArea.x === s.availLeft && d.workArea.y === s.availTop);
+  if (exact) return exact.id;
+  const b = displays.find(d => s.availLeft >= d.bounds.x && s.availLeft < d.bounds.x + d.bounds.width
+    && s.availTop >= d.bounds.y && s.availTop < d.bounds.y + d.bounds.height);
+  return b ? b.id : null;
+}
+
+/**
+ * Where the audience and app windows were last seen (Wayland): the pair being
+ * confirmed and how often it was seen in a row, and the pair last acted on.
+ */
+export interface AutoFullScreenState {
+  pending: string | null;
+  count: number;
+  settled: string | null;
+}
+
+export const AUTO_FULL_SCREEN_START: AutoFullScreenState = { pending: null, count: 0, settled: null };
+
+/** How many checks in a row must agree before the audience window counts as moved (it may be mid-drag). */
+export const AUTO_FULL_SCREEN_SETTLE = 2;
+
+/**
+ * Wayland: whether the audience window should go full screen now. On Wayland
+ * Electron does not report where a window is, so main asks both pages for
+ * their `window.screen` (screenDisplay) every so often and passes the display
+ * ids here (null: not known).
+ *
+ * Once the two windows are seen on the same pair of displays a few times in a
+ * row (`settle`), and that pair is new, the audience window goes full screen if
+ * it is on a display other than the app window's and not full screen already.
+ * The same pair never does it again, so leaving full screen (F11) sticks until
+ * the window is moved to another display or presenter mode starts again. On
+ * the app window's display, or when either display is not known, never.
+ */
+export function audienceAutoFullScreen(
+  state: AutoFullScreenState,
+  seen: { audience: number | null; app: number | null; fullScreen: boolean },
+  settle = AUTO_FULL_SCREEN_SETTLE,
+): { state: AutoFullScreenState; fullScreen: boolean } {
+  if (seen.audience === null || seen.app === null) return { state: { ...state, pending: null, count: 0 }, fullScreen: false };
+  const pair = `${seen.audience}:${seen.app}`;
+  const count = pair === state.pending ? state.count + 1 : 1;
+  if (count < settle || pair === state.settled) return { state: { ...state, pending: pair, count }, fullScreen: false };
+  return {
+    state: { pending: pair, count, settled: pair },
+    fullScreen: seen.audience !== seen.app && !seen.fullScreen,
+  };
 }

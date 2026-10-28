@@ -38,10 +38,14 @@ desktop app uses Electron.
   backup could sit next to the notes in the app data directory, with a toolbar button as in
   the browser).
 - **Presenter mode:** try it with a real projector on Linux, Windows and macOS. On Wayland the
-  audience window opens as a window for the user to move and make full screen (F11), since
-  the compositor places windows itself; going full screen on its own once it is shown on
-  another display than the app window's would save that step. Mirror erasing and
-  moving while they happen; a browser and PWA version (`BroadcastChannel` and `window.open`).
+  compositor places windows itself, so the audience window opens as a window for the user to
+  drag to the projector. It then goes full screen by itself, but only when the two displays
+  use different scales: Electron reports no window position or display on Wayland, and a
+  page's `window.screen` follows the display only when the scale changes (checked with KWin
+  and Electron 43). With equal scales the user still presses F11. A Wayland protocol for this
+  (or Chromium passing on which output a window is on) would close that gap. Mirror erasing
+  and moving while they happen; a browser and PWA version (`BroadcastChannel` and
+  `window.open`).
 - **Later:** opening Marp HTML decks directly.
 
 ## Why Electron on the desktop
