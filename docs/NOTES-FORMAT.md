@@ -209,7 +209,9 @@ units, so it keeps its look if the scaling rules change later; files store no si
 
 A v1 file (for example the notes of a Marp HTML deck) can be opened with or imported into the
 PDF exported from that deck. Its strokes are in slide px; the PDF is in points. Before loading,
-`scaleV1ToPdf` scales them:
+`scaleV1ToPdf` scales them. The same applies to version 3 notes of a Marp deck (a `deck` without
+`source`): Marp notes are told by their deck, not their version, and their images are scaled
+too (`x`, `y`, `w`, `h` by the page's `s`).
 
 - per page, `s = pageWidth / deck.size[0]`, but only if the aspect ratio matches within 1 %
   (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays.

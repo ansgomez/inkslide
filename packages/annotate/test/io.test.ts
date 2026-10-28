@@ -100,6 +100,23 @@ describe('v1 load', () => {
     expect(doc.sequence()).toEqual(['p1', 'b-xy-1', 'p2', 'p3']);
   });
 
+  it('scales v3 Marp notes (with images) too: strokes and images', () => {
+    const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP8z8DAwMDAyPCfgYGBiQEJAAAqNwIDlBYW1QAAAABJRU5ErkJggg==';
+    const file = v1File();
+    file.version = 3;
+    file.pages[0].images = [{ id: 'i', x: 100, y: 200, w: 400, h: 100, src: PNG }];
+    file.pages.push({ id: 's2', kind: 'slide', slide: 2, strokes: [], images: [{ id: 'j', x: 40, y: 40, w: 80, h: 80, src: PNG }] });
+    const doc = new NotesDoc(pdfDeck());
+    const res = loadNotes(doc, file);
+    expect(res.scaled).toBe(0.75);
+    expect(doc.strokes('p1')[0].points[0]).toEqual([75, 150, 0.5]);
+    expect(doc.images('p1')[0]).toMatchObject({ x: 75, y: 150, w: 300, h: 75 });
+    expect(doc.images('p2')[0]).toMatchObject({ x: 30, y: 30, w: 60, h: 60 }); // a page with only images
+    // PDF notes (deck.source "pdf") are never scaled, whatever their version.
+    const pdfNotes = { ...file, deck: { ...file.deck, source: 'pdf' as const } };
+    expect(scaleV1ToPdf(pdfNotes, new NotesDoc(pdfDeck())).scale).toBeNull();
+  });
+
   it('does not scale across different aspect ratios (warns instead)', () => {
     const doc = new NotesDoc(deckFromPdf({ title: 'Signals – Übung 1', pageSizes: [[595, 842], [595, 842], [595, 842]] }));
     const res = loadNotes(doc, v1File());
