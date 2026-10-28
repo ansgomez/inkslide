@@ -20,8 +20,11 @@
  * On the channel (all checked with parseLinkMessage; presenter messages are
  * checked once more with parsePresenterMessage by the audience):
  *
- *   probe  presenter → presenters: is this tab id taken? (on load, before ready)
+ *   probe  presenter → presenters: is this tab id taken? (on load, before ready;
+ *          only where the browser has no Web Locks, see presenter-web.ts)
  *   taken  presenter → presenter `to`: yes, by me (the prober is a duplicated tab)
+ *   ping   audience → presenter `to`: are you still there? (every BEAT_MS)
+ *   beat   presenter → audience: yes
  *   ready  presenter → audience: I am here (on load, or when an audience asks)
  *   hello  audience → presenter: send me everything (`to`: the presenter it
  *          follows; null: asking who is there)
@@ -31,22 +34,29 @@
  *   m      presenter → audience: one presenter message
  *
  * A tab duplicated by the browser copies sessionStorage, so it starts with the
- * same tab id as a tab still open: its probe is answered with `taken`, and it
- * moves to a new id (a channel and a pop-up name of its own) before it ever
- * says ready. A reloaded tab's earlier page is gone, so nobody answers its
- * probe and it keeps its id and its audience window. Should two presenters
- * still share a channel, the audience follows the one whose `ready` it heard
- * last and ignores the other; that one hears the hello to the other and stops.
+ * same tab id as a tab still open. presenter-web.ts makes the id the tab's own
+ * with a Web Lock; where there are none, the duplicate's probe is answered
+ * with `taken` and it moves to a new id (a channel and a pop-up name of its
+ * own) before it ever says ready. Should two presenters still share a
+ * channel, the audience follows the one whose `ready` it heard last and
+ * ignores the other; that one hears the hello to the other and stops.
  *
  * The audience answers every `ready` with a hello, also from the presenter it
- * follows (a tab reloaded without `gone`: crashed, discarded, restored), and
- * closes itself when, after `gone`, no presenter comes back within GRACE_MS.
+ * follows (a tab reloaded without `gone`: crashed, discarded, restored). It
+ * pings its presenter every BEAT_MS; MISSED_BEATS pings without a word from
+ * it (crashed, killed, frozen) count as `gone`. The audience drives this, not
+ * the presenter: a hidden presenter tab's timers are throttled by the
+ * browser, its message handlers are not. After `gone`, and from the start
+ * until a presenter first answers, the audience closes itself when no
+ * presenter comes within GRACE_MS.
  */
 
 /** One message on the channel (see the module comment). */
 export type LinkMessage =
   | { kind: 'probe'; from: string }
   | { kind: 'taken'; from: string; to: string }
+  | { kind: 'ping'; from: string; to: string }
+  | { kind: 'beat'; from: string }
   | { kind: 'ready'; from: string }
   | { kind: 'hello'; from: string; to: string | null }
   | { kind: 'bye'; from: string }
@@ -58,6 +68,13 @@ export type LinkMessage =
 export const PROBE_MS = 400;
 /** How long the audience waits for its presenter tab to come back after `gone`, ms; then it closes. */
 export const GRACE_MS = 10_000;
+/** How often the audience pings its presenter, ms. */
+export const BEAT_MS = 2000;
+/**
+ * Pings in a row without an answer after which the presenter counts as gone:
+ * (MISSED_BEATS + 1) × BEAT_MS after its last word at most, about 6 s.
+ */
+export const MISSED_BEATS = 2;
 
 /** Ids of windows and of a presenter tab's channel: letters, digits and '-', at most 64. */
 const ID = /^[A-Za-z0-9-]{1,64}$/;
@@ -88,10 +105,10 @@ export function parseLinkMessage(value: unknown): LinkMessage | null {
   if (!isLinkId(v.from)) return null;
   const from = v.from;
   switch (v.kind) {
-    case 'probe': case 'ready': case 'bye': case 'gone': case 'quit':
+    case 'probe': case 'ready': case 'bye': case 'gone': case 'quit': case 'beat':
       return { kind: v.kind, from };
-    case 'taken':
-      return isLinkId(v.to) ? { kind: 'taken', from, to: v.to } : null;
+    case 'taken': case 'ping':
+      return isLinkId(v.to) ? { kind: v.kind, from, to: v.to } : null;
     case 'hello':
       if (v.to !== null && !isLinkId(v.to)) return null;
       return { kind: 'hello', from, to: v.to };
@@ -195,6 +212,8 @@ export function createPresenterLink(port: LinkPort, setActive: (on: boolean) => 
       }
     } else if (probing) {
       // Not on the channel yet.
+    } else if (m.kind === 'ping') {
+      if (m.to === id) port.post({ kind: 'beat', from: id });
     } else if (m.kind === 'hello') {
       if (m.to === null) port.post({ kind: 'ready', from: id }); // the audience picks whom to follow
       else if (m.to !== id) lose(m.from); // it follows another presenter now
@@ -254,6 +273,8 @@ export interface AudienceHandlers {
 export interface AudienceLink {
   /** Ask for everything again (back from the back/forward cache). */
   hello(): void;
+  /** Stop the timers (tests; a window closing stops them anyway). */
+  stop(): void;
   /** The audience window closes or reloads. */
   leave(): void;
 }
@@ -264,10 +285,34 @@ export function createAudienceLink(port: LinkPort, on: AudienceHandlers, options
   const timers = options.timers ?? defaultTimers;
   let presenter: string | null = null;
   let grace: unknown = null;
+  /** Heard from the presenter since the last ping; pings in a row without a word. */
+  let heard = false;
+  let missed = 0;
+  let beatTimer: unknown = null;
+
   const stopGrace = (): void => {
     if (grace !== null) timers.clearTimeout(grace);
     grace = null;
   };
+  /** No presenter: close when none comes within GRACE_MS. */
+  const armGrace = (): void => {
+    stopGrace();
+    grace = timers.setTimeout(() => { grace = null; on.quit(); }, GRACE_MS);
+  };
+  const lost = (): void => {
+    presenter = null;
+    on.gone();
+    armGrace();
+  };
+  const beat = (): void => {
+    beatTimer = timers.setTimeout(beat, BEAT_MS);
+    if (!presenter) return;
+    if (heard) missed = 0;
+    else if (++missed >= MISSED_BEATS) return lost();
+    heard = false;
+    port.post({ kind: 'ping', from: id, to: presenter });
+  };
+
   port.listen(data => {
     const m = parseLinkMessage(data);
     if (!m) return;
@@ -275,22 +320,29 @@ export function createAudienceLink(port: LinkPort, on: AudienceHandlers, options
       // Also from the presenter followed: it may have reloaded without saying gone.
       stopGrace();
       presenter = m.from;
+      heard = true;
+      missed = 0;
       port.post({ kind: 'hello', from: id, to: presenter });
       on.connected();
-    } else if (m.from !== presenter) {
-      // Only the presenter followed is heard.
-    } else if (m.kind === 'm') on.message(m.m);
-    else if (m.kind === 'gone') {
-      presenter = null;
-      on.gone();
-      stopGrace();
-      grace = timers.setTimeout(() => { grace = null; on.quit(); }, GRACE_MS);
-    } else if (m.kind === 'quit') on.quit();
+      return;
+    }
+    if (m.from !== presenter) return; // only the presenter followed is heard
+    heard = true;
+    if (m.kind === 'm') on.message(m.m);
+    else if (m.kind === 'gone') lost();
+    else if (m.kind === 'quit') on.quit();
   });
   const link: AudienceLink = {
     hello() { port.post({ kind: 'hello', from: id, to: presenter }); },
     leave() { port.post({ kind: 'bye', from: id }); },
+    stop() {
+      stopGrace();
+      if (beatTimer !== null) timers.clearTimeout(beatTimer);
+      beatTimer = null;
+    },
   };
+  armGrace(); // no presenter answers at all: the window does not wait for ever
+  beatTimer = timers.setTimeout(beat, BEAT_MS);
   link.hello();
   return link;
 }

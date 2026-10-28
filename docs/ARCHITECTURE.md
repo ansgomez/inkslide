@@ -263,21 +263,35 @@ and the audience checks every message with `parsePresenterMessage` as on the des
                ◄── hello / bye ──                         ◄── ready / gone / quit ──►
 ```
 
+The tab id must be the tab's alone, but a tab duplicated by the browser copies
+sessionStorage, and so the id. The tab holds a Web Lock named after its id for the page's
+life (`navigator.locks`, `ifAvailable`; the browser lets it go when the page closes or
+crashes) and joins the channel only once it has it. A tab that cannot get it takes a new id
+(its own channel and pop-up name); the id kept from before a reload is tried a few times
+first (100 ms apart), as the page before may not have let go yet. Back from the
+back/forward cache the tab checks the lock again (`locks.query`, with a lock only this page
+holds to find its client id): still its own, or free and taken again, it says `ready`; held
+by another tab, it moves to a new id and leaves that tab the audience window. Where there are
+no Web Locks, a loading tab `probe`s its channel instead, a tab still open answers `taken`,
+and after 400 ms without an answer (`PROBE_MS`) it says `ready`.
+
 The link (`parseLinkMessage` checks it): every window has a link id of its own, new on each
-page load. A presenter tab that loads first `probe`s its channel: a tab duplicated by the
-browser copies sessionStorage and so starts with the tab id of a tab still open, which
-answers `taken`; the duplicate then moves to a new tab id (its own channel and pop-up name)
-before it says anything else. After 400 ms without an answer (`PROBE_MS`) it says `ready`.
-The audience says `hello` when it loads and answers every `ready` with one (also from the
-presenter it follows: a tab reloaded without `gone` after a crash or a discard), to the
-presenter whose `ready` it heard last, and that presenter sends everything
-(`setActive(true)`); it ignores messages from any other. `bye` (the audience window closes
-or reloads; also the pop-up seen closed, checked every second) stops the sending; `gone`
-(the presenter tab closes or reloads) makes the audience wait for it, and close itself if no
-presenter is back within 10 s (`GRACE_MS`); `quit` (F5 again) closes it. After a reload the
-tab finds its audience window again on its channel, so F5 closes that window rather than
+page load. The audience says `hello` when it loads and answers every `ready` with one (also
+from the presenter it follows: a tab reloaded without `gone` after a crash or a discard), to
+the presenter whose `ready` it heard last, and that presenter sends everything
+(`setActive(true)`); it ignores messages from any other. `bye` (the audience window closes,
+reloads or goes into the back/forward cache; also the pop-up seen closed, checked every
+second) stops the sending. `gone` (the presenter tab closes, reloads or goes into the
+back/forward cache) makes the audience wait; so does a presenter that stops answering: the
+audience `ping`s it every 2 s (`BEAT_MS`) and counts it gone after two pings without a `beat`
+or any other message (about 6 s: crashed, killed, frozen). The audience drives this because
+a hidden presenter tab's timers are throttled, its message handlers are not. From its start
+until a presenter first answers, and after a presenter is gone, the audience closes itself if
+none comes within 10 s (`GRACE_MS`); `quit` (F5 again) closes it. After a reload the tab
+finds its audience window again on its channel, so F5 closes that window rather than
 opening another; the pop-up's name is the tab id's, so opening again reuses a window of the
-same tab rather than piling up windows. F5 is left alone while typing in a field. The audience page shows a hint to click
+same tab rather than piling up windows. While a PDF is open, F5 in a text field does nothing
+(a reload would lose the text). The audience page shows a hint to click
 (or press F11) for full screen, as a page may only ask for it on a click, and closes on F5 or
 Escape out of full screen. `audience.html` is a second Vite entry, so it gets the same CSP
 and is in the service worker's precache (it works offline). The Tauri builds have no

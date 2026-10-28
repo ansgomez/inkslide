@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  audienceUrl, channelName, createAudienceLink, createPresenterLink, GRACE_MS, idFromHash, isLinkId, newLinkId, parseLinkMessage,
-  PROBE_MS,
+  audienceUrl, BEAT_MS, channelName, createAudienceLink, createPresenterLink, GRACE_MS, idFromHash, isLinkId, MISSED_BEATS, newLinkId,
+  parseLinkMessage, PROBE_MS,
 } from '../src/presenter-link';
 import { bus, manualTimers } from './link-bus';
 
@@ -14,7 +14,9 @@ describe('parseLinkMessage', () => {
     expect(parseLinkMessage({ kind: 'hello', from: 'a1', to: 'b-2' })).toEqual({ kind: 'hello', from: 'a1', to: 'b-2' });
     expect(parseLinkMessage({ kind: 'taken', from: 'a', to: 'b' })).toEqual({ kind: 'taken', from: 'a', to: 'b' });
     expect(parseLinkMessage({ kind: 'taken', from: 'a' })).toBeNull();
-    for (const kind of ['probe', 'bye', 'gone', 'quit']) expect(parseLinkMessage({ kind, from: 'a' })).toEqual({ kind, from: 'a' });
+    expect(parseLinkMessage({ kind: 'ping', from: 'a', to: 'b' })).toEqual({ kind: 'ping', from: 'a', to: 'b' });
+    expect(parseLinkMessage({ kind: 'ping', from: 'a', to: null })).toBeNull();
+    for (const kind of ['probe', 'bye', 'gone', 'quit', 'beat']) expect(parseLinkMessage({ kind, from: 'a' })).toEqual({ kind, from: 'a' });
     expect(parseLinkMessage({ kind: 'm', from: 'a', m: { type: 'page' } })).toEqual({ kind: 'm', from: 'a', m: { type: 'page' } });
   });
 
@@ -78,16 +80,16 @@ describe('presenter and audience links', () => {
     p.leave();
     b.run();
     expect(on.gone).toHaveBeenCalledTimes(1);
-    expect(clock.pending()).toEqual([GRACE_MS]);
+    expect(clock.pending()).toContain(GRACE_MS);
     const again = vi.fn();
     createPresenterLink(b.port(), again, () => {}, { id: 'p1-reloaded' }); // the same tab reloaded: a new link id
     b.run();
     expect(again.mock.calls).toEqual([[true]]);
-    expect(clock.pending()).toEqual([]); // back in time: the window stays
+    expect(clock.pending()).not.toContain(GRACE_MS); // back in time: the window stays
     // Gone again, and not back: the window closes itself.
     b.inject({ kind: 'gone', from: 'p1-reloaded' });
     b.run();
-    clock.fire();
+    clock.fireMs(GRACE_MS);
     expect(on.quit).toHaveBeenCalledTimes(1);
   });
 
@@ -116,7 +118,7 @@ describe('presenter and audience links', () => {
     const original = vi.fn();
     const p1 = createPresenterLink(b.port(), original, () => {}, { id: 'p1', taken: vi.fn(), timers: clock.timers });
     b.run();
-    clock.fire(); // nobody answered its probe: it is ready
+    clock.fireMs(PROBE_MS); // nobody answered its probe: it is ready
     b.run();
     const on = audienceHandlers();
     createAudienceLink(b.port(), on, { id: 'a1' });
@@ -127,7 +129,7 @@ describe('presenter and audience links', () => {
     const p2 = createPresenterLink(b.port(), copy, () => {}, { id: 'p2', taken, timers: clock.timers });
     b.run();
     expect(taken).toHaveBeenCalledTimes(1);
-    clock.fire();
+    clock.fireMs(PROBE_MS);
     b.run();
     p2.send('from the copy');
     p1.send('from the original');
@@ -202,5 +204,54 @@ describe('presenter and audience links', () => {
     const clock = manualTimers();
     createPresenterLink(b.port(), vi.fn(), () => {}, { id: 'p1', taken: vi.fn(), timers: clock.timers });
     expect(clock.pending()).toEqual([PROBE_MS]);
+  });
+
+  it('pings its presenter; one that stops answering (crashed, killed) counts as gone, then the window closes', () => {
+    const b = bus();
+    const clock = manualTimers();
+    const p = createPresenterLink(b.port(), vi.fn(), () => {}, { id: 'p1' });
+    b.run();
+    const on = audienceHandlers();
+    createAudienceLink(b.port(), on, { id: 'a1', timers: clock.timers });
+    b.run();
+    // Answered beats: it stays.
+    for (let i = 0; i < 2 * MISSED_BEATS; i++) {
+      clock.fireMs(BEAT_MS);
+      b.run();
+    }
+    expect(on.gone).not.toHaveBeenCalled();
+    // The presenter dies without a word (its channel closes with it).
+    p.close();
+    for (let i = 0; i < MISSED_BEATS; i++) {
+      clock.fireMs(BEAT_MS);
+      b.run();
+    }
+    expect(on.gone).not.toHaveBeenCalled(); // the first ping went out after its last answer
+    for (let i = 0; i < 1; i++) {
+      clock.fireMs(BEAT_MS);
+      b.run();
+    }
+    expect(on.gone).toHaveBeenCalledTimes(1);
+    expect(on.quit).not.toHaveBeenCalled();
+    clock.fireMs(GRACE_MS);
+    expect(on.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it('an audience no presenter ever answers closes after GRACE_MS', () => {
+    const b = bus();
+    const clock = manualTimers();
+    const on = audienceHandlers();
+    createAudienceLink(b.port(), on, { id: 'a1', timers: clock.timers });
+    b.run();
+    expect(clock.pending()).toContain(GRACE_MS);
+    clock.fireMs(GRACE_MS);
+    expect(on.quit).toHaveBeenCalledTimes(1);
+    // One that is answered in time stays.
+    const on2 = audienceHandlers();
+    createAudienceLink(b.port(), on2, { id: 'a2', timers: clock.timers });
+    createPresenterLink(b.port(), vi.fn(), () => {}, { id: 'p1' });
+    b.run();
+    clock.fireMs(GRACE_MS);
+    expect(on2.quit).not.toHaveBeenCalled();
   });
 });

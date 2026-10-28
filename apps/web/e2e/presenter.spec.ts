@@ -245,6 +245,18 @@ test('browser: F5 opens the audience window, which mirrors the tab; reloads, clo
   await expect(present).toBeVisible();
   await expect(present).not.toHaveClass(/is-active/);
 
+  // F5 in a text field does nothing: no pop-up, and no reload that would lose the text.
+  await page.evaluate(() => {
+    const input = document.createElement('input');
+    input.id = 'e2e-field';
+    document.body.appendChild(input);
+  });
+  await page.locator('#e2e-field').fill('typed');
+  await page.locator('#e2e-field').press('F5');
+  await expect(page.locator('#e2e-field')).toHaveValue('typed');
+  expect(context.pages()).toHaveLength(1);
+  await page.evaluate(() => document.getElementById('e2e-field')!.remove());
+
   const opened = context.waitForEvent('page');
   await page.keyboard.press('F5');
   const audience = await opened;
