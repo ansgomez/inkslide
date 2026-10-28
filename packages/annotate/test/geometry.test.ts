@@ -216,6 +216,13 @@ describe('splitByEraser', () => {
     }
   });
 
+  it('keeps a surviving one-point fragment as a dot', () => {
+    // Short enough that no samples fall between the two points: the eraser
+    // takes the first, the second is a run of one.
+    const hl: Stroke = { id: 'h', tool: 'highlighter', color: '#000', size: 40, points: [[0, 0, 0.5], [10, 0, 0.5]] };
+    expect(g.splitByEraser(hl, [-31, 0], [-31, 0], 20)).toEqual([[[10, 0, 0.5]]]);
+  });
+
   it('returns [] when the whole stroke is erased', () => {
     expect(g.splitByEraser(pen(line(0, 10), 2), [5, 0], [5, 0], 50)).toEqual([]);
   });

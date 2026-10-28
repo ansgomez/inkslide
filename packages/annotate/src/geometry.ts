@@ -400,8 +400,9 @@ export function splitByEraser(stroke: StrokeLike, a: XY, b: XY, radius: number):
   const pieces: Point[][] = [];
   let run: { p: Point; orig: boolean }[] | null = null, removed = false;
 
+  // A run of one sample is still ink the eraser missed: it stays as a dot.
   const flush = (): void => {
-    if (run && run.length >= 2) {
+    if (run && run.length) {
       const r = run;
       const keep = r.filter((s, i) => s.orig || i === 0 || i === r.length - 1);
       pieces.push(keep.map(s => s.p));
