@@ -263,14 +263,21 @@ and the audience checks every message with `parsePresenterMessage` as on the des
                ◄── hello / bye ──                         ◄── ready / gone / quit ──►
 ```
 
-The link (`parseLinkMessage` checks it): the presenter tab says `ready` when it loads (a new
-link id per load); the audience says `hello` when it loads, to the presenter whose `ready` it
-heard last, and that presenter sends everything (`setActive(true)`). `bye` (the audience
-window closes or reloads; also the pop-up seen closed, checked every second) stops the
-sending; `gone` (the presenter tab closes or reloads) makes the audience wait for it; `quit`
-(F5 again) closes the audience window. Each tab has its own channel, so two tabs never mirror
-into one window; a tab duplicated by the browser shares the id, and the last one to start
-wins (the other hears the `hello` to it and stops). The audience page shows a hint to click
+The link (`parseLinkMessage` checks it): every window has a link id of its own, new on each
+page load. A presenter tab that loads first `probe`s its channel: a tab duplicated by the
+browser copies sessionStorage and so starts with the tab id of a tab still open, which
+answers `taken`; the duplicate then moves to a new tab id (its own channel and pop-up name)
+before it says anything else. After 400 ms without an answer (`PROBE_MS`) it says `ready`.
+The audience says `hello` when it loads and answers every `ready` with one (also from the
+presenter it follows: a tab reloaded without `gone` after a crash or a discard), to the
+presenter whose `ready` it heard last, and that presenter sends everything
+(`setActive(true)`); it ignores messages from any other. `bye` (the audience window closes
+or reloads; also the pop-up seen closed, checked every second) stops the sending; `gone`
+(the presenter tab closes or reloads) makes the audience wait for it, and close itself if no
+presenter is back within 10 s (`GRACE_MS`); `quit` (F5 again) closes it. After a reload the
+tab finds its audience window again on its channel, so F5 closes that window rather than
+opening another; the pop-up's name is the tab id's, so opening again reuses a window of the
+same tab rather than piling up windows. F5 is left alone while typing in a field. The audience page shows a hint to click
 (or press F11) for full screen, as a page may only ask for it on a click, and closes on F5 or
 Escape out of full screen. `audience.html` is a second Vite entry, so it gets the same CSP
 and is in the service worker's precache (it works offline). The Tauri builds have no

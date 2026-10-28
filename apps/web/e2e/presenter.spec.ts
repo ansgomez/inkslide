@@ -213,6 +213,16 @@ test('the audience sees erasing and moving while they happen', async ({ browser 
   const page = (await audience.locator('.ink-page').boundingBox())!;
   expect((before.y - after.y) / page.height).toBeCloseTo(0.15, 1);
 
+  // A page turn ends a preview, also to a page the audience does not know yet.
+  const ids = await presenter.evaluate(() =>
+    (window as unknown as { inkslideViewer: { session: { doc: { strokes(p: string): { id: string }[] } } } }).inkslideViewer.session.doc.strokes('p1').map(x => x.id));
+  const deliver = (m: unknown) => audience.evaluate(msg => (window as unknown as { deliver(m: unknown): void }).deliver(msg), m);
+  await deliver({ type: 'moving', page: 'p1', ids, dx: 30, dy: 30 });
+  await expect(moved).toHaveCount(1);
+  await deliver({ type: 'page', page: 'b-not-yet' });
+  await expect(moved).toHaveCount(0);
+  await deliver({ type: 'page', page: 'p1' });
+
   // Undo: the audience follows.
   await presenter.keyboard.press('Control+z');
   expect(await relayOnce(presenter, audience, ['delta'])).toEqual(['delta']);
@@ -283,9 +293,12 @@ test('browser: F5 opens the audience window, which mirrors the tab; reloads, clo
   await expect(page.locator('.ann-banner')).toContainText('blocked the audience window');
 });
 
-test('browser: two presenter tabs each have their own audience window', async ({ page }) => {
+test('browser: two presenter tabs each have their own audience window, also a duplicated tab', async ({ page }) => {
   const context = page.context();
   const other = await context.newPage();
+  // A tab duplicated by the browser starts with its original's sessionStorage: the same tab id.
+  await page.addInitScript(() => sessionStorage.setItem('inkslide:presenter-id', 'e2e-same-tab'));
+  await other.addInitScript(() => sessionStorage.setItem('inkslide:presenter-id', 'e2e-same-tab'));
   for (const p of [page, other]) {
     await p.goto('/');
     await openPdf(p);
@@ -305,4 +318,6 @@ test('browser: two presenter tabs each have their own audience window', async ({
   await expect(audienceStrokes(audience2)).toHaveCount(1);
   await expect(audienceStrokes(audience)).toHaveCount(1);
   await expect.poll(() => audience.evaluate(() => document.querySelectorAll('.ann-pen path').length)).toBe(1);
+  expect(audience.url()).not.toBe(audience2.url());
+  expect(audience.isClosed()).toBe(false);
 });

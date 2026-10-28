@@ -340,6 +340,7 @@ with people you would show those to.
 window. It shows the page you are on, your ink (also the stroke you are writing, and strokes
 as you erase or move them), the laser pointer and blank pages, filling the window on black,
 with no toolbar. You keep writing in the main window; the audience window takes no input.
+This is the same in the desktop app and in the browser.
 
 - With a second display (a projector or an external screen), the audience window opens full
   screen on it. With one display, and always on Linux with Wayland (where apps cannot choose
@@ -362,9 +363,11 @@ presenter button (a screen) at the end of the toolbar. The audience window opens
 - **F5** again (in either window), the presenter button, or **Esc** in the audience window
   (when it is not full screen) ends presenter mode, as does closing the audience window.
 - Reloading either window is fine: the audience window shows everything again once both are
-  back. If you close the main tab, the audience window waits for it.
-- Each tab has its own audience window: presenting from two tabs opens two.
-- Without a PDF open, F5 reloads the page as usual.
+  back. If you close the main tab, the audience window waits 10 seconds for it, then closes.
+- Each tab has its own audience window: presenting from two tabs (also a duplicated tab)
+  opens two.
+- While a PDF is open, F5 is presenter mode, not reload: reload with **Ctrl+R** (**Cmd+R** on
+  a Mac). Without a PDF open, F5 reloads the page as usual.
 
 The iPad and Android apps have no presenter mode.
 

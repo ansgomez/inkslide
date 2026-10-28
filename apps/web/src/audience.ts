@@ -211,13 +211,14 @@ function moving(m: Extract<PresenterMessage, { type: 'moving' }>): void {
 }
 
 function show(pageId: string): void {
+  // Another page: the preview of the one left ends (also when the new one is not known yet).
+  if (preview && preview.page !== pageId) endPreview();
   const surface = surfaceFor(pageId);
   if (!surface) {
     wanted = pageId; // shown once its blank page arrives
     return;
   }
   wanted = '';
-  if (preview && preview.page !== pageId) endPreview();
   const prev = current ? surfaces.get(current) : undefined;
   current = pageId;
   if (prev && prev !== surface) {
@@ -438,6 +439,8 @@ if (bridge && typeof bridge.onAudience === 'function') {
         setWaiting('The presenter’s tab was closed or is reloading. Waiting for it…');
       });
     },
+    // F5 in the presenter tab, or no presenter back within GRACE_MS. A window not opened by a
+    // script (the URL typed in) stays: it keeps its text and follows a presenter that comes.
     quit: () => window.close(),
   });
   window.addEventListener('pagehide', e => { if (!e.persisted) link.leave(); });

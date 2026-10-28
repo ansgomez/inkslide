@@ -1,34 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  audienceUrl, channelName, createAudienceLink, createPresenterLink, idFromHash, isLinkId, newLinkId, parseLinkMessage,
-  type LinkPort,
+  audienceUrl, channelName, createAudienceLink, createPresenterLink, GRACE_MS, idFromHash, isLinkId, newLinkId, parseLinkMessage,
+  PROBE_MS,
 } from '../src/presenter-link';
-
-/** A stand-in BroadcastChannel: messages reach every other port when run() delivers them (in order). */
-function bus() {
-  const ports: { fn: ((d: unknown) => void) | null }[] = [];
-  let queue: { from: object; data: unknown }[] = [];
-  return {
-    port(): LinkPort {
-      const me = { fn: null as ((d: unknown) => void) | null };
-      ports.push(me);
-      return {
-        post: m => { queue.push({ from: me, data: structuredClone(m) }); },
-        listen: fn => { me.fn = fn; },
-      };
-    },
-    /** Deliver until no message is left. */
-    run() {
-      while (queue.length) {
-        const run = queue;
-        queue = [];
-        for (const { from, data } of run) for (const p of ports) if (p !== from && p.fn) p.fn(data);
-      }
-    },
-    /** Post raw data as another window would. */
-    inject(data: unknown) { queue.push({ from: {}, data }); },
-  };
-}
+import { bus, manualTimers } from './link-bus';
 
 const audienceHandlers = () => ({ message: vi.fn(), connected: vi.fn(), gone: vi.fn(), quit: vi.fn() });
 
@@ -37,7 +12,9 @@ describe('parseLinkMessage', () => {
     expect(parseLinkMessage({ kind: 'ready', from: 'a1', x: 1 })).toEqual({ kind: 'ready', from: 'a1' });
     expect(parseLinkMessage({ kind: 'hello', from: 'a1', to: null })).toEqual({ kind: 'hello', from: 'a1', to: null });
     expect(parseLinkMessage({ kind: 'hello', from: 'a1', to: 'b-2' })).toEqual({ kind: 'hello', from: 'a1', to: 'b-2' });
-    for (const kind of ['bye', 'gone', 'quit']) expect(parseLinkMessage({ kind, from: 'a' })).toEqual({ kind, from: 'a' });
+    expect(parseLinkMessage({ kind: 'taken', from: 'a', to: 'b' })).toEqual({ kind: 'taken', from: 'a', to: 'b' });
+    expect(parseLinkMessage({ kind: 'taken', from: 'a' })).toBeNull();
+    for (const kind of ['probe', 'bye', 'gone', 'quit']) expect(parseLinkMessage({ kind, from: 'a' })).toEqual({ kind, from: 'a' });
     expect(parseLinkMessage({ kind: 'm', from: 'a', m: { type: 'page' } })).toEqual({ kind: 'm', from: 'a', m: { type: 'page' } });
   });
 
@@ -66,10 +43,11 @@ describe('presenter and audience links', () => {
   it('an audience that opens gets everything; one that closes stops the sending', () => {
     const b = bus();
     const setActive = vi.fn();
-    const presenter = createPresenterLink(b.port(), setActive, () => {}, 'p1');
+    const presenter = createPresenterLink(b.port(), setActive, () => {}, { id: 'p1' });
     b.run(); // the presenter's ready: nobody listens yet
     const on = audienceHandlers();
-    const audience = createAudienceLink(b.port(), on, 'a1');
+    const audiencePort = b.port();
+    const audience = createAudienceLink(audiencePort, on, { id: 'a1' });
     b.run();
     expect(setActive.mock.calls).toEqual([[true]]);
     expect(on.connected).toHaveBeenCalled();
@@ -79,40 +57,97 @@ describe('presenter and audience links', () => {
     expect(on.message).toHaveBeenCalledWith({ type: 'page', page: 'p2' });
     // The audience reloads: bye, then everything again.
     audience.leave();
+    audiencePort.close!(); // the page is gone
     b.run();
     expect(setActive.mock.calls).toEqual([[true], [false]]);
     presenter.send({ type: 'page', page: 'p3' }); // nobody listens: not even posted
-    createAudienceLink(b.port(), audienceHandlers(), 'a2');
+    createAudienceLink(b.port(), audienceHandlers(), { id: 'a2' });
     b.run();
     expect(setActive.mock.calls).toEqual([[true], [false], [true]]);
     expect(on.message).toHaveBeenCalledTimes(1);
   });
 
-  it('a reloaded presenter tab is followed again; until then the audience waits', () => {
+  it('a reloaded presenter tab is followed again; if it does not come back the audience closes', () => {
     const b = bus();
-    const first = vi.fn();
-    const p = createPresenterLink(b.port(), first, () => {}, 'p1');
+    const clock = manualTimers();
+    const p = createPresenterLink(b.port(), vi.fn(), () => {}, { id: 'p1' });
+    b.run();
     const on = audienceHandlers();
-    createAudienceLink(b.port(), on, 'a1');
+    createAudienceLink(b.port(), on, { id: 'a1', timers: clock.timers });
     b.run();
     p.leave();
     b.run();
     expect(on.gone).toHaveBeenCalledTimes(1);
+    expect(clock.pending()).toEqual([GRACE_MS]);
     const again = vi.fn();
-    createPresenterLink(b.port(), again, () => {}, 'p1-reloaded'); // the same tab reloaded (a new link id): it announces itself
+    createPresenterLink(b.port(), again, () => {}, { id: 'p1-reloaded' }); // the same tab reloaded: a new link id
     b.run();
     expect(again.mock.calls).toEqual([[true]]);
+    expect(clock.pending()).toEqual([]); // back in time: the window stays
+    // Gone again, and not back: the window closes itself.
+    b.inject({ kind: 'gone', from: 'p1-reloaded' });
+    b.run();
+    clock.fire();
+    expect(on.quit).toHaveBeenCalledTimes(1);
   });
 
-  it('the audience follows one tab: the last one to announce itself', () => {
+  it('a presenter that reloads without saying gone is followed again (its new ready is answered)', () => {
+    const b = bus();
+    createPresenterLink(b.port(), vi.fn(), () => {}, { id: 'p1' });
+    b.run();
+    const on = audienceHandlers();
+    createAudienceLink(b.port(), on, { id: 'a1' });
+    b.run();
+    const crashed = vi.fn();
+    const p = createPresenterLink(b.port(), crashed, () => {}, { id: 'p2' }); // no gone from p1 (crash, tab discarded)
+    b.run();
+    expect(crashed.mock.calls).toEqual([[true]]);
+    expect(p.connected).toBe(true);
+    // Its ready again (back from the back/forward cache): answered again, everything again.
+    p.announce();
+    b.run();
+    expect(crashed.mock.calls).toEqual([[true], [true]]);
+    expect(on.connected).toHaveBeenCalledTimes(3);
+  });
+
+  it('a duplicated tab (same tab id) moves to another id and leaves the original its audience', () => {
+    const b = bus();
+    const clock = manualTimers();
+    const original = vi.fn();
+    const p1 = createPresenterLink(b.port(), original, () => {}, { id: 'p1', taken: vi.fn(), timers: clock.timers });
+    b.run();
+    clock.fire(); // nobody answered its probe: it is ready
+    b.run();
+    const on = audienceHandlers();
+    createAudienceLink(b.port(), on, { id: 'a1' });
+    b.run();
+    expect(original.mock.calls).toEqual([[true]]);
+    // The duplicate probes: the original answers; it moves away before saying ready.
+    const taken = vi.fn(), copy = vi.fn();
+    const p2 = createPresenterLink(b.port(), copy, () => {}, { id: 'p2', taken, timers: clock.timers });
+    b.run();
+    expect(taken).toHaveBeenCalledTimes(1);
+    clock.fire();
+    b.run();
+    p2.send('from the copy');
+    p1.send('from the original');
+    b.run();
+    expect(copy).not.toHaveBeenCalled();
+    expect(original.mock.calls).toEqual([[true]]);
+    expect(on.message.mock.calls).toEqual([['from the original']]);
+    expect(on.connected).toHaveBeenCalledTimes(1);
+  });
+
+  it('the audience follows one presenter: the last one to announce itself', () => {
     const b = bus();
     const one = vi.fn(), two = vi.fn();
-    const p1 = createPresenterLink(b.port(), one, () => {}, 'p1');
+    const p1 = createPresenterLink(b.port(), one, () => {}, { id: 'p1' });
+    b.run();
     const on = audienceHandlers();
-    createAudienceLink(b.port(), on, 'a1');
+    createAudienceLink(b.port(), on, { id: 'a1' });
     b.run();
     expect(one.mock.calls).toEqual([[true]]);
-    const p2 = createPresenterLink(b.port(), two, () => {}, 'p2');
+    const p2 = createPresenterLink(b.port(), two, () => {}, { id: 'p2' });
     b.run();
     expect(two.mock.calls).toEqual([[true]]);
     expect(one.mock.calls).toEqual([[true], [false]]); // it heard the hello to p2
@@ -120,7 +155,7 @@ describe('presenter and audience links', () => {
     p2.send('from p2');
     b.run();
     expect(on.message.mock.calls).toEqual([['from p2']]);
-    // The tab not followed cannot end it or make it wait.
+    // The presenter not followed cannot end it or make it wait.
     b.inject({ kind: 'quit', from: 'p1' });
     b.inject({ kind: 'gone', from: 'p1' });
     b.run();
@@ -134,8 +169,9 @@ describe('presenter and audience links', () => {
   it('drop() stops the sending when the pop-up is seen closed', () => {
     const b = bus();
     const setActive = vi.fn(), changed = vi.fn();
-    const p = createPresenterLink(b.port(), setActive, changed, 'p1');
-    createAudienceLink(b.port(), audienceHandlers(), 'a1');
+    const p = createPresenterLink(b.port(), setActive, changed, { id: 'p1' });
+    b.run();
+    createAudienceLink(b.port(), audienceHandlers(), { id: 'a1' });
     b.run();
     p.drop();
     p.drop();
@@ -147,15 +183,24 @@ describe('presenter and audience links', () => {
   it('ignores what is not a link message', () => {
     const b = bus();
     const setActive = vi.fn();
-    createPresenterLink(b.port(), setActive, () => {}, 'p1');
+    createPresenterLink(b.port(), setActive, () => {}, { id: 'p1' });
+    b.run();
     const on = audienceHandlers();
-    createAudienceLink(b.port(), on, 'a1');
+    createAudienceLink(b.port(), on, { id: 'a1' });
     b.run();
     b.inject({ kind: 'm', from: '../p1', m: 1 });
     b.inject({ type: 'open' });
     b.inject({ kind: 'bye', from: 'a 1' });
+    b.inject({ kind: 'taken', from: 'x', to: 'p1' }); // not probing: ignored
     b.run();
     expect(on.message).not.toHaveBeenCalled();
     expect(setActive.mock.calls).toEqual([[true]]);
+  });
+
+  it('waits PROBE_MS before ready', () => {
+    const b = bus();
+    const clock = manualTimers();
+    createPresenterLink(b.port(), vi.fn(), () => {}, { id: 'p1', taken: vi.fn(), timers: clock.timers });
+    expect(clock.pending()).toEqual([PROBE_MS]);
   });
 });
