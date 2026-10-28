@@ -8,8 +8,9 @@
  * can be moved up (a pre-render becomes the page on screen) or cancelled
  * (queued: dropped; running: PDF.js's RenderTask is cancelled).
  *
- * All pages are fetched up front: their sizes make the notes document
- * (deckFromPdf), and PDF.js keeps the page objects anyway. What a render
+ * All pages are fetched up front, PAGE_FETCHES at a time: their sizes make
+ * the notes document (deckFromPdf), and PDF.js keeps the page objects anyway.
+ * A PDF of more than MAX_PAGES pages is not opened. What a render
  * leaves behind on a page (operator list, images) is freed with
  * page.cleanup() once the page is not among the last few rendered.
  *
@@ -28,6 +29,25 @@ const assetUrl = (dir: string): string => new URL(`./pdfjs/${dir}/`, document.ba
 
 /** Pages whose render resources are kept (the page shown, its neighbours, one more). */
 const KEEP_RENDERED = 4;
+
+/** Pages asked of PDF.js at a time while a PDF opens. */
+const PAGE_FETCHES = 16;
+/** Most pages a PDF may have (as the desktop's recent files accept). */
+export const MAX_PAGES = 100_000;
+
+/** Every page of `pdf`, at most `parallel` asked for at a time (not one request per page at once). */
+async function fetchPages(pdf: PDFDocumentProxy, parallel = PAGE_FETCHES): Promise<PDFPageProxy[]> {
+  const pages: PDFPageProxy[] = new Array(pdf.numPages);
+  let next = 0;
+  const fetchNext = async (): Promise<void> => {
+    while (next < pages.length) {
+      const i = next++;
+      pages[i] = await pdf.getPage(i + 1);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(parallel, pages.length) }, fetchNext));
+  return pages;
+}
 
 /** Render queue priorities, lower first. */
 export const PRIORITY = { current: 0, neighbor: 1, thumb: 2 } as const;
@@ -90,7 +110,10 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
   let pages: PDFPageProxy[];
   try {
     pdf = await task.promise;
-    pages = await Promise.all(Array.from({ length: pdf.numPages }, (_, i) => pdf.getPage(i + 1)));
+    if (pdf.numPages > MAX_PAGES) {
+      throw new Error(`it has ${pdf.numPages.toLocaleString('en')} pages; Inkslide opens PDFs of up to ${MAX_PAGES.toLocaleString('en')} pages`);
+    }
+    pages = await fetchPages(pdf);
   } catch (e) {
     void task.destroy(); // each document has its own worker, which would stay otherwise
     throw e;

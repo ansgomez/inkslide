@@ -18,6 +18,8 @@ pen. Your ink is saved automatically in a separate notes file; the PDF is never 
   itself (they may ask for permission to read it again); other browsers (Safari, Firefox)
   keep a copy of the PDF in the site's storage, up to 250 MB together, the oldest first to go.
 
+A PDF can have at most 100,000 pages; a larger one is not opened, and a message says so.
+
 ### Installing as an app (iPad, Chrome, Edge)
 
 The browser version can be installed and then works without a network connection:
