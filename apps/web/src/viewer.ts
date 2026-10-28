@@ -742,9 +742,20 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
       // The open notes, as just written: if reading them again fails, the notes read
       // before (without the strokes written since) must not take their place.
       const openText = reread && s ? serializeNotes(s.doc) : '';
+      // Written just now, so the read must find them: none (a sync client moved the file
+      // for a moment) is a failed read too, unless the user let them go unsaved.
+      const expectNotes = reread && !loseUnsaved && !!s && s.doc.hasNotes();
       closeSession();
       if (reread) {
-        const again = await loadSaved(file, sha256, newDoc);
+        const readAgain = async (): Promise<Awaited<ReturnType<typeof loadSaved>>> => {
+          const r = await loadSaved(file, sha256, newDoc);
+          return r.problem || !expectNotes || r.doc.hasNotes() ? r : { ...r, problem: 'found no notes', reason: 'no notes found' };
+        };
+        let again = await readAgain();
+        if (again.problem) {
+          await new Promise(r => setTimeout(r, NOTES_RETRY_MS));
+          again = await readAgain();
+        }
         if (!again.problem) doc = again.doc;
         else {
           console.warn('Reading the notes again failed; the open notes are kept', again.reason);
