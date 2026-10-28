@@ -150,6 +150,15 @@ describe('recent files', () => {
     expect([...(await recent.load('a')).bytes]).toEqual([3, 3]); // still the copy it was
   });
 
+  it('a new copy whose entry can not be stored is removed again (no untracked bytes)', async () => {
+    const f = fakeBackend();
+    const recent = createRecentFiles(f.backend, clock());
+    f.state.failPuts = true;
+    expect(await recent.remember({ id: 'a', name: 'a.pdf', size: 2 }, { bytes: bytes(2, 3) })).toBe(false);
+    expect(f.copies.size).toBe(0);
+    expect(f.records.size).toBe(0);
+  });
+
   it('keeps one entry per file on disk when its content (hash) changed', async () => {
     const f = fakeBackend();
     const recent = createRecentFiles(f.backend, clock());

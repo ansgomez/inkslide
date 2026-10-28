@@ -13,6 +13,7 @@
  * browser's storage quota, the copies the limits would drop go first (else
  * the oldest one) and the write is tried once more. A PDF larger than the limit is not kept at all. An entry whose copy could
  * not be removed stays listed (its bytes still count) and goes next time.
+ * A new copy whose entry can not be stored is removed again.
  *
  * The storage itself (IndexedDB, OPFS) is a RecentBackend
  * (platform/recent-storage.ts), so this logic is tested with a fake.
@@ -175,7 +176,16 @@ export function createRecentFiles(backend: RecentBackend, opts: { limit?: number
           return false;
         }
       }
-      await backend.put(rec);
+      try {
+        await backend.put(rec);
+      } catch (e) {
+        // A new copy without its entry would take room no eviction counts: remove it.
+        if (rec.source === 'copy' && !old) {
+          await backend.removeCopy(info.id).catch(() => {});
+          return false;
+        }
+        throw e;
+      }
       if (old && old.source === 'copy' && rec.source === 'handle') await backend.removeCopy(old.id); // replaced by the handle
       const goneIds = new Set([...gone].map(r => r.id));
       const kept = [...(await backend.all()).filter(r => r.id !== rec.id && !goneIds.has(r.id)), rec];
