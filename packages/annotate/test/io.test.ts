@@ -4,7 +4,7 @@ import {
   deckFromPdf, inkedPages, loadNotes, loadNotesText, notesPathFor, parseNotes, scaleV1ToPdf, serializeNotes, sha256Hex, slug,
 } from '../src/io';
 import {
-  MAX_PAGES, MAX_POINTS, MAX_STROKES, MAX_WARNINGS, NotesDoc, createStroke, type BlankPage, type NotesJSON, type PageJSON,
+  MAX_PAGES, MAX_PDF_PAGES, MAX_POINTS, MAX_STROKES, MAX_WARNINGS, NotesDoc, createStroke, type BlankPage, type NotesJSON, type PageJSON, type Size, type StrokeJSON,
 } from '../src/model';
 
 /** A notes file as saved by the Marp HTML decks (format v1). */
@@ -123,6 +123,66 @@ describe('limits of a notes file', () => {
     for (const w of warnings) expect(w.length).toBeLessThan(300);
     expect(warnings).toContain(`Skipped page ${'x'.repeat(100)}… of unknown kind ${'x'.repeat(100)}…`);
   });
+});
+
+describe('edits within the limits of a notes file', () => {
+  const dot = (x = 1) => createStroke({ tool: 'pen', color: '#000', size: 1, points: [[x, 1]] });
+  const deck = (slides: number) => deckFromPdf({ title: 'big.pdf', pageSizes: Array.from({ length: slides }, () => [960, 540] as Size) });
+  /** The notes, saved and read back as on the next open. */
+  const reopen = (doc: NotesDoc, slides: number) => {
+    const back = new NotesDoc(deck(slides));
+    loadNotesText(back, serializeNotes(doc));
+    return back;
+  };
+
+  it('a PDF of MAX_PDF_PAGES pages, inked on every page, has room for 10 000 blank pages, and loads again', () => {
+    expect(MAX_PAGES).toBe(MAX_PDF_PAGES + 10_000);
+    const doc = new NotesDoc(deck(MAX_PDF_PAGES));
+    const st = { id: '', tool: 'pen', color: '#000', size: 1, points: [[1, 1, 0.5]] } as StrokeJSON; // load gives each a new id
+    const pages: PageJSON[] = Array.from({ length: MAX_PDF_PAGES }, (_, i) => ({ id: `p${i + 1}`, kind: 'slide', slide: i + 1, strokes: [st] }));
+    for (let i = 0; i < 9_999; i++) pages.push({ id: `b-x-${i}`, kind: 'blank', after: 1, paper: 'plain', strokes: [] });
+    doc.load({ format: 'marp-notes', version: 2, deck: deck(MAX_PDF_PAGES) as unknown as NotesJSON['deck'], pages });
+    expect(doc.pageRoom()).toBeNull();
+    doc.insertBlankPage('p1');
+    expect(doc.pageRoom()).toMatch(/at most 110,000 pages/);
+    expect(() => doc.insertBlankPage('p1')).toThrow(/at most 110,000 pages/);
+    expect(reopen(doc, MAX_PDF_PAGES).blankOrder).toHaveLength(10_000);
+  }, 60000);
+
+  it('refuses ink on a page without notes beyond MAX_PAGES pages (kept pages count)', () => {
+    const doc = new NotesDoc(deck(1));
+    const st = { id: '', tool: 'pen', color: '#000', size: 1, points: [[1, 1, 0.5]] } as StrokeJSON; // load gives each a new id
+    const kept: PageJSON[] = Array.from({ length: MAX_PAGES }, (_, i) => ({ id: `p${i + 2}`, kind: 'slide', slide: i + 2, strokes: [st] }));
+    doc.load({ format: 'marp-notes', version: 2, deck: deck(1) as unknown as NotesJSON['deck'], pages: kept });
+    expect(doc.kept).toHaveLength(MAX_PAGES);
+    expect(doc.inkRoom('p1', [dot()])).toMatch(/pages/);
+    expect(() => doc.addStroke('p1', dot())).toThrow(/pages/);
+    expect(() => doc.insertBlankPage('p1')).toThrow(/pages/);
+    expect(doc.strokes('p1')).toEqual([]);
+    expect(reopen(doc, 1).kept).toHaveLength(MAX_PAGES);
+  }, 60000);
+
+  it('refuses strokes and points beyond MAX_STROKES and MAX_POINTS, also by an undo', () => {
+    const doc = new NotesDoc(deck(2));
+    const st = { id: '', tool: 'pen', color: '#000', size: 1, points: [[1, 1, 0.5]] } as StrokeJSON; // load gives each a new id
+    doc.load({
+      format: 'marp-notes', version: 2, deck: deck(2) as unknown as NotesJSON['deck'],
+      pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: new Array(MAX_STROKES - 1).fill(st) }],
+    });
+    expect(doc.inkRoom('p2', [dot()])).toBeNull();
+    // A sparse list: its length counts.
+    expect(doc.inkRoom('p2', [{ points: new Array(MAX_POINTS) }])).toMatch(/at most 20,000,000 stroke points/);
+    const last = dot(5);
+    doc.addStroke('p2', last);
+    expect(doc.inkRoom('p2', [dot()])).toMatch(/at most 200,000 strokes/);
+    expect(() => doc.addStroke('p2', dot())).toThrow(/at most 200,000 strokes/);
+    // An erase, then another window fills the room: undoing the erase would go beyond, so it is dropped.
+    doc.removeStrokes('p2', [last.id]);
+    doc.applyRemoteStrokes('p2', [dot(7)]);
+    expect(doc.undo()).toBeNull();
+    expect(doc.strokes('p2')).toHaveLength(1);
+    expect(reopen(doc, 2).strokes('p1')).toHaveLength(MAX_STROKES - 1);
+  }, 60000);
 });
 
 describe('stroke colors on load', () => {

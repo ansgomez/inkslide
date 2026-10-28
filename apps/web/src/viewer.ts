@@ -559,6 +559,8 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
       canStep: dir => doc.neighbor(ses.current, dir) !== null,
       label: () => pageCounter(doc, ses.current),
       insert(paper) {
+        const full = doc.pageRoom();
+        if (full) return void banner(`No blank page added: ${full}`, 'warn');
         const cmd = doc.insertBlankPage(ses.current, paper || this.paper());
         show(cmd.pageId);
       },

@@ -102,6 +102,8 @@ export interface ToolHost {
   sync?: { laser(pageId: string, pt: Point): void } | null;
   /** Copy the area `rect` (page units, on the page) of page `pageId` as an image: the snapshot tool's release. */
   snapshot?(pageId: string, rect: RectLike): void;
+  /** Tell the user why an edit was refused (a document limit, see NotesDoc.inkRoom). */
+  notify?(text: string, kind?: 'info' | 'warn' | 'error'): void;
 }
 
 /** The event part tools look at (Shift draws straight lines). */
@@ -214,7 +216,14 @@ function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
       live!.remove();
       raw = live = null;
       // The page may be gone (a blank page deleted while drawing): the stroke goes with it.
-      if (app.doc.hasPage(surface.pageId)) app.doc.addStroke(surface.pageId, createStroke(data));
+      if (!app.doc.hasPage(surface.pageId)) return;
+      const stroke = createStroke(data);
+      const full = app.doc.inkRoom(surface.pageId, [stroke]);
+      if (full) {
+        if (app.notify) app.notify(`Not drawn: ${full}`, 'warn');
+        return;
+      }
+      app.doc.addStroke(surface.pageId, stroke);
     },
     cancel() {
       stopFrame();
@@ -335,7 +344,15 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       const gone = erasedImages!;
       const leftImages = pageThere && gone.size ? app.doc.images(surface.pageId).filter(i => !gone.has(i.id)) : undefined;
       working = last = base = origin = images = erasedImages = null;
-      if (result) app.doc.replaceContent(surface.pageId, { strokes: result, images: leftImages }, partial ? 'partial-erase' : 'erase');
+      if (!result) return;
+      try {
+        app.doc.replaceContent(surface.pageId, { strokes: result, images: leftImages }, partial ? 'partial-erase' : 'erase');
+      } catch (e) {
+        // Cutting strokes adds pieces and cut ends: at a document limit the erase is refused.
+        R.syncLayer(surface.layer, app.doc.strokes(surface.pageId));
+        if (R.syncImages) R.syncImages(surface.layer, app.doc.images(surface.pageId));
+        if (app.notify) app.notify(`Not erased: ${(e as Error).message}`, 'warn');
+      }
     },
     cancel(surface) {
       working = last = base = origin = images = erasedImages = null;
