@@ -37,14 +37,15 @@ const viewer = createViewer({
 
 // F5 starts and ends presenter mode in the browser, as in the desktop app (where the
 // menu has it). Only with a PDF open, or the audience window open: else F5 reloads
-// (Ctrl/Cmd+R always does). Not while typing in a field.
+// (Ctrl/Cmd+R always does). In a text field it does nothing then (a reload would
+// lose what is typed there).
 if (presenterMode) {
   const mode = presenterMode;
   window.addEventListener('keydown', e => {
-    if (e.key !== 'F5' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.isComposing || isTyping(e.target)) return;
+    if (e.key !== 'F5' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.isComposing) return;
     if (!viewer.session && !mode.on) return;
     e.preventDefault();
-    if (!e.repeat) mode.toggle();
+    if (!e.repeat && !isTyping(e.target)) mode.toggle();
   });
 }
 

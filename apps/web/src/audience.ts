@@ -443,7 +443,7 @@ if (bridge && typeof bridge.onAudience === 'function') {
     // script (the URL typed in) stays: it keeps its text and follows a presenter that comes.
     quit: () => window.close(),
   });
-  window.addEventListener('pagehide', e => { if (!e.persisted) link.leave(); });
+  window.addEventListener('pagehide', () => link.leave()); // also into the back/forward cache: hello again on return
   window.addEventListener('pageshow', e => { if (e.persisted) link.hello(); });
   browserInput();
 } else {

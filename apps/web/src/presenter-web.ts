@@ -10,14 +10,23 @@
  *   otherwise, and may block it anyway): the user is told how to allow it.
  * - The audience window closing (its 'bye', or the pop-up seen closed) stops
  *   the sending; a reload of it asks for everything again.
- * - This tab closing or reloading tells the audience to wait; the reloaded
- *   tab finds it again (same tab id: sessionStorage). While an audience
- *   window listens, F5 closes it, also one this tab opened before a reload
- *   (it has no reference to it any more). The pop-up's name is the tab id's,
- *   so opening again reuses a window of this tab left behind rather than
- *   piling up windows.
- * - A tab duplicated by the browser starts with its original's tab id; the
- *   link finds out (presenter-link.ts) and this tab moves to a new id.
+ * - This tab closing, reloading or going into the back/forward cache tells the
+ *   audience to wait (`gone`); the reloaded or restored tab finds it again
+ *   (same tab id: sessionStorage). While an audience window listens, F5
+ *   closes it, also one this tab opened before a reload (it has no reference
+ *   to it any more). The pop-up's name is the tab id's, so opening again
+ *   reuses a window of this tab left behind rather than piling up windows.
+ *
+ * The tab id must be this tab's alone: a tab duplicated by the browser copies
+ * sessionStorage, and so the id. The tab holds a Web Lock named after its id
+ * for as long as the page lives (the browser releases it when the page closes
+ * or crashes); a tab that cannot get the lock takes a new id until it gets
+ * one. Only then does it join the channel. Back from the back/forward cache
+ * it checks the lock again (the browser may have let it go while the page was
+ * cached): still its own, or free and taken again, it says ready; held by
+ * another tab, this tab moves to a new id and leaves that tab its window.
+ * Where there are no Web Locks, the link's probe finds duplicates instead.
+ * Until the id is settled (a few ms after load) F5 does nothing.
  *
  * Not used in the desktop app (its bridge and menu do this) nor on Tauri
  * (phones and tablets have no second window): main.ts decides.
@@ -39,12 +48,25 @@ export interface PresenterSwitch {
 export const ID_KEY = 'inkslide:presenter-id';
 /** How often an open pop-up is checked for having been closed, ms. */
 export const POLL_MS = 1000;
+/** Ids tried for a lock before giving up on locks (and using the probe). */
+const LOCK_TRIES = 8;
+/** Waits for the kept id's lock (a reload: the page before lets it go), and how long each, ms. */
+export const RETAKE_TRIES = 3;
+export const RETAKE_MS = 100;
+
+/** The part of navigator.locks used here (a stand-in in tests). */
+export interface LocksLike {
+  request(name: string, options: { ifAvailable: true }, callback: (lock: unknown) => unknown): Promise<unknown>;
+  query?(): Promise<{ held?: { name?: string; clientId?: string }[] }>;
+}
 
 /** What the browser gives presenter mode; injectable for tests. */
 export interface WebPresenterEnv {
   open(url: string, name: string, features: string): Window | null;
   port(name: string): LinkPort;
   storage: Pick<Storage, 'getItem' | 'setItem'> | null;
+  /** navigator.locks; null where the browser has none. */
+  locks: LocksLike | null;
   on(type: 'pagehide' | 'pageshow', fn: (e: PageTransitionEvent) => void): void;
   setInterval(fn: () => void, ms: number): unknown;
   clearInterval(id: unknown): void;
@@ -56,10 +78,12 @@ function browserEnv(): WebPresenterEnv {
   try {
     storage = sessionStorage;
   } catch { /* blocked: a reload loses the audience window */ }
+  const locks = typeof navigator !== 'undefined' && navigator.locks ? navigator.locks as unknown as LocksLike : null;
   return {
     open: (url, name, features) => window.open(url, name, features),
     port: broadcastPort,
     storage,
+    locks,
     on: (type, fn) => window.addEventListener(type, fn),
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: id => clearInterval(id as ReturnType<typeof setInterval>),
@@ -79,6 +103,40 @@ function tabId(storage: WebPresenterEnv['storage'], fresh = false): string {
   }
 }
 
+/** The lock that makes tab id `id` this tab's. */
+export const lockName = (id: string): string => `inkslide-presenter-${id}`;
+
+/**
+ * Take lock `name` if it is free and hold it for the page's life: 'held', or
+ * 'taken' (another page holds it), or 'error' (locks do not work here).
+ */
+export function holdLock(locks: LocksLike, name: string): Promise<'held' | 'taken' | 'error'> {
+  return new Promise(resolve => {
+    let answered = false;
+    locks.request(name, { ifAvailable: true }, lock => {
+      answered = true;
+      resolve(lock ? 'held' : 'taken');
+      return lock ? new Promise(() => {}) : undefined; // never released: the page's life
+    }).catch(() => { if (!answered) resolve('error'); });
+  });
+}
+
+/**
+ * Whether this page still holds lock `name`: true, false, or null if it cannot
+ * tell (no query). `self` is a lock only this page holds, to find its client id.
+ */
+export async function holdsLock(locks: LocksLike, name: string, self: string): Promise<boolean | null> {
+  if (!locks.query) return null;
+  try {
+    const held = (await locks.query()).held || [];
+    const me = held.find(l => l.name === self)?.clientId;
+    if (!me) return null;
+    return held.some(l => l.name === name && l.clientId === me);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Presenter mode over a BroadcastChannel; null where the browser has none.
  * `changed`: the switch turned (refresh the toolbar); `notify`: tell the user.
@@ -88,22 +146,47 @@ export function createWebPresenter(changed: () => void, notify: (text: string) =
   if (!env) return null;
   const e = env;
   let id = tabId(e.storage);
-  let link: PresenterLink;
-  const presenter: Presenter = createPresenter(m => link.send(m));
+  /** The link; null until the tab id is settled. */
+  let link: PresenterLink | null = null;
+  const presenter: Presenter = createPresenter(m => link?.send(m));
   let popup: Window | null = null;
   let poll: unknown = null;
+  /** A lock only this page holds: tells which held locks are this page's (holdsLock). */
+  const self = `inkslide-presenter-page-${newLinkId()}`;
 
-  /** The link on the channel of tab id `id`; a duplicated tab moves to a new id. */
-  const connect = (): void => {
+  /** The link on the channel of tab id `id`; `probe`: find duplicates by asking (no locks). */
+  const connect = (probe: boolean): void => {
     link = createPresenterLink(e.port(channelName(id)), on => presenter.setActive(on), changed, {
       timers: e.timers,
-      taken: () => {
+      taken: probe ? () => {
         id = tabId(e.storage, true);
-        connect();
-      },
+        connect(true);
+      } : undefined,
     });
   };
-  connect();
+
+  /** Make a tab id this tab's (its lock), then join its channel. */
+  async function claim(): Promise<void> {
+    if (!e.locks) return connect(true);
+    // The id kept from before a reload is tried a few times: the page before may not have let
+    // its lock go yet. A duplicate's original holds it for good.
+    let waits = RETAKE_TRIES;
+    for (let i = 0; i < LOCK_TRIES; i++) {
+      const got = await holdLock(e.locks, lockName(id));
+      if (got === 'held') return connect(false);
+      if (got === 'error') return connect(true);
+      if (waits-- > 0) {
+        await new Promise<void>(r => (e.timers ? e.timers.setTimeout(r, RETAKE_MS) : setTimeout(r, RETAKE_MS)));
+        continue;
+      }
+      waits = 0;
+      id = tabId(e.storage, true); // a duplicated tab: its original holds the id
+    }
+    connect(true);
+  }
+
+  if (e.locks) void holdLock(e.locks, self);
+  void claim();
 
   const stopPoll = (): void => {
     if (poll !== null) e.clearInterval(poll);
@@ -111,23 +194,53 @@ export function createWebPresenter(changed: () => void, notify: (text: string) =
   };
   const popupOpen = (): boolean => !!popup && !popup.closed;
 
-  // Unloading (closed or reloading): say so, and leave the channel at once.
+  /** Back from the back/forward cache: say ready if the id is still this tab's, else move to a new one. */
+  async function restored(): Promise<void> {
+    const l = link;
+    if (!l) return;
+    if (!e.locks) return l.announce();
+    let mine = await holdsLock(e.locks, lockName(id), self);
+    if (mine === null && (await holdLock(e.locks, self)) === 'held') {
+      // The browser let this page's locks go while it was cached (its own lock too): ask again.
+      mine = await holdsLock(e.locks, lockName(id), self);
+    }
+    if (mine === false) {
+      // Take the id's lock again if it is free.
+      const got = await holdLock(e.locks, lockName(id));
+      if (got === 'taken') {
+        // Another tab (a duplicate) owns the id now, and the audience window with it.
+        l.close();
+        popup = null;
+        stopPoll();
+        id = tabId(e.storage, true);
+        link = null;
+        changed();
+        return claim();
+      }
+    }
+    if (link === l) l.announce();
+  }
+
+  // Leaving (closed, reloading, or into the back/forward cache): the audience waits.
+  // Unloading for good also leaves the channel at once.
   e.on('pagehide', ev => {
-    if (ev.persisted) return;
+    if (!link) return;
     link.leave();
-    link.close();
+    if (!ev.persisted) link.close();
   });
-  e.on('pageshow', ev => { if (ev.persisted) link.announce(); });
+  e.on('pageshow', ev => { if (ev.persisted) void restored(); });
 
   const mode: PresenterSwitch = {
-    get on() { return link.connected || popupOpen(); },
+    get on() { return !!link && (link.connected || popupOpen()); },
     toggle() {
+      const l = link;
+      if (!l) return; // the tab id is not settled yet (just loaded)
       if (mode.on) {
-        link.quit(); // also an audience this tab no longer holds (opened before a reload)
+        l.quit(); // also an audience this tab no longer holds (opened before a reload)
         if (popupOpen()) popup!.close();
         popup = null;
         stopPoll();
-        link.drop();
+        l.drop();
         changed();
         return;
       }
@@ -141,7 +254,7 @@ export function createWebPresenter(changed: () => void, notify: (text: string) =
         if (popupOpen()) return;
         popup = null;
         stopPoll();
-        link.drop();
+        link?.drop();
         changed();
       }, POLL_MS);
       changed();

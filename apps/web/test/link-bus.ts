@@ -41,6 +41,32 @@ export function manualTimers() {
     timers,
     pending: () => [...pending.values()].map(t => t.ms),
     fire() { const run = [...pending.values()]; pending.clear(); run.forEach(t => t.fn()); },
+    /** Run only the timeouts of `ms` pending now. */
+    fireMs(ms: number) {
+      const run = [...pending].filter(([, t]) => t.ms === ms);
+      for (const [id] of run) pending.delete(id);
+      run.forEach(([, t]) => t.fn());
+    },
   };
 }
 
+
+/**
+ * A stand-in for navigator.locks shared by the pages of a test: `client(id)`
+ * is one page's view of it; release(id) drops that page's locks (it closed).
+ */
+export function fakeLocks() {
+  const held = new Map<string, string>(); // lock name -> client id
+  return {
+    held,
+    client: (clientId: string) => ({
+      request: async (name: string, _options: { ifAvailable: true }, callback: (lock: unknown) => unknown) => {
+        if (held.has(name)) return callback(null);
+        held.set(name, clientId);
+        return callback({ name });
+      },
+      query: async () => ({ held: [...held].map(([name, c]) => ({ name, clientId: c })) }),
+    }),
+    release(clientId: string) { for (const [name, c] of [...held]) if (c === clientId) held.delete(name); },
+  };
+}
