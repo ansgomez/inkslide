@@ -176,6 +176,33 @@ describe('createPresenter', () => {
     expect(sent).toEqual([{ type: 'close', reason: 'failed' }]);
   });
 
+  it('sends a page in full again after its message could not be sent', () => {
+    const sent: PresenterMessage[] = [];
+    let failing = false;
+    const clock = manualTimers();
+    const presenter = createPresenter(m => {
+      if (failing) throw new Error('could not be cloned');
+      sent.push(parsePresenterMessage(m));
+    }, clock.timers);
+    const doc = new NotesDoc(deckFromPdf({ title: 'Deck', pageSizes: [[960, 540]] }));
+    presenter.opened({ path: null, name: 'a.pdf', bytes: new Uint8Array(4) }, doc);
+    presenter.setActive(true);
+    sent.splice(0);
+    const mk = (x: number) => createStroke({ tool: 'pen', color: '#000', size: 4, points: [pt(x), pt(x + 1)] });
+    const a = mk(1), b = mk(5), c = mk(9);
+    doc.addStroke('p1', a);
+    clock.flush();
+    expect(sent.splice(0).map(m => m.type)).toEqual(['strokes']);
+    failing = true;
+    doc.addStroke('p1', b);
+    clock.flush();
+    failing = false;
+    doc.addStroke('p1', c);
+    clock.flush();
+    // Not a delta of c alone: the audience never got b.
+    expect(sent.splice(0)).toMatchObject([{ type: 'strokes', page: 'p1', strokes: [{ id: a.id }, { id: b.id }, { id: c.id }] }]);
+  });
+
   it('mirrors the stroke being written with only the points that changed, at most every LIVE_MS', () => {
     const { presenter, doc, file, clock, take } = setup();
     presenter.opened(file, doc);

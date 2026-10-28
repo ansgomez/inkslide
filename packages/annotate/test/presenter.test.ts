@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Point } from '../src/geometry';
-import { commonPrefix, parsePresenterMessage, PRESENTER_LIMITS } from '../src/presenter';
-import { NotesDoc } from '../src/model';
+import { applyLivePoints, commonPrefix, parsePresenterMessage, PRESENTER_LIMITS } from '../src/presenter';
+import { MAX_PAGES, MAX_POINTS, MAX_STROKES, NotesDoc } from '../src/model';
 import { deckFromPdf } from '../src/io';
 
 const stroke = { id: 's1', tool: 'pen', color: '#000', size: 4, points: [[1, 2, 0.4], [3, 4]] };
@@ -61,8 +61,14 @@ describe('parsePresenterMessage', () => {
 
   it('counts the points of all strokes against one limit', () => {
     // Sparse arrays: only their length counts here (map skips the holes).
-    const many = Array.from({ length: 6 }, (_, i) => ({ ...stroke, id: `s${i}`, points: new Array(2_000_000) }));
+    const many = Array.from({ length: 11 }, (_, i) => ({ ...stroke, id: `s${i}`, points: new Array(2_000_000) }));
     expect(() => parsePresenterMessage({ type: 'strokes', page: 'p1', strokes: many })).toThrow(/points/);
+  });
+
+  it('takes whatever a notes file may hold', () => {
+    expect(PRESENTER_LIMITS.strokes).toBe(MAX_STROKES);
+    expect(PRESENTER_LIMITS.points).toBe(MAX_POINTS);
+    expect(PRESENTER_LIMITS.blanks).toBe(MAX_PAGES);
   });
 });
 
@@ -75,6 +81,21 @@ describe('commonPrefix', () => {
     expect(commonPrefix(a, [[0, 0, 0.5], [2, 2, 0.5]])).toBe(1);
     expect(commonPrefix([], a)).toBe(0);
     expect(commonPrefix(a, [[0, 0, 0.6]])).toBe(0);
+  });
+});
+
+describe('applyLivePoints', () => {
+  it('keeps the first `from` points and appends the new ones', () => {
+    const pts: Point[] = [[0, 0, 0.5], [1, 1, 0.5], [2, 2, 0.5]];
+    expect(applyLivePoints(pts, 2, [[5, 5, 1]])).toEqual([[0, 0, 0.5], [1, 1, 0.5], [5, 5, 1]]);
+    expect(applyLivePoints(pts, 9, [[6, 6, 1]])).toHaveLength(4);
+    expect(applyLivePoints(pts, 0, [])).toEqual([]);
+  });
+
+  it('takes more points than a call takes arguments', () => {
+    const add: Point[] = Array.from({ length: 1_000_000 }, (_, i) => [i, 0, 0.5]);
+    expect(() => [].push(...(add as never[]))).toThrow(RangeError);
+    expect(applyLivePoints([[9, 9, 0.5]], 1, add)).toHaveLength(1_000_001);
   });
 });
 

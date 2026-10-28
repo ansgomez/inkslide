@@ -107,6 +107,38 @@ describe('pen and highlighter', () => {
     expect(s.points[s.points.length - 1]).toEqual([30, 0, 0.8]);
   });
 
+  it('smooths only the new points each frame, and skips a frame without new points', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => frames.push(fn));
+    // Points that count how often their x is read.
+    let reads = 0;
+    const counted = (x: number): Point => {
+      const p: Point = [0, 0, 0.5];
+      Object.defineProperty(p, 0, { get: () => { reads++; return x; } });
+      return p;
+    };
+    const { pen } = createTools(app, R.r);
+    pen.down!(surface, counted(0));
+    for (let i = 1; i <= 500; i++) {
+      pen.move!(surface, counted(i));
+      frames.shift()!(0);
+    }
+    expect(R.live.update).toHaveBeenCalledTimes(501);
+    // Smoothing the whole stroke every frame would read each point about 500 times on average.
+    expect(reads / 501).toBeLessThan(10);
+    // A frame with nothing new draws nothing.
+    pen.move!(surface, counted(501));
+    const frame = frames.shift()!;
+    frame(0);
+    reads = 0;
+    frame(0);
+    expect(reads).toBe(0);
+    expect(R.live.update).toHaveBeenCalledTimes(502);
+    pen.up!(surface, null);
+    const { points } = doc.calls[0].args[0] as Stroke;
+    expect(points[points.length - 1]).toEqual([501, 0, 0.5]);
+  });
+
   it('Shift draws a straight line', () => {
     const { highlighter } = createTools(app, R.r);
     highlighter.down!(surface, [0, 0, 0.5], { shiftKey: true });
@@ -373,6 +405,12 @@ describe('loadPrefs', () => {
     expect(tool).toBe('highlighter');
     expect(prefs.pen).toEqual({ color: '#be1e3c', size: 6 });
     expect(prefs.eraser).toEqual(DEFAULT_PREFS.eraser);
+  });
+
+  it('takes a stored color only if strokes can have it, as stored in strokes', () => {
+    const { prefs } = loadPrefs(stored({ prefs: { pen: { color: 'oklch(0.5 0.2 30)' }, highlighter: { color: 'hsl(60 100% 50%)' } } }));
+    expect(prefs.pen.color).toBe(DEFAULT_PREFS.pen.color);
+    expect(prefs.highlighter.color).toBe('#ffff00');
   });
 
   it('prefs of earlier versions (a preset 0..3, no step) load at their preset', () => {

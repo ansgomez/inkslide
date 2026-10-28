@@ -91,12 +91,16 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
     }
   };
 
-  /** A page's images for the audience if they changed: all of them, the data of new ones only. */
+  /**
+   * A page's images for the audience if they changed: all of them, the data of
+   * new ones only. A message that could not be sent leaves the page unknown,
+   * so the next one carries all the data.
+   */
   function sendImages(d: NotesDoc, id: string): void {
     const images = d.images(id);
     const had = sentImages.get(id) || new Map<string, PageImage>();
     if (images.length === had.size && images.every(i => had.get(i.id) === i)) return;
-    post({
+    const ok = post({
       type: 'images', page: id,
       images: images.map(i => {
         const known = had.get(i.id);
@@ -104,23 +108,30 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
         return known && known.src === i.src ? base : { ...base, src: i.src };
       }),
     });
-    sentImages.set(id, new Map(images.map(i => [i.id, i])));
+    if (ok) sentImages.set(id, new Map(images.map(i => [i.id, i])));
+    else sentImages.delete(id);
   }
 
-  /** A page's strokes for the audience: all of them the first time, else what changed. */
+  /**
+   * A page's strokes for the audience: all of them the first time, else what
+   * changed. A message that could not be sent leaves the page unknown, so the
+   * next change sends all of its strokes again.
+   */
   function sendPage(d: NotesDoc, id: string): void {
     sendImages(d, id);
     const strokes = d.strokes(id);
     const had = sent.get(id);
+    let ok: boolean;
     if (!had) {
-      post({ type: 'strokes', page: id, strokes: strokes.map(serializeStroke) });
+      ok = post({ type: 'strokes', page: id, strokes: strokes.map(serializeStroke) });
     } else {
       const changed = strokes.filter(s => had.get(s.id) !== s);
       const same = !changed.length && strokes.length === had.size;
       if (same) return; // e.g. an edit undone in the same task
-      post({ type: 'delta', page: id, order: strokes.map(s => s.id), strokes: changed.map(serializeStroke) });
+      ok = post({ type: 'delta', page: id, order: strokes.map(s => s.id), strokes: changed.map(serializeStroke) });
     }
-    sent.set(id, new Map(strokes.map(s => [s.id, s])));
+    if (ok) sent.set(id, new Map(strokes.map(s => [s.id, s])));
+    else sent.delete(id);
   }
 
   /** The audience gets all notes: no page has a known state there any more. */
@@ -130,7 +141,7 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
     // The notes carry the images: the audience has those of every page now.
     sentImages.clear();
     for (const [id, p] of d.pages) if (p.images.length) sentImages.set(id, new Map(p.images.map(i => [i.id, i])));
-    post({ type: 'notes', notes: JSON.stringify(d.toJSON()) });
+    if (!post({ type: 'notes', notes: JSON.stringify(d.toJSON()) })) sentImages.clear();
     notesSent = true;
     timers.queueMicrotask(() => { notesSent = false; });
   }
@@ -166,11 +177,11 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
       const { stroke } = live;
       const from = commonPrefix(live.sent, stroke.points);
       if (from < stroke.points.length || from < live.sent.length) {
-        post({
+        const ok = post({
           type: 'live', page: live.page, tool: live.tool, color: stroke.color, size: stroke.size,
           from, points: stroke.points.slice(from).map(p => [p[0], p[1], p[2]]),
         });
-        live.sent = stroke.points;
+        if (ok) live.sent = stroke.points;
         sent = true;
       }
     }

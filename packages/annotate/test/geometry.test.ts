@@ -189,6 +189,22 @@ describe('resample', () => {
   });
 });
 
+describe('createSmoother', () => {
+  it('gives smoothPoints of a growing list, reusing the result while nothing is added', () => {
+    const smoother = g.createSmoother();
+    const raw: Point[] = [];
+    for (let i = 0; i < 200; i++) {
+      // Some points closer than MIN_GAP, some far apart.
+      raw.push([i * (i % 3 ? 0.2 : 7), Math.sin(i) * 20, (i % 10) / 10]);
+      const pts = smoother.points(raw);
+      expect(pts).toEqual(g.smoothPoints(raw));
+      expect(smoother.points(raw)).toBe(pts);
+    }
+    expect(smoother.points(raw.slice(0, 5))).toEqual(g.smoothPoints(raw.slice(0, 5))); // shorter: starts over
+    expect(smoother.points([])).toEqual([]);
+  });
+});
+
 describe('splitByEraser', () => {
   it('returns null when nothing is erased', () => {
     expect(g.splitByEraser(pen(line(0, 100)), [50, 50], [50, 50], 5)).toBeNull();
@@ -214,6 +230,13 @@ describe('splitByEraser', () => {
     for (const piece of pieces) {
       expect(piece.slice(1, -1).every(isOrig)).toBe(true);
     }
+  });
+
+  it('keeps a surviving one-point fragment as a dot', () => {
+    // Short enough that no samples fall between the two points: the eraser
+    // takes the first, the second is a run of one.
+    const hl: Stroke = { id: 'h', tool: 'highlighter', color: '#000', size: 40, points: [[0, 0, 0.5], [10, 0, 0.5]] };
+    expect(g.splitByEraser(hl, [-31, 0], [-31, 0], 20)).toEqual([[[10, 0, 0.5]]]);
   });
 
   it('returns [] when the whole stroke is erased', () => {

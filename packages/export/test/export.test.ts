@@ -104,6 +104,14 @@ describe('svgPathOperators and parseColor', () => {
     expect(parseColor('white')).toEqual({ r: 1, g: 1, b: 1, a: 1 });
     expect(parseColor('bogus')).toEqual({ r: 0, g: 0, b: 0, a: 1 });
   });
+
+  it('parses every color a stroke may have: hsl(), all CSS names, transparent', () => {
+    expect(parseColor('hsl(120, 100%, 50%)')).toEqual({ r: 0, g: 1, b: 0, a: 1 });
+    expect(parseColor('hsl(240 100% 50% / 25%)')).toEqual({ r: 0, g: 0, b: 1, a: 0.25 });
+    expect(parseColor('rebeccapurple')).toEqual({ r: 0x66 / 255, g: 0x33 / 255, b: 0x99 / 255, a: 1 });
+    expect(parseColor('cornflowerblue')).toEqual({ r: 0x64 / 255, g: 0x95 / 255, b: 0xed / 255, a: 1 });
+    expect(parseColor('transparent')).toEqual({ r: 0, g: 0, b: 0, a: 0 });
+  });
 });
 
 describe('exportAnnotatedPdf', () => {

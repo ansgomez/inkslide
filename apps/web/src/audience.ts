@@ -17,7 +17,7 @@ import '@inkslide/annotate/toolbar.css';
 import './style.css';
 import { NotesDoc, type Paper, type Point } from '@inkslide/annotate';
 import { deckFromPdf } from '@inkslide/annotate/io';
-import { parsePresenterMessage, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
+import { applyLivePoints, parsePresenterMessage, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import * as render from '@inkslide/annotate/render';
 import type { StrokeTool } from '@inkslide/annotate/geometry';
 import type { StrokeInput } from '@inkslide/annotate/model';
@@ -238,8 +238,7 @@ function liveStroke(m: Extract<PresenterMessage, { type: 'live' }>): void {
     endLive();
     live = { page: m.page, tool: m.tool, stroke: render.liveStroke(surface.layer, m.tool), points: [] };
   }
-  live.points.length = Math.min(live.points.length, m.from);
-  live.points.push(...m.points);
+  applyLivePoints(live.points, m.from, m.points);
   if (live.points.length) live.stroke.update({ id: 'live', tool: m.tool, color: m.color, size: m.size, points: live.points });
 }
 

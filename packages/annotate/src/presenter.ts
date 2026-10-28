@@ -23,7 +23,10 @@
  *   laser     laser points on a page
  */
 import type { Point, StrokeTool, Vec2 } from './geometry';
-import { imageType, MAX_COLOR_LENGTH, MAX_DOC_IMAGE_CHARS, MAX_ID_LENGTH, MAX_PAGE_IMAGES, type Paper, type StrokeJSON } from './model';
+import {
+  imageType, MAX_COLOR_LENGTH, MAX_DOC_IMAGE_CHARS, MAX_ID_LENGTH, MAX_PAGE_IMAGES, MAX_PAGES, MAX_POINTS, MAX_STROKES,
+  type Paper, type StrokeJSON,
+} from './model';
 
 /** One blank page as sent to the audience. */
 export interface BlankMeta {
@@ -70,10 +73,13 @@ export const PRESENTER_LIMITS = Object.freeze({
   /** Ids (as the model keeps them, MAX_ID_LENGTH) and page ids. */
   id: MAX_ID_LENGTH,
   color: MAX_COLOR_LENGTH,
-  /** Strokes on one page, and points in one message (all strokes together). */
-  strokes: 100_000,
-  points: 10_000_000,
-  blanks: 10_000,
+  /**
+   * Strokes on one page, points in one message (all strokes together) and
+   * blank pages: the notes file's limits, so any page that loads can be mirrored.
+   */
+  strokes: MAX_STROKES,
+  points: MAX_POINTS,
+  blanks: MAX_PAGES,
   laserPoints: 1000,
   /** Images of one page, and characters of image data in one message (the notes file's limits). */
   images: MAX_PAGE_IMAGES,
@@ -213,4 +219,15 @@ export function commonPrefix(a: readonly Point[], b: readonly Point[]): number {
   let i = 0;
   while (i < n && (a[i] === b[i] || (a[i][0] === b[i][0] && a[i][1] === b[i][1] && a[i][2] === b[i][2]))) i++;
   return i;
+}
+
+/**
+ * The live stroke's points after a `live` message: `points` keeps its first
+ * `from` points and gets `add` after them (in place). A loop, not
+ * push(...add): a message may carry more points than a call takes arguments.
+ */
+export function applyLivePoints(points: Point[], from: number, add: readonly Point[]): Point[] {
+  points.length = Math.min(points.length, from);
+  for (const p of add) points.push(p);
+  return points;
 }

@@ -32,6 +32,9 @@ function randomPoints(rand: () => number, n: number): Point[] {
   return out;
 }
 
+// The port also keeps one-point fragments, which legacy dropped.
+const multiPoint = (pieces: Point[][] | null) => pieces && pieces.filter(p => p.length > 1);
+
 describe('geometry matches legacy geometry.js', () => {
   const rand = rng(42);
   const cases = Array.from({ length: 40 }, (_, i) => randomPoints(rand, 1 + (i % 15)));
@@ -56,7 +59,7 @@ describe('geometry matches legacy geometry.js', () => {
       const b: Point = [a[0] + 30, a[1] + 20, 0.5];
       for (const r of [4, 16, 64]) {
         expect(g.strokeHitsSegment(stroke, a, b, r)).toBe(legacyGeometry.strokeHitsSegment(legacyStroke, a, b, r));
-        expect(g.splitByEraser(stroke, a, b, r)).toEqual(legacyGeometry.splitByEraser(legacyStroke, a, b, r));
+        expect(multiPoint(g.splitByEraser(stroke, a, b, r))).toEqual(legacyGeometry.splitByEraser(legacyStroke, a, b, r));
       }
       expect(g.strokeBBox(stroke)).toEqual(legacyGeometry.strokeBBox(legacyStroke));
       const poly = g.rectPolygon([0, 0], [300, 200]);
@@ -78,7 +81,7 @@ describe('geometry matches legacy geometry.js', () => {
       const a: Point = [rand() * 400, 100 + rand() * 100, 0.5];
       const b: Point = [a[0] + (rand() - 0.5) * 80, a[1] + (rand() - 0.5) * 80, 0.5];
       for (const r of [2, 16, 64]) {
-        expect(g.splitByEraser(stroke, a, b, r)).toEqual(legacyGeometry.splitByEraser(legacyStroke, a, b, r));
+        expect(multiPoint(g.splitByEraser(stroke, a, b, r))).toEqual(legacyGeometry.splitByEraser(legacyStroke, a, b, r));
       }
     }
   });

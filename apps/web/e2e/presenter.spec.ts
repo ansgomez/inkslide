@@ -69,6 +69,16 @@ async function relay(presenter: Page, audience: Page): Promise<string[]> {
   return sent.map(m => (m as { type: string }).type);
 }
 
+/**
+ * Wait until the presenter has sent messages of all `types` (frames and the
+ * LIVE_MS timer run on their own time), then relay what it sent; returns their types.
+ */
+async function relayOnce(presenter: Page, audience: Page, types: string[]): Promise<string[]> {
+  await expect.poll(() => presenter.evaluate(() =>
+    (window as unknown as { stub: Stub }).stub.sent.map(m => (m as { type: string }).type))).toEqual(expect.arrayContaining(types));
+  return relay(presenter, audience);
+}
+
 const presenting = (page: Page, on: boolean) => page.evaluate(o => (window as unknown as { stub: Stub }).stub.presenter(o), on);
 const audienceStrokes = (page: Page) => page.locator('.ink-page svg.ann-page .ann-pen path.ann-stroke-pen:not(.ann-live)');
 
@@ -104,12 +114,11 @@ test('the audience page shows the presenter\'s page, ink, live stroke, laser and
     { ...pen, type: 'pointermove', ...(await at(0.4, 0.65)), buttons: 1 },
   ]);
   await firePointers(presenter, [{ ...pen, type: 'pointermove', ...(await at(0.5, 0.7)), buttons: 1 }]);
-  await presenter.waitForTimeout(100); // the tool's next frame and the live message after LIVE_MS
-  expect(await relay(presenter, audience)).toContain('live');
+  expect(await relayOnce(presenter, audience, ['live'])).toContain('live');
   await expect(audience.locator('path.ann-live')).toHaveCount(1);
   await firePointers(presenter, [{ ...pen, type: 'pointerup', ...(await at(0.5, 0.7)), buttons: 0 }]);
-  await presenter.waitForTimeout(50);
-  expect(await relay(presenter, audience)).toEqual(['strokes', 'live-end']);
+  // The update of the last move may still be on its way: the finished stroke goes before live-end.
+  expect((await relayOnce(presenter, audience, ['live-end'])).filter(t => t !== 'live')).toEqual(['strokes', 'live-end']);
   await expect(audience.locator('path.ann-live')).toHaveCount(0);
   await expect(audienceStrokes(audience)).toHaveCount(2);
 
@@ -118,8 +127,7 @@ test('the audience page shows the presenter\'s page, ink, live stroke, laser and
     (window as unknown as { kept: Element[] }).kept = [...document.querySelectorAll('.ann-pen path.ann-stroke-pen')];
   });
   await penStroke(presenter, [0.2, 0.8], [0.7, 0.85]);
-  await presenter.waitForTimeout(50);
-  expect(await relay(presenter, audience)).toEqual(['live', 'delta', 'live-end']);
+  expect(await relayOnce(presenter, audience, ['live-end'])).toEqual(['live', 'delta', 'live-end']);
   await expect(audienceStrokes(audience)).toHaveCount(3);
   expect(await audience.evaluate(() => (window as unknown as { kept: Element[] }).kept.every(n => n.isConnected))).toBe(true);
 
@@ -129,17 +137,15 @@ test('the audience page shows the presenter\'s page, ink, live stroke, laser and
     { ...pen, type: 'pointerover', ...(await at(0.5, 0.5)), buttons: 0 },
     { ...pen, type: 'pointermove', ...(await at(0.55, 0.5)), buttons: 0 },
   ]);
-  await presenter.waitForTimeout(50);
-  expect(await relay(presenter, audience)).toContain('laser');
+  expect(await relayOnce(presenter, audience, ['laser'])).toContain('laser');
   await expect(audience.locator('.ann-laser')).toHaveCount(1);
 
   // A blank page, and back.
   await presenter.keyboard.press('b');
-  expect(await relay(presenter, audience)).toEqual(expect.arrayContaining(['blanks', 'page']));
+  expect(await relayOnce(presenter, audience, ['blanks', 'page'])).toEqual(expect.arrayContaining(['blanks', 'page']));
   await expect(audience.locator('.ink-page svg.ann-page.ink-blank')).toHaveCount(1);
   await presenter.keyboard.press('ArrowLeft');
-  await presenter.waitForTimeout(50);
-  expect(await relay(presenter, audience)).toEqual(['page']);
+  expect(await relayOnce(presenter, audience, ['page'])).toEqual(['page']);
   await expect(audience.locator('.ink-page svg.ann-page:not(.ink-blank)')).toHaveCount(1);
   await expect(audienceStrokes(audience)).toHaveCount(3);
 

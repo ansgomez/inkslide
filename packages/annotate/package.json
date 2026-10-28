@@ -30,6 +30,7 @@
     "./app": "./src/app.ts",
     "./io": "./src/io.ts",
     "./clipboard": "./src/clipboard.ts",
+    "./color": "./src/color.ts",
     "./autosave": "./src/autosave.ts",
     "./presenter": "./src/presenter.ts",
     "./toolbar.css": "./src/toolbar.css"
