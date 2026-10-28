@@ -61,6 +61,12 @@ test('wheel scrolls; PgDn / Space scroll, then turn the page; PgUp goes back to 
   await page.mouse.move(stage.x + stage.width / 2, stage.y + stage.height / 2);
   await page.mouse.wheel(0, 200);
   await expect.poll(async () => (await box(page, '.ink-page')).y).toBeCloseTo(top0 - 200, 0);
+  // Its own compositor layer while it moves (nothing redrawn per step), not after.
+  expect(await page.evaluate(() => {
+    document.querySelector('.ink-stage')!.dispatchEvent(new WheelEvent('wheel', { deltaY: 1, bubbles: true, cancelable: true }));
+    return document.querySelector('.ink-page')!.classList.contains('is-moving');
+  })).toBe(true);
+  await expect(page.locator('.ink-page')).not.toHaveClass(/is-moving/);
   await page.mouse.wheel(0, -1000); // clamped at the top
   await expect.poll(async () => (await box(page, '.ink-page')).y).toBeCloseTo(top0, 0);
 

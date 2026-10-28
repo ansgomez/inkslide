@@ -47,6 +47,8 @@ html, body {
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
   contain: layout size;
 }
+/* A pinch, pan or wheel gesture is running (viewer.ts setView). */
+.ink-page.is-moving { will-change: transform; }
 
 .ink-page > canvas,
 .ink-page > svg {

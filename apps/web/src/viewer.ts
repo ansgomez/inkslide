@@ -371,6 +371,10 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     if (!fit) return;
     const [cx, cy] = clampPan(tx, ty, fit, zoom, vis);
     view = { zoom, tx: cx, ty: cy };
+    // While a gesture runs the page is its own compositor layer: zoom and pan
+    // move the pixels it has, nothing is redrawn per step (the ink and PDF
+    // are, sharp, when it ends).
+    pageEl.classList.toggle('is-moving', !done);
     applyView();
     if (done) {
       resizeLiveInk(fit);
@@ -386,6 +390,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
   function resetView(): void {
     view = { zoom: 1, tx: 0, ty: 0 };
     barZoom = 1;
+    pageEl.classList.remove('is-moving'); // a two-finger swipe turned the page mid-gesture
   }
 
   /** − / + next to the page counter: the next zoom step, around the middle of the view. */
