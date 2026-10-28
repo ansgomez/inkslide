@@ -43,6 +43,9 @@ originals the parity test needs: `test/legacy.test.ts` runs the same inputs thro
   are not lost. A tool handler that throws is logged by `attachInput`; a failing down, move
   or up drops the gesture and cancels the tool. A stroke or erase whose page was deleted
   during the gesture is dropped (`NotesDoc.hasPage`).
+- **Stroke colors.** `createStroke` takes only colors the export draws like the screen
+  (`src/color.ts`: hex, `rgb()`, `hsl()`, CSS names, `transparent`) and stores the non-hex ones
+  as hex; on load any other color becomes black with one warning. Legacy kept any string.
 - **Partial erase** keeps a surviving one-point fragment as a dot; legacy dropped it, so
   the parity test compares only the longer pieces.
 - **Laser** always uses the classic outline, also when the pen uses perfect-freehand.

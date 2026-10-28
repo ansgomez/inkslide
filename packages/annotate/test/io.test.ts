@@ -112,6 +112,25 @@ describe('limits of a notes file', () => {
   });
 });
 
+describe('stroke colors on load', () => {
+  it('loads other CSS colors as hex, and colors the export cannot draw as black with one warning', () => {
+    const doc = new NotesDoc(pdfDeck());
+    const st = (color: unknown) => ({ tool: 'pen', color, size: 4, points: [[1, 1]] });
+    const { warnings } = loadNotes(doc, {
+      format: 'marp-notes', version: 2, deck: { source: 'pdf', title: 'lecture.pdf', slides: 3, size: [960, 540] },
+      pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: [
+        st('#be1e3c'), st('hsl(0 100% 50%)'), st('rebeccapurple'), st('transparent'),
+        st('oklch(0.5 0.2 30)'), st('oklch(0.5 0.2 30)'), st(5), st('x'.repeat(101)),
+      ] } as PageJSON],
+    });
+    expect(doc.strokes('p1').map(s => s.color)).toEqual(['#be1e3c', '#ff0000', '#663399', '#00000000', '#000000', '#000000', '#000000']);
+    expect(warnings).toEqual([
+      'Skipped a malformed stroke on page p1: Stroke color too long',
+      'Drew 3 strokes in black: colors "oklch(0.5 0.2 30)", "5" not supported',
+    ]);
+  });
+});
+
 describe('v1 load', () => {
   it('loads unchanged into a Marp deck', () => {
     const doc = new NotesDoc({ title: 'Signals – Übung 1', slides: 3, size: [1280, 720] });

@@ -13,6 +13,7 @@
  *   app.mount();                                                   // keys + toolbar
  */
 import { clipForPaste, getClip, makeClip, markClipSynced, placeItems, serializeClip, setClip, PASTE_OFFSET, type Clip } from './clipboard';
+import { normalizeColor } from './color';
 import { rectBBox, strokeBBox, unionBBox, type RectLike, type Stroke } from './geometry';
 import { createImage, type NotesDoc, type PageImage } from './model';
 import { attachInput, type InputController } from './input';
@@ -48,7 +49,8 @@ export function loadPrefs(storage: Pick<Storage, 'getItem'> | null = safeStorage
       for (const k in prefs) {
         const into = prefs[k as keyof Prefs] as { color?: string; size?: number };
         const from = saved.prefs[k] || {};
-        if ('color' in into && typeof from.color === 'string') into.color = from.color;
+        const color = normalizeColor(from.color); // the strokes drawn with it must be able to take it
+        if ('color' in into && color !== null) into.color = color;
         if (!('size' in into)) continue;
         if (Number.isInteger(from.step) && SIZES[k as SizedTool][from.step] !== undefined) into.size = from.step;
         else if (Number.isInteger(from.size) && SIZE_PRESETS[from.size as number] !== undefined) into.size = SIZE_PRESETS[from.size as number];

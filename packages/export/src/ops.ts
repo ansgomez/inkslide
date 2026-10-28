@@ -9,6 +9,7 @@
 import {
   appendBezierCurve, closePath, lineTo, moveTo, rectangle, type PDFOperator,
 } from 'pdf-lib';
+import { colorRgba, type Rgba } from '@inkslide/annotate/color';
 import { round } from '@inkslide/annotate/geometry';
 
 /** [a, b, c, d, e, f] of a PDF `cm` operator. */
@@ -111,39 +112,12 @@ export const rectOp = (x: number, y: number, w: number, h: number): PDFOperator 
 
 // ── Colors ─────────────────────────────────────────────────────
 
-/** RGB in 0..1 and alpha 0..1. */
-export interface Rgba {
-  r: number;
-  g: number;
-  b: number;
-  a: number;
-}
+export type { Rgba };
 
-const NAMED: Record<string, string> = {
-  black: '#000000', white: '#ffffff', red: '#ff0000', green: '#008000', blue: '#0000ff',
-  yellow: '#ffff00', orange: '#ffa500', gray: '#808080', grey: '#808080',
-};
-
-/** Parse a CSS color as used by stroke colors (#rgb, #rrggbb, #rrggbbaa, rgb()/rgba(), a few names). Unknown: black. */
+/**
+ * Parse a stroke color (any color a stroke may have, see @inkslide/annotate/color:
+ * hex, rgb(), hsl(), CSS names, transparent). Anything else: black.
+ */
 export function parseColor(css: string): Rgba {
-  let s = String(css || '').trim().toLowerCase();
-  if (NAMED[s]) s = NAMED[s];
-  let m = /^#([0-9a-f]{3,4})$/.exec(s);
-  if (m) s = '#' + [...m[1]].map(c => c + c).join('');
-  m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/.exec(s);
-  if (m) {
-    const v = parseInt(m[1], 16);
-    return { r: (v >> 16 & 255) / 255, g: (v >> 8 & 255) / 255, b: (v & 255) / 255, a: m[2] ? parseInt(m[2], 16) / 255 : 1 };
-  }
-  m = /^rgba?\(([^)]*)\)$/.exec(s);
-  if (m) {
-    const parts = m[1].split(/[\s,/]+/).filter(Boolean);
-    const ch = parts.slice(0, 3).map(t => (t.endsWith('%') ? parseFloat(t) / 100 : parseFloat(t) / 255));
-    const alpha = parts[3] == null ? 1 : parseFloat(parts[3]) / (parts[3].endsWith('%') ? 100 : 1);
-    if (ch.length === 3 && ch.every(Number.isFinite)) {
-      const clamp = (v: number): number => Math.min(1, Math.max(0, v));
-      return { r: clamp(ch[0]), g: clamp(ch[1]), b: clamp(ch[2]), a: Number.isFinite(alpha) ? clamp(alpha) : 1 };
-    }
-  }
-  return { r: 0, g: 0, b: 0, a: 1 };
+  return colorRgba(css) || { r: 0, g: 0, b: 0, a: 1 };
 }

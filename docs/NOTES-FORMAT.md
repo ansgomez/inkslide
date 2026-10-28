@@ -133,7 +133,7 @@ on the next save.
 |---|---|---|
 | `id` | string | Unique within the file. A missing, non-string, longer than 200 characters or duplicate id gets a new one on load. |
 | `tool` | `"pen"` or `"highlighter"` | The laser is never stored. Other tools make the stroke invalid. |
-| `color` | string | CSS color, e.g. `#be1e3c`, at most 100 characters (a longer one makes the stroke invalid). |
+| `color` | string | A color the screen and the PDF export draw alike, at most 100 characters (a longer one makes the stroke invalid); see [Stroke colors](#stroke-colors). The toolbar writes `#rrggbb`. |
 | `size` | number, 0 < size ≤ 10⁶ | Pen: ink width at pressure 0.5. Highlighter: line width. In page units. |
 | `points` | `[x, y, pressure][]`, at least one | Page units, origin top-left, y down; `\|x\|`, `\|y\|` ≤ 10⁶. Pressure 0..1 (clamped on load); a missing pressure loads as 0.5. |
 
@@ -144,6 +144,16 @@ not a number or out of range, no points, non-finite or non-numeric coordinates, 
 beyond ±10⁶ is skipped with a warning; the rest of the page loads. (Such numbers would overflow when rounded for saving, or end up as
 `Infinity` in an exported PDF.) The same check applies to every new or changed stroke, so the
 app never writes one.
+
+### Stroke colors
+
+A stroke color is hex (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`), `rgb()`/`rgba()`,
+`hsl()`/`hsla()` (comma or space syntax, alpha after a slash), one of the 148 CSS color names,
+or `transparent`. Hex is kept as written; the others are stored as `#rrggbb` (`#rrggbbaa`
+when not opaque), so `hsl(0 100% 50%)` loads and saves as `#ff0000`. Any other value (a number,
+`currentColor`, `var()`, `oklch()`, `lab()`, `color()`, …) loads as black, with one warning for
+the file ("Drew N strokes in black: colors … not supported"); the export drew such strokes black
+before, the screen now does too. New and changed strokes must have a stroke color.
 
 ### File limits
 

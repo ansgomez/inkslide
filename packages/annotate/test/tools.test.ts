@@ -375,6 +375,12 @@ describe('loadPrefs', () => {
     expect(prefs.eraser).toEqual(DEFAULT_PREFS.eraser);
   });
 
+  it('takes a stored color only if strokes can have it, as stored in strokes', () => {
+    const { prefs } = loadPrefs(stored({ prefs: { pen: { color: 'oklch(0.5 0.2 30)' }, highlighter: { color: 'hsl(60 100% 50%)' } } }));
+    expect(prefs.pen.color).toBe(DEFAULT_PREFS.pen.color);
+    expect(prefs.highlighter.color).toBe('#ffff00');
+  });
+
   it('prefs of earlier versions (a preset 0..3, no step) load at their preset', () => {
     const { prefs } = loadPrefs(stored({ prefs: { pen: { size: 0 }, highlighter: { size: 3 }, eraser: { size: 2 } } }));
     expect(SIZES.pen[prefs.pen.size]).toBe(2);

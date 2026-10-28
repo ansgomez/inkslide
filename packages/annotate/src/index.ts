@@ -11,6 +11,7 @@ export * as toolbar from './toolbar';
 export * as pages from './pages';
 export * as io from './io';
 export * as clipboard from './clipboard';
+export * as color from './color';
 export * as app from './app';
 
 export type { Point, Vec2, XY, Stroke, StrokeTool, BBox, OutlineEngine, RectLike } from './geometry';

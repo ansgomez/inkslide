@@ -9,6 +9,7 @@
  * "Slide" pages are the pages of the source document: Marp slides (ids s1…sN)
  * or PDF pages (ids p1…pN). Blank pages sit after a slide page.
  */
+import { normalizeColor } from './color';
 import { round, translatePoints, type Point, type Stroke, type StrokeTool } from './geometry';
 
 /** `format` field of every notes file. */
@@ -211,7 +212,8 @@ function notify<A extends unknown[]>(listeners: readonly ((...args: A) => void)[
 
 /**
  * A checked stroke: known tool, positive finite number size, at least one point, finite points within
- * ±MAX_COORD (pressure defaults to 0.5, clamped to 0..1). Throws on bad input; a missing or non-string id gets newId().
+ * ±MAX_COORD (pressure defaults to 0.5, clamped to 0..1), a stroke color (color.ts; other than hex
+ * stored as #rrggbb or #rrggbbaa). Throws on bad input; a missing or non-string id gets newId().
  */
 export function createStroke({ id, tool, color, size, points }: StrokeInput): Stroke {
   if (!TOOLS.includes(tool as StrokeTool)) throw new Error(`Unknown stroke tool: ${quote(tool)}`);
@@ -221,21 +223,18 @@ export function createStroke({ id, tool, color, size, points }: StrokeInput): St
   if (!points.length) throw new Error('Stroke has no points');
   if (String(color).length > MAX_COLOR_LENGTH) throw new Error('Stroke color too long');
   const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-  return {
-    id: itemId(id),
-    tool: tool as StrokeTool,
-    color: String(color),
-    size,
-    points: points.map((p: unknown): Point => {
-      const q = p as number[] | null;
-      const pressure = q && q[2] == null ? 0.5 : q && q[2];
-      if (!q || !finite(q[0]) || !finite(q[1]) || !finite(pressure)) {
-        throw new Error('Stroke points must be finite numbers');
-      }
-      if (Math.abs(q[0]) > MAX_COORD || Math.abs(q[1]) > MAX_COORD) throw new Error('Stroke points out of range');
-      return [q[0], q[1], Math.min(1, Math.max(0, pressure))];
-    }),
-  };
+  const checked = points.map((p: unknown): Point => {
+    const q = p as number[] | null;
+    const pressure = q && q[2] == null ? 0.5 : q && q[2];
+    if (!q || !finite(q[0]) || !finite(q[1]) || !finite(pressure)) {
+      throw new Error('Stroke points must be finite numbers');
+    }
+    if (Math.abs(q[0]) > MAX_COORD || Math.abs(q[1]) > MAX_COORD) throw new Error('Stroke points out of range');
+    return [q[0], q[1], Math.min(1, Math.max(0, pressure))];
+  });
+  const css = normalizeColor(color);
+  if (css === null) throw new Error(`Unsupported stroke color: ${quote(color)}`);
+  return { id: itemId(id), tool: tool as StrokeTool, color: css, size, points: checked };
 }
 
 // ── Images ─────────────────────────────────────────────────────
@@ -946,6 +945,7 @@ export class NotesDoc {
     const seenPages = new Set<string>();
     const kept: PageJSON[] = [];
     const notices = cappedList(MAX_WARNINGS);
+    const colors: ColorFallback = { strokes: 0, colors: [] };
     let rawPages = file.pages || [];
     if (!Array.isArray(rawPages)) { warnings.push('Skipped the pages: not a list'); rawPages = []; }
     // A blank page id that is not a usable id (as itemId; presenter mode sends ids up to
@@ -962,7 +962,7 @@ export class NotesDoc {
       if (raw && raw.kind === 'blank' && !(typeof raw.id === 'string' && raw.id && raw.id.length <= MAX_ID_LENGTH)) {
         raw = { ...raw, id: freshId() };
       }
-      const page = parsePage(raw, this.deck, warnings, strokeIds, kept, notices, budget);
+      const page = parsePage(raw, this.deck, warnings, strokeIds, kept, notices, budget, colors);
       if (!page) continue;
       if (seenPages.has(page.id)) { warnings.push(`Skipped duplicate page ${quote(page.id)}`); continue; }
       seenPages.add(page.id);
@@ -971,6 +971,11 @@ export class NotesDoc {
         blanks.push(page);
       }
       pages.set(page.id, page);
+    }
+    if (colors.strokes) {
+      const n = colors.strokes;
+      warnings.push(`Drew ${n} stroke${n === 1 ? '' : 's'} in black: color${colors.colors.length === 1 ? '' : 's'} `
+        + `${colors.colors.map(c => `"${c}"`).join(', ')}${colors.more ? ', …' : ''} not supported`);
     }
     this.pages = pages;
     this.kept = kept;
@@ -1158,9 +1163,16 @@ function beyondDeck(raw: PageJSON, deck: Deck): number | null {
   return Number.isInteger(n) && n > deck.slides ? n : null;
 }
 
+/** Strokes whose color is no stroke color (color.ts), loaded in black; the first few colors, quoted. */
+interface ColorFallback {
+  strokes: number;
+  colors: string[];
+  more?: boolean;
+}
+
 function parsePage(
   raw: PageJSON | null, deck: Deck, warnings: CappedList, strokeIds: Set<string>, kept: PageJSON[], notices: CappedList,
-  budget: ImageBudget,
+  budget: ImageBudget, colors: ColorFallback,
 ): Page | null {
   if (!raw || typeof raw.id !== 'string') { warnings.push('Skipped a page without id'); return null; }
   const beyond = beyondDeck(raw, deck);
@@ -1200,7 +1212,17 @@ function parsePage(
   if (!Array.isArray(rawStrokes)) { warnings.push(`Skipped the strokes of page ${quote(raw.id)}: not a list`); rawStrokes = []; }
   for (const s of rawStrokes) {
     try {
-      const stroke = createStroke(strokeIds.has(s && s.id) ? { ...s, id: null } : s);
+      let input: StrokeInput = strokeIds.has(s && s.id) ? { ...s, id: null } : s;
+      // A color the screen and the export would draw differently (the export drew it black) loads as black.
+      const odd = !!input && String(input.color).length <= MAX_COLOR_LENGTH && normalizeColor(input.color) === null;
+      if (odd) input = { ...input, color: '#000000' };
+      const stroke = createStroke(input);
+      if (odd) {
+        colors.strokes++;
+        const c = quote(s.color);
+        if (colors.colors.length < 3) { if (!colors.colors.includes(c)) colors.colors.push(c); }
+        else if (!colors.colors.includes(c)) colors.more = true;
+      }
       strokeIds.add(stroke.id);
       strokes.push(stroke);
     } catch (e) {

@@ -15,9 +15,10 @@ const ids = (doc: NotesDoc, page: string) => doc.strokes(page).map(s => s.id);
 
 describe('createStroke', () => {
   it('validates and normalises', () => {
-    const s = createStroke({ tool: 'highlighter', color: 5, size: 3, points: [[1, 2], [3, 4, 0.9]] });
+    const s = createStroke({ tool: 'highlighter', color: 'hsl(120 100% 25% / 50%)', size: 3, points: [[1, 2], [3, 4, 0.9]] });
     expect(s.id).toMatch(/-/);
-    expect(s.color).toBe('5');
+    expect(s.color).toBe('#00800080');
+    expect(createStroke({ tool: 'pen', color: '#ABC', size: 1, points: [[0, 0]] }).color).toBe('#ABC'); // hex as written
     expect(s.size).toBe(3);
     expect(s.points).toEqual([[1, 2, 0.5], [3, 4, 0.9]]);
   });
@@ -28,6 +29,9 @@ describe('createStroke', () => {
     expect(() => createStroke({ tool: 'pen', color: '', size: 0, points: [] })).toThrow(/positive/);
     expect(() => createStroke({ tool: 'pen', color: '', size: 1, points: [[NaN, 0]] })).toThrow(/finite/);
     expect(() => createStroke({ tool: 'pen', color: '', size: 1, points: [null] })).toThrow(/finite/);
+    for (const color of [5, '', 'oklch(0.5 0.2 30)', 'currentColor', null]) {
+      expect(() => createStroke({ tool: 'pen', color, size: 1, points: [[0, 0]] })).toThrow(/Unsupported stroke color/);
+    }
   });
 
   it('mints unique ids', () => {
@@ -36,7 +40,7 @@ describe('createStroke', () => {
 
   it('rejects a size that is not a number and replaces an id that is not a string', () => {
     expect(() => createStroke({ tool: 'pen', color: '', size: '4', points: pts })).toThrow(/positive number/);
-    const s = createStroke({ id: 7 as unknown as string, tool: 'pen', color: '', size: 4, points: pts });
+    const s = createStroke({ id: 7 as unknown as string, tool: 'pen', color: '#000', size: 4, points: pts });
     expect(typeof s.id).toBe('string');
     expect(s.id).not.toBe('7');
   });
