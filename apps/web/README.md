@@ -69,8 +69,11 @@ address bar; iPad Safari 17+: Share → Add to Home Screen).
   then show "updated in another window" with a Reload button, since the old build's files
   left the cache. An installed app also checks for an update when it comes back to the front
   (at most hourly).
-- `pwa.ts` registers the worker only in a production build over http(s) without
-  `window.inkslide`: never in Electron (file://) or the Vite dev server.
+- `pwa.ts` registers the worker only in a production build (not the Vite dev server), served
+  over http(s), and without Electron's preload bridge (`window.inkslide`): `swAllowed()` checks
+  both, so it is never registered in Electron, which serves the front end from
+  `app://inkslide/` (see docs/ARCHITECTURE.md). The Tauri apps never get that far: `main.ts`
+  sets up the PWA parts for the web adapter only.
 - Recent files: Chromium keeps the `FileSystemFileHandle` from the open dialog or
   `launchQueue` in IndexedDB and asks for read permission again on reopening. Elsewhere
   (iPad Safari, Firefox, file input, drag and drop, `?pdf=`) a copy of the PDF is kept: in
