@@ -28,6 +28,7 @@ import { pathToFileURL } from 'node:url';
 import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 import { checkDroppedPdf, checkPath, checkPdfBytes, checkText, HashGrants, notesTargetFor, PathGrants } from './access';
+import { CloseHandshake } from './closeHandshake';
 import { CrashRecovery } from './crashRecovery';
 import { MAX_PDF_BYTES, MAX_TEXT_BYTES, readFileLimited, writeExport } from './fsutil';
 import { confirmLinks, lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
@@ -99,9 +100,24 @@ function start(): void {
   const opens = new OpenRequests();
   /** The PDF the page has open (never an export target, reopened after a reload; dialogs start in its folder). */
   const current = new CurrentPdf();
-  /** Window close: the front end was asked to save first / said it may close. */
-  let closeAsked = false;
-  let closeOk = false;
+  /** Window close: the front end saves first (closeHandshake.ts). */
+  const closing = new CloseHandshake({
+    request: () => win?.webContents.send(IPC.closeRequest),
+    close: () => win?.close(),
+    confirm: async () => {
+      if (!win || win.isDestroyed()) return true;
+      const r = await dialog.showMessageBox(win, {
+        type: 'warning', buttons: ['Wait', 'Close Anyway'], defaultId: 0, cancelId: 0,
+        title: 'Inkslide', message: 'Inkslide is not responding while it saves the notes.',
+        detail: 'Wait a little longer, or close the window and lose the notes that are not saved yet.',
+      });
+      return r.response === 1;
+    },
+    keptOpen: () => { quitting = false; }, // the user kept the window open
+    busy: () => pageDialogs > 0,
+  });
+  /** Dialogs open for the page (confirm()): while one is, a close does not time out. */
+  let pageDialogs = 0;
   /** The app quits once the window has closed (menu Quit, Cmd+Q). */
   let quitting = false;
   /** Notes writes in progress; quitting waits for them. */
@@ -245,7 +261,7 @@ function start(): void {
     refreshMenu(); // Presenter Mode is enabled with a window
     const w = win;
     const wc = w.webContents;
-    closeAsked = closeOk = false;
+    closing.reset();
 
     w.once('ready-to-show', () => {
       if (smokeMode) return;
@@ -266,13 +282,12 @@ function start(): void {
       }
       if (!smokeMode) saveWindowState(stateFile, state);
       // Ask the front end to write its notes first (closeReply closes the
-      // window again). Closing once more while it is asked closes at once.
-      if (closeOk || closeAsked || !loaded) return;
-      e.preventDefault();
-      closeAsked = true;
-      wc.send(IPC.closeRequest);
+      // window again). Closing once more while it is asked waits for it too;
+      // if it does not reply, the user is asked.
+      if (!closing.closing(loaded)) e.preventDefault();
     });
     w.on('closed', () => {
+      closing.reset();
       audience?.close(); // presenter mode ends with the app window
       win = null;
       loaded = false;
@@ -305,7 +320,7 @@ function start(): void {
     // closes: there is nothing left to save.
     wc.on('render-process-gone', (_e, details) => {
       loaded = false;
-      if (closeAsked) {
+      if (closing.asking) {
         w.close();
         return;
       }
@@ -579,11 +594,16 @@ function start(): void {
   });
 
   handle(IPC.confirm, async (message: unknown): Promise<boolean> => {
-    const r = await messageBox({
-      type: 'question', buttons: ['OK', 'Cancel'], defaultId: 0, cancelId: 1,
-      title: 'Inkslide', message: String(message ?? '').slice(0, 4000),
-    });
-    return r.response === 0;
+    pageDialogs++;
+    try {
+      const r = await messageBox({
+        type: 'question', buttons: ['OK', 'Cancel'], defaultId: 0, cancelId: 1,
+        title: 'Inkslide', message: String(message ?? '').slice(0, 4000),
+      });
+      return r.response === 0;
+    } finally {
+      pageDialogs--;
+    }
   });
 
   handle(IPC.initialPath, (): string | null => opens.takeInitial());
@@ -628,14 +648,7 @@ function start(): void {
     } catch (_) {
       return;
     }
-    if (!win || !closeAsked) return;
-    closeAsked = false;
-    if (ok === true) {
-      closeOk = true;
-      win.close();
-    } else {
-      quitting = false; // the user kept the window open
-    }
+    if (win) closing.reply(ok);
   });
 
   // ── App events ───────────────────────────────────────────────
