@@ -10,8 +10,8 @@ function setup(answers: boolean[] = [], busy = () => false) {
       log.push('close');
       if (!h.closing(true)) log.push('close cancelled'); // the window emits 'close' again
     },
-    confirm: async () => {
-      log.push('confirm');
+    confirm: async reason => {
+      log.push(`confirm ${reason}`);
       return answers.shift() ?? false;
     },
     keptOpen: () => log.push('kept open'),
@@ -59,12 +59,12 @@ describe('CloseHandshake', () => {
     await vi.advanceTimersByTimeAsync(REPLY_TIMEOUT_MS - 1);
     expect(log).toEqual(['request']);
     await vi.advanceTimersByTimeAsync(1);
-    expect(log).toEqual(['request', 'confirm']); // Wait
+    expect(log).toEqual(['request', 'confirm timeout']); // Wait
     expect(h.closing(true)).toBe(false);
     await vi.advanceTimersByTimeAsync(REPLY_TIMEOUT_MS);
-    expect(log).toEqual(['request', 'confirm', 'confirm', 'close']); // Close Anyway
+    expect(log).toEqual(['request', 'confirm timeout', 'confirm timeout', 'close']); // Close Anyway
     h.reply(true); // a late reply changes nothing
-    expect(log).toEqual(['request', 'confirm', 'confirm', 'close']);
+    expect(log).toEqual(['request', 'confirm timeout', 'confirm timeout', 'close']);
   });
 
   it('a reply in time stops the timer; one during the question wins', async () => {
@@ -96,7 +96,7 @@ describe('CloseHandshake', () => {
     expect(log).toEqual(['request']);
     pageDialog = false;
     await vi.advanceTimersByTimeAsync(REPLY_TIMEOUT_MS);
-    expect(log).toEqual(['request', 'confirm', 'close']);
+    expect(log).toEqual(['request', 'confirm timeout', 'close']);
   });
 
   it('reset (new window, window gone) forgets the close and stops the timer', async () => {
@@ -106,5 +106,21 @@ describe('CloseHandshake', () => {
     await vi.advanceTimersByTimeAsync(REPLY_TIMEOUT_MS * 2);
     expect(log).toEqual(['request']);
     expect(h.asking).toBe(false);
+  });
+
+  it('a failed close handler asks the user instead of closing (correctness: no silent loss)', async () => {
+    const { h, log } = setup([false, true]);
+    h.closing(true);
+    h.reply('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(log).toEqual(['request', 'confirm failed', 'kept open']); // Keep Open
+    expect(h.asking).toBe(false);
+    h.closing(true);
+    h.reply('failed');
+    expect(h.closing(true)).toBe(false); // while the user is asked
+    await vi.advanceTimersByTimeAsync(0);
+    expect(log).toEqual(['request', 'confirm failed', 'kept open', 'request', 'confirm failed', 'close']); // Close Anyway
+    await vi.advanceTimersByTimeAsync(REPLY_TIMEOUT_MS * 2);
+    expect(log.filter(l => l === 'confirm timeout')).toEqual([]); // no timeout question after a reply
   });
 });

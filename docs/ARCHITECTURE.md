@@ -158,7 +158,8 @@ Main to renderer messages: `openRequest` (queued in the preload until the front 
 subscribes), `menuCommand` (Export, Import notes), `closeRequest`, and for presenter mode
 `presenterState` (to the app window) and `audience` (to the audience window). On window close, main
 cancels the close, asks the front end to flush its notes, and closes when the reply is `ok`.
-If saving fails, the user is asked. Closing again while the front end is asked is cancelled
+If saving fails, the user is asked; if the front end's close handler itself fails, the
+preload replies `failed` and main asks whether to close anyway (never closing unasked). Closing again while the front end is asked is cancelled
 too, so a double click or a second Cmd+Q does not skip the save. If the page does not reply
 within 15 s (a hung renderer), main asks whether to close anyway and lose the unsaved notes,
 again after each wait, but not while the page's own question is open (`closeHandshake.ts`). `will-quit` waits for notes writes still running. Open

@@ -7,7 +7,9 @@
  * that never replies (a hung renderer) would then keep the window open for
  * good: after REPLY_TIMEOUT_MS main asks the user whether to close anyway
  * and lose the notes not saved yet, and asks again after each wait. A page
- * that dies while asked closes at once (main sees it as not loaded).
+ * whose close handler failed (the preload replies 'failed') gets the same
+ * question at once: a failure is never taken as leave to lose the notes. A
+ * page that dies while asked closes at once (main sees it as not loaded).
  */
 
 /** How long the page has to reply before the user is asked. */
@@ -19,8 +21,12 @@ export interface CloseActions {
   request(): void;
   /** Close the window; the close is not cancelled again. */
   close(): void;
-  /** The page has not replied in time: ask the user whether to close anyway. Resolves true to close. */
-  confirm(): Promise<boolean>;
+  /**
+   * Ask the user whether to close anyway, losing unsaved notes: the page has
+   * not replied in time ('timeout'), or its handler failed ('failed').
+   * Resolves true to close.
+   */
+  confirm(reason: 'timeout' | 'failed'): Promise<boolean>;
   /** The page or the user kept the window open. */
   keptOpen(): void;
   /** Whether the page is showing a dialog (its own question about unsaved notes): the timeout waits for it. */
@@ -60,11 +66,18 @@ export class CloseHandshake {
     return false;
   }
 
-  /** The page's reply: true closes the window, anything else keeps it open. */
+  /**
+   * The page's reply: true closes the window, 'failed' (its handler failed)
+   * asks the user, anything else keeps it open.
+   */
   reply(ok: unknown): void {
     if (!this.asked) return;
-    this.asked = false;
     this.stopTimer();
+    if (ok === 'failed') {
+      void this.askUser('failed'); // still asked: closes meanwhile stay cancelled
+      return;
+    }
+    this.asked = false;
     if (ok === true) this.closeNow();
     else this.actions.keptOpen();
   }
@@ -92,13 +105,21 @@ export class CloseHandshake {
       this.startTimer();
       return;
     }
-    const close = await this.actions.confirm().catch(() => false);
-    if (!this.asked) return; // the page replied meanwhile
+    await this.askUser('timeout');
+  }
+
+  /** Ask the user; close, or keep waiting ('timeout') or the window open ('failed'). */
+  private async askUser(reason: 'timeout' | 'failed'): Promise<void> {
+    const close = await this.actions.confirm(reason).catch(() => false);
+    if (!this.asked) return; // the page replied meanwhile, or the window is gone
     if (close) {
       this.asked = false;
       this.closeNow();
-    } else {
+    } else if (reason === 'timeout') {
       this.startTimer();
+    } else {
+      this.asked = false;
+      this.actions.keptOpen();
     }
   }
 }

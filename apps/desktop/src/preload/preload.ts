@@ -48,12 +48,16 @@ ipcRenderer.on(IPC.recentChanged, () => {
   recentHandlers.forEach(h => h());
 });
 
-/** Before the window closes, the front end writes its notes; ok = false keeps it open. */
+/**
+ * Before the window closes, the front end writes its notes; ok = false keeps
+ * it open. A handler that fails replies 'failed': main asks the user whether
+ * to close anyway, so the failure neither loses the notes unasked nor makes
+ * the window impossible to close.
+ */
 let closeHandler: (() => Promise<boolean>) | null = null;
 ipcRenderer.on(IPC.closeRequest, () => {
   const h = closeHandler;
-  // A failing handler must not make the window impossible to close.
-  void Promise.resolve().then(() => (h ? h() : true)).then(ok => ok !== false, () => true)
+  void Promise.resolve().then(() => (h ? h() : true)).then(ok => ok !== false, () => 'failed' as const)
     .then(ok => ipcRenderer.send(IPC.closeReply, ok));
 });
 

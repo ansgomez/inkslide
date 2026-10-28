@@ -56,7 +56,8 @@ export interface InkslideBridge extends Required<PlatformAdapter> {
   onMenuCommand(handler: (command: MenuCommand) => void): () => void;
   /**
    * The window is about to close (or the app to quit): write unsaved notes
-   * first. Resolve false to keep the window open. Without a handler the
+   * first. Resolve false to keep the window open. If the handler rejects,
+   * main asks the user whether to close anyway. Without a handler the
    * window closes at once. Returns unsubscribe.
    */
   onCloseRequest(handler: () => Promise<boolean>): () => void;
@@ -103,7 +104,7 @@ export const IPC = {
   openRequest: 'inkslide:open-request',
   /** main -> renderer: a menu command. */
   menuCommand: 'inkslide:menu-command',
-  /** main -> renderer: the window wants to close; renderer -> main: closeReply(ok). */
+  /** main -> renderer: the window wants to close; renderer -> main: closeReply(true | false | 'failed'). */
   closeRequest: 'inkslide:close-request',
   closeReply: 'inkslide:close-reply',
   /** main -> app window: the audience window loaded (true) or closed (false). */

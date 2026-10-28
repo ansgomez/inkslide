@@ -104,13 +104,19 @@ function start(): void {
   const closing = new CloseHandshake({
     request: () => win?.webContents.send(IPC.closeRequest),
     close: () => win?.close(),
-    confirm: async () => {
+    confirm: async reason => {
       if (!win || win.isDestroyed()) return true;
-      const r = await dialog.showMessageBox(win, {
-        type: 'warning', buttons: ['Wait', 'Close Anyway'], defaultId: 0, cancelId: 0,
-        title: 'Inkslide', message: 'Inkslide is not responding while it saves the notes.',
-        detail: 'Wait a little longer, or close the window and lose the notes that are not saved yet.',
-      });
+      const r = await dialog.showMessageBox(win, reason === 'timeout'
+        ? {
+          type: 'warning', buttons: ['Wait', 'Close Anyway'], defaultId: 0, cancelId: 0,
+          title: 'Inkslide', message: 'Inkslide is not responding while it saves the notes.',
+          detail: 'Wait a little longer, or close the window and lose the notes that are not saved yet.',
+        }
+        : {
+          type: 'warning', buttons: ['Keep Open', 'Close Anyway'], defaultId: 0, cancelId: 0,
+          title: 'Inkslide', message: 'The notes could not be saved before closing.',
+          detail: 'Close the window anyway and lose the notes that are not saved yet?',
+        });
       return r.response === 1;
     },
     keptOpen: () => { quitting = false; }, // the user kept the window open
