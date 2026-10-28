@@ -255,7 +255,9 @@ never copied, and the backup stays when you close the PDF.
 
 **File → Revert to Backup…** puts it back: after asking *Replace the current notes with the
 backup from <time>?*, the backup becomes the notes and the notes you had become the backup,
-so choosing Revert to Backup again undoes it. Unsaved strokes are saved first. Revert is not an
+so choosing Revert to Backup again undoes it. Unsaved strokes are saved first, and the pen
+does nothing until the backup is loaded; if the notes change meanwhile (an undo, say), they
+are kept and the backup stays the backup, with a message saying so. Revert is not an
 undo step (Ctrl/Cmd+Z does not take it back); it is greyed out while there is no backup. The
 backup has the format of a notes file, so **File → Import Notes…** can load it too.
 

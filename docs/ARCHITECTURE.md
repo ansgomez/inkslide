@@ -270,7 +270,11 @@ copy of the saved notes from before a save, `userData/notes/<sha256>.notes.backu
   both are put back), so a second revert undoes the first; the fresh
   backup time keeps the next saves from replacing it for 2 minutes. The front end saves first,
   asks with `confirm`, then loads the notes the revert returns into the document (`replaceNotes` in
-  `viewer.ts`, like Import; `NotesDoc.load` clears the history, so it is no undo step).
+  `viewer.ts`, like Import; `NotesDoc.load` clears the history, so it is no undo step). From
+  the final save until the notes are loaded the page box is `inert` (no pen input), and the
+  swap runs under `holdSaves` (`persist.ts`: no autosave write at the same time). If the notes
+  changed anyway (a key such as undo), the viewer reverts once more inside the hold, which
+  swaps the files back, keeps its notes and says so.
 - Main tracks the open PDF (the bridge's `opened`, called once a PDF has opened) and enables
   Revert to Backup when backups are on and that PDF has a backup. Turning backups off
   (`preferences.ts`) deletes every backup in `userData/notes` (`removeAllBackups`).
