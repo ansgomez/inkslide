@@ -40,7 +40,7 @@ access.
 | `packages/export` | `@inkslide/export` | Annotated PDF export with pdf-lib. Depends only on `@inkslide/annotate` (model, io, geometry, and the paper look `PAPER_STYLE` from render). |
 | `apps/web` | `@inkslide/web` | The front end: PDF viewer, live ink, gestures, overview, autosave wiring, the web adapter. Built by Vite with `base: './'`, so Electron can load `dist/index.html` from disk. |
 | `apps/desktop` | `@inkslide/desktop` | Electron shell: main process and sandboxed preload, bundled by esbuild into `out/`. Exports only the bridge types (`@inkslide/desktop/bridge`). |
-| `apps/mobile` | `@inkslide/mobile` | Tauri 2 shell for iPad and Android (`src-tauri`): loads `apps/web/dist`, plugins dialog, fs and sharekit, and its own commands for every file access (the page has no fs permission). No front-end code of its own. |
+| `apps/mobile` | `@inkslide/mobile` | Tauri 2 shell for iPad and Android (`src-tauri`): loads `apps/web/dist`, plugins dialog, fs and sharekit (used from Rust only), and its own commands for every file access and sharing (the page has no fs or sharekit permission). No front-end code of its own. |
 
 `packages/annotate/legacy/` holds two original Marp Notes modules for parity tests;
 `packages/annotate/PORTING.md` lists what changed in the port.
@@ -101,7 +101,7 @@ The front end never touches files itself. It talks to a `PlatformAdapter`
 | `openPdf(path?)` | open dialog, or a granted path | file input, or a same-site URL (`?pdf=`) | system picker (`pick_file`, `read_picked` commands) |
 | `readNotes(pdf, sha256)` | sidecar or app storage, the newer one | OPFS, else `localStorage` | app data `notes/<sha256>.notes.json` (`read_notes` command) |
 | `writeNotes(pdf, text, sha256)` | atomic write, sidecar or app storage | OPFS, else `localStorage` | `write_notes` command: temp file, then rename |
-| `exportPdf(bytes, name)` | save dialog, atomic write | save picker, share sheet, else download | iOS: share sheet; Android: save dialog (`save_pdf` command) |
+| `exportPdf(bytes, name)` | save dialog, atomic write | save picker, share sheet, else download | iOS: share sheet; Android: save dialog (`save_pdf` command; a local file atomically, a content URI written in place once the PDF is ready) |
 | `print(bytes, name)` | the PDF itself in a hidden window, system dialog | – (page images, `window.print()`) | share sheet |
 | `importNotes()`, `confirm()` | native dialogs | file input, `window.confirm` | native dialogs |
 | `onOpenRequest(fn)` | second instance, macOS `open-file`, recent files | – | – |
@@ -118,8 +118,10 @@ copies (iPadOS) or content URIs (Android), so notes live in the app data directo
 hash. The page has no fs plugin permission (on mobile it reads and writes file and content
 URLs without a scope check): every file access is one of the shell's commands
 (`apps/mobile/src-tauri/src/lib.rs`), which take a notes key or a checked file name, never a
-free path, read only files picked through them, and write only in the app's folders or to
-the file picked in a save dialog they open themselves.
+free path, read only files picked through them, write only in the app's folders or to
+the file picked in a save dialog they open themselves, and share only a file they wrote for
+sharing (`share_pdf` calls the sharekit plugin from Rust; the page has no sharekit
+permission, as its command shares any file URL).
 Both the page's CSP and the shell's must allow Tauri's IPC (`ipc:`,
 `http://ipc.localhost`); the page adds them only in the Tauri build
 (`pnpm --filter @inkslide/web build:tauri`, the shell's `beforeBuildCommand`),
@@ -459,3 +461,6 @@ startup bundle. The adapter then saves the bytes.
   `INKSLIDE_USER_DATA`, `INKSLIDE_PRINT_TO_PDF`) are ignored by packaged builds unless they
   were packaged as test builds (`dist.mjs --test-build`, packages named `*-TEST*`), so a
   release cannot be pointed at another page.
+- Rust tests of the Tauri shell's commands (`apps/mobile/src-tauri/src/lib.rs`: names and
+  keys, payloads, picked-file grants, read limits, sharing, atomic writes); CI runs
+  `cargo check` and `cargo test` on Linux (job `rust` in `.github/workflows/ci.yml`).

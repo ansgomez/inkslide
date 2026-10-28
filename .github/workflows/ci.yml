@@ -27,3 +27,49 @@ jobs:
         run: pnpm --filter @inkslide/web exec playwright install --with-deps chromium webkit
       - name: End-to-end tests
         run: pnpm --filter @inkslide/web test:e2e
+
+  # The Tauri shell (apps/mobile/src-tauri): compiles the commands and runs their Rust tests
+  # (picked-file grants, read limits, payloads, names, atomic writes) on Tauri's Linux desktop
+  # target. Builds no front end: debug builds take it from the dev server.
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile/src-tauri
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the Linux libraries Tauri builds against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev
+      - name: Install Rust (stable, at least the crate's rust-version)
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      # Only the downloaded crates, keyed by Cargo.lock. Restored on every run but saved only
+      # from pushes to main, so a pull request can not put anything in the cache other runs use.
+      - name: Restore the crate cache
+        id: crates
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-crates-${{ runner.os }}-${{ hashFiles('apps/mobile/src-tauri/Cargo.lock') }}
+      - run: cargo fetch --locked
+      - name: Save the crate cache (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.crates.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ steps.crates.outputs.cache-primary-key }}
+      - run: cargo check --locked --all-targets
+      - run: cargo test --locked
+      - run: cargo test --locked --features smoke

@@ -9,11 +9,13 @@
  * which take a notes key or a checked file name, never a free path.
  * pick_file opens the system picker (iOS hands over a copy in the app's inbox
  * or a security-scoped URL, Android a content:// URI) and read_picked reads
- * only files picked that way. Next to such a file the app can rarely write,
+ * only files picked that way, each once. Next to such a file the app can rarely write,
  * so there are no sidecars: notes live in the app data directory, keyed by
  * the PDF's SHA-256 (`notes/<sha256>.notes.json`; read_notes, write_notes).
- * write_share_file and remove_share_file use the share folder; save_pdf opens
- * the save dialog itself and writes to the file picked there.
+ * write_share_file and remove_share_file use the share folder, and share_pdf
+ * hands a file written there to the share sheet (the page has no sharekit
+ * permission); save_pdf opens the save dialog itself and writes to the file
+ * picked there.
  *
  * File bytes go to the app as a raw request body with the name in a header,
  * except on Android, whose IPC has no raw bodies: there they go as JSON
@@ -56,9 +58,6 @@ export function nameFromPath(path: string, fallback: string): string {
   last = last.split(/^content:/i.test(path) ? /[/:]/ : '/').pop() || '';
   return /^[^.].*\.[A-Za-z0-9]+$/.test(last) ? last : fallback;
 }
-
-/** file:// URL of an absolute path (the share plugin wants URLs). */
-export const fileUrl = (path: string): string => `file://${path.split('/').map(encodeURIComponent).join('/')}`;
 
 /** Max. UTF-8 bytes of a shared file's name before ".pdf" (file systems allow 255 in all). */
 const SHARE_NAME_BYTES = 200;
@@ -105,6 +104,14 @@ export function base64(bytes: Uint8Array): string {
  */
 export const MAX_FILE_BYTES = 256 * 1024 * 1024;
 
+/**
+ * Max. UTF-8 bytes of a notes file: MAX_NOTES_BYTES of lib.rs, where
+ * write_notes refuses more and read_notes and read_picked (an imported notes
+ * file) read no more. A picked PDF may have up to MAX_PICKED_PDF_BYTES there
+ * (512 MiB); the app refuses a larger one with a message.
+ */
+export const MAX_NOTES_BYTES = 256 * 1024 * 1024;
+
 /** Why a PDF over MAX_FILE_BYTES can not be exported or shared on the iPad or Android. */
 export const tooLargeMessage = (size: number): string =>
   `This PDF is too large to export or share here (${Math.ceil(size / 2 ** 20)} MB; at most ${MAX_FILE_BYTES / 2 ** 20} MB).`;
@@ -140,7 +147,6 @@ const orCancel = <T, C>(p: Promise<T>, cancelled: C): Promise<T | C> =>
 const loadPlugins = () => Promise.all([
   import('@tauri-apps/plugin-dialog'),
   import('@tauri-apps/api/core'),
-  import('@choochmeque/tauri-plugin-sharekit-api'),
 ]);
 
 export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
@@ -158,7 +164,7 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
     return orCancel(invoke<string | null>('pick_file', { kind }), null);
   }
 
-  /** Bytes of a file picked in this session (read_picked refuses any other). */
+  /** Bytes of a file picked in this session and not read yet (read_picked refuses any other). */
   async function readPicked(id: string): Promise<Uint8Array> {
     const [, { invoke }] = await use();
     return responseBytes(await invoke<ArrayBuffer | number[]>('read_picked', { id }));
@@ -166,7 +172,8 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
 
   /**
    * Write the PDF to the share folder (write_share_file) and hand it to the
-   * share sheet; false if cancelled. The folder is iOS: tmp/, where the share
+   * share sheet (share_pdf, which shares only a file write_share_file wrote);
+   * false if cancelled. The folder is iOS: tmp/, where the share
    * plugin copies the file to (it does not replace an older copy of the same
    * name, so the export is written there itself); Android: cache/share/, the
    * plugin copies it into the cache root (a copy onto itself would empty it)
@@ -177,14 +184,14 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
    * is removed at the next share (or by the OS).
    */
   async function share(bytes: Uint8Array, name: string): Promise<boolean> {
-    const [, { invoke }, { shareFile }] = await use();
+    const [, { invoke }] = await use();
     const file = shareName(name);
     const remove = (f: string) => invoke('remove_share_file', { name: f }).catch(() => { /* the OS clears it */ });
     if (lastShared && lastShared !== file) await remove(lastShared);
     lastShared = null;
-    const abs = await invoke<string>('write_share_file', ...fileArgs(os, bytes, file));
+    await invoke('write_share_file', ...fileArgs(os, bytes, file));
     try {
-      return await orCancel(shareFile(fileUrl(abs), { mimeType: 'application/pdf', title: name }).then(() => true), false);
+      return await orCancel(invoke('share_pdf', { name: file }).then(() => true), false);
     } finally {
       if (os === 'ios') lastShared = file;
       else await remove(file);
@@ -195,7 +202,8 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
     platform: 'tauri',
 
     async openPdf(given) {
-      // `given`: only a file picked in this session can be read again.
+      // `given`: only a file picked in this session and not read yet (read_picked reads each pick
+      // once); the app hands none (no initialPath or onOpenRequest), so every open picks first.
       const path = given || (await pick('pdf'));
       if (!path) return null;
       return { path: null, name: nameFromPath(path, 'document.pdf'), bytes: await readPicked(path) };
@@ -208,6 +216,9 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
 
     async writeNotes(pdf, text, sha256) {
       // notes/<key>.notes.json in the app data directory, through a temp file of its own.
+      // A string has at most as many UTF-16 units as UTF-8 bytes: one this long is surely too
+      // large, so it is not sent at all (write_notes checks the exact size).
+      if (text.length > MAX_NOTES_BYTES) throw new Error(`The notes are larger than ${MAX_NOTES_BYTES / 2 ** 20} MB.`);
       const [, { invoke }] = await use();
       await invoke('write_notes', { key: notesKey(pdf, sha256), text });
     },

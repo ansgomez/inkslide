@@ -9,11 +9,11 @@ smoke test.
 |---|---|
 | `src-tauri/tauri.conf.json` | App id `io.github.ansgomez.inkslide`, frontend `../../web/dist` (dev: `http://localhost:5173`), CSP, icons, iOS 17+ / Android 8+ (API 26); Tauri's own file drop is off, so drops reach the page as in the browser. |
 | `src-tauri/capabilities/default.json` | All platforms: message (confirm) dialogs and the app commands `pick_file`, `read_picked`, `read_notes`, `write_notes` and `save_pdf`. No fs plugin permission and no open or save dialog command (see *File access* below). |
-| `src-tauri/capabilities/share-ios.json`, `share-android.json` | Share a file, and the app commands `write_share_file` and `remove_share_file`. |
-| `src-tauri/src/lib.rs` | The app: plugins dialog, fs, sharekit (dialog and fs used from Rust only), and the commands that do every file access (see *File access* below). `main.rs` runs it on the desktop. |
+| `src-tauri/capabilities/share-ios.json`, `share-android.json` | The app commands `write_share_file`, `share_pdf` and `remove_share_file`. No sharekit permission: its own command shares any file URL. |
+| `src-tauri/src/lib.rs` | The app: plugins dialog, fs, sharekit (all three used from Rust only), and the commands that do every file access (see *File access* below). `main.rs` runs it on the desktop. |
 | `src-tauri/build.rs` | Lists the app commands, so each gets an `allow-<command>` permission that a capability must grant. |
 | `../web/src/platform/tauri.ts` | The front end's `PlatformAdapter` for Tauri (selected when `window.__TAURI_INTERNALS__` exists). |
-| `test/config.test.mjs` | `pnpm test`: paths, dev port, icons, both CSPs agree and allow the IPC, the capabilities stay narrow (no fs plugin permission, no open or save dialog), the app commands match their permissions. |
+| `test/config.test.mjs` | `pnpm test`: paths, dev port, icons, both CSPs agree and allow the IPC, the capabilities stay narrow (no fs plugin permission, no open or save dialog, no sharekit command), the app commands match their permissions. |
 | `test/share-names.json` | Names for shared files: what the front end's `shareName` makes of them, checked by both the Rust and the front-end tests. |
 | `test/smoke.mjs` | `pnpm smoke` (Linux): builds the desktop variant with a test script (and the `smoke` feature, which hands one file to `read_picked` as if picked) and checks reading a picked file and the notes through the real plugins and commands. |
 
@@ -30,7 +30,14 @@ smoke test.
   content, whatever it is called. Import (toolbar) brings notes from elsewhere (e.g. a Marp
   deck or the desktop's `*.pdf.notes.json`).
 - **Export:** iPadOS: the share sheet (Save to Files, AirDrop, Mail, Print), as the PWA does.
-  Android: the system save dialog (Storage Access Framework), opened by `save_pdf`.
+  Android: the system save dialog (Storage Access Framework), opened by `save_pdf`. A local
+  file (the desktop target) is replaced through a temp file next to it, flushed and renamed,
+  so a failed export leaves an existing file as it was (and a link there is replaced, not
+  written through). A content URI has no rename: `save_pdf` writes it in place (mode `"wt"`),
+  but only once the whole PDF is decoded and checked in memory, so nothing on the app's side
+  can fail after the old content is gone. What is left: if the provider itself fails
+  mid-write (storage full, a cloud provider disconnecting), an existing document the user
+  chose to replace keeps a partial PDF, and the export reports the error.
 - **Shared files:** the PDF goes to a temp file (iPadOS `tmp/<name>.pdf`, Android
   `cache/share/<name>.pdf`; path separators, `:` and control characters (C0, DEL, C1) in the name become
   `_`, and it is cut to 200 bytes). Android removes it once the share plugin has copied it;
@@ -46,23 +53,32 @@ smoke test.
   scope at all, so any fs permission would let the page read whatever the app can reach and
   overwrite the user's PDFs. Every file access is an app command (`src-tauri/src/lib.rs`):
   `pick_file` opens the picker from Rust and remembers the file; `read_picked` reads only
-  files picked so in this session; `read_notes` and `write_notes` take a notes key
+  files picked so in this session, each once per pick (a pick is forgotten once read, and at
+  most the 8 latest picks not read yet are kept); `read_notes` and `write_notes` take a notes key
   (`[A-Za-z0-9_-]`, at most 200 bytes) and stay in `notes/` of the app data directory;
   `write_share_file` and `remove_share_file` take one name ending in `.pdf` (no separators,
-  `:`, control characters or leading dot) and stay in the share folder; `save_pdf` opens the
+  `:`, control characters or leading dot) and stay in the share folder; `share_pdf` takes
+  such a name too and hands the share sheet only a regular file that `write_share_file` wrote
+  in this session (the web view has no sharekit permission: the plugin's own `share_file`
+  command shares any file URL, notes and other app files included); `save_pdf` opens the
   save dialog itself and writes only to the file picked there, which the page never sees.
   File bytes go as a raw request body with the name in a header; Android's IPC has no raw
   bodies, so there they go as JSON with the bytes in base64 (a JSON number array is refused:
   Tauri would hold it at about 32 bytes per byte). Export and share take PDFs up to 256 MiB
   (`MAX_FILE_BYTES`, the same in `lib.rs` and `tauri.ts`); the front end refuses a larger one
-  with a message before encoding it, as base64 strings that large break web views.
+  with a message before encoding it, as base64 strings that large break web views. Reads are
+  bounded too, whatever size a file or document provider claims: `read_picked` reads at most
+  512 MiB of a picked PDF (`MAX_PICKED_PDF_BYTES`) and 256 MiB of a picked notes file, and
+  refuses a larger one ("the file is larger than … MB"); `read_notes` and `write_notes` keep
+  the same 256 MiB for the app's notes (`MAX_NOTES_BYTES`, also in `tauri.ts`, which does not
+  send notes surely over it; the desktop's limit for notes).
 - **Failed dialogs look cancelled:** on iOS and Android the dialog plugin's Rust API reports a
   picker or save dialog that failed (no activity, a provider error) as no file, the same as a
   cancel, so `pick_file` and `save_pdf` then return null / false and nothing is shown.
 
 Share uses the community plugin [tauri-plugin-sharekit](https://github.com/Choochmeque/tauri-plugin-sharekit)
-0.3.1 (MIT; Rust crate and `@choochmeque/tauri-plugin-sharekit-api`), as Tauri has no
-official share plugin. On iOS it copies the file to `tmp/<name>` and silently keeps an older
+0.3.1 (MIT; the Rust crate only, called by `share_pdf`), as Tauri has no official share
+plugin. On iOS it copies the file to `tmp/<name>` and silently keeps an older
 file of that name, so the adapter writes the export to exactly that path. On Android it copies
 the file to the root of the app cache (for its FileProvider), so the adapter writes to
 `cache/share/` (a copy onto the same path would empty the file); the plugin's copy stays until
@@ -168,10 +184,15 @@ The `ios` subcommands exist only in the CLI on macOS, so their flags above are f
 ```sh
 pnpm --filter @inkslide/mobile test     # config checks (node:test)
 pnpm --filter @inkslide/mobile check    # cargo check of src-tauri (desktop target)
-cargo test --manifest-path apps/mobile/src-tauri/Cargo.toml   # name, payload and picked-file checks of the commands
+cargo test --manifest-path apps/mobile/src-tauri/Cargo.toml   # name, payload, picked-file, read-limit, share and atomic-write checks of the commands
 pnpm --filter @inkslide/web build:tauri && pnpm --filter @inkslide/mobile smoke   # Linux, WebKitGTK; a window flashes
 pnpm --filter @inkslide/web test        # includes test/tauri-adapter.test.ts (mocked IPC)
 ```
+
+CI (`.github/workflows/ci.yml`, job `rust`) runs `cargo check --all-targets` and `cargo test`
+(also with `--features smoke`) on Ubuntu with the WebKitGTK, librsvg and appindicator
+development packages; it caches only the downloaded crates, saved from pushes to `main`. The
+smoke test needs a display and is not run there.
 
 The smoke test builds into `src-tauri/target/smoke` with `TAURI_CONFIG` pointing the frontend
 at a copy of `apps/web/dist` plus a test script, and a temporary `XDG_DATA_HOME`. It covers

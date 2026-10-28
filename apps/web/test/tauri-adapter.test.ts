@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import type { PdfFile } from '@inkslide/annotate';
-import { MAX_FILE_BYTES, base64, createTauriAdapter, fileArgs, fileUrl, mobileOs, nameFromPath, notesFile, notesKey, shareName } from '../src/platform/tauri';
+import { MAX_FILE_BYTES, MAX_NOTES_BYTES, base64, createTauriAdapter, fileArgs, mobileOs, nameFromPath, notesFile, notesKey, shareName } from '../src/platform/tauri';
 
 const SHA = 'a'.repeat(64);
 const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
@@ -32,9 +32,11 @@ function fakeBackend() {
   const share = { dir: '/tmp' };
   /** The file save_pdf's own dialog picks; null: cancelled. */
   const save: { target: string | null } = { target: null };
-  /** What pick_file's picker returns (null: cancelled); picked files are the only ones read_picked reads. */
+  /** What pick_file's picker returns (null: cancelled); picked files are the only ones read_picked reads, each once per pick. */
   const picker: { next: string | null } = { next: null };
   const picked = new Set<string>();
+  /** Names write_share_file wrote and remove_share_file has not removed: the only ones share_pdf shares. */
+  const written = new Set<string>();
   /** read_picked answers with a number array, as where the IPC has no raw responses. */
   const numberArrays = { on: false };
   /** How each file payload came: raw (body and name header) or base64 (Android JSON). */
@@ -74,7 +76,7 @@ function fakeBackend() {
       }
       case 'read_picked': {
         const id = args.id as string;
-        if (!picked.has(id)) throw 'not a file picked in this session';
+        if (!picked.delete(id)) throw 'not a file picked in this session'; // read once per pick
         const data = files.get(id);
         if (!data) throw `failed to open file: ${id}`;
         return numberArrays.on ? Array.from(data) : data.slice().buffer;
@@ -88,11 +90,20 @@ function fakeBackend() {
         return null;
       case 'write_share_file': {
         const { bytes, name } = payload(args, headers);
-        const path = `${share.dir}/${shareName(name)}`;
-        files.set(path, bytes);
-        return path;
+        files.set(`${share.dir}/${shareName(name)}`, bytes);
+        written.add(name);
+        return null;
       }
-      case 'remove_share_file': files.delete(`${share.dir}/${shareName(args.name as string)}`); return null;
+      case 'share_pdf': {
+        // Only a file write_share_file wrote; then the canned share sheet reply.
+        const name = args.name as string;
+        if (!written.has(name) || !files.has(`${share.dir}/${shareName(name)}`)) throw `not a file written for sharing: ${name}`;
+        break;
+      }
+      case 'remove_share_file':
+        written.delete(args.name as string);
+        files.delete(`${share.dir}/${shareName(args.name as string)}`);
+        return null;
       case 'save_pdf': {
         const { bytes } = payload(args, headers);
         if (!save.target) return false;
@@ -197,10 +208,6 @@ describe('helpers', () => {
     await expect(createTauriAdapter('ios').exportPdf(huge, 'a.pdf')).rejects.toThrow(/too large/);
     expect(backend.commands()).toEqual([]);
   });
-
-  it('percent-encodes file URLs per segment', () => {
-    expect(fileUrl('/tmp/My notes #1.pdf')).toBe('file:///tmp/My%20notes%20%231.pdf');
-  });
 });
 
 describe('notes', () => {
@@ -222,6 +229,17 @@ describe('notes', () => {
       { key: SHA, text: 'x' }, { key: 'name-______x_pdf', text: 'y' },
     ]);
     expect(backend.commands().filter(c => c.startsWith('plugin:fs|'))).toEqual([]);
+  });
+
+  it('has the notes limit of the app commands and does not send notes surely over it', async () => {
+    const lib = readFileSync(join(__dirname, '../../mobile/src-tauri/src/lib.rs'), 'utf8');
+    expect(lib).toMatch(/const MAX_NOTES_BYTES: u64 = 256 << 20;/);
+    expect(lib).toMatch(/const MAX_PICKED_PDF_BYTES: u64 = 512 << 20;/);
+    expect(MAX_NOTES_BYTES).toBe(256 << 20);
+    // A view: length over the limit without allocating it.
+    const huge = { length: MAX_NOTES_BYTES + 1 } as unknown as string;
+    await expect(createTauriAdapter('android').writeNotes(pdf, huge, SHA)).rejects.toThrow(/larger than 256 MB/);
+    expect(backend.commands()).toEqual([]);
   });
 
   it('passes a failed write on', async () => {
@@ -266,6 +284,30 @@ describe('files', () => {
   it('can not read a file that was not picked in this session', async () => {
     backend.files.set('/home/me/secret.pdf', new Uint8Array([1]));
     await expect(createTauriAdapter('android').openPdf('/home/me/secret.pdf')).rejects.toBe('not a file picked in this session');
+  });
+
+  it('reads each picked file once, right after picking it (read_picked consumes the pick)', async () => {
+    const id = 'content://x/document/7';
+    backend.files.set(id, new Uint8Array([1]));
+    backend.picker.next = id;
+    const a = createTauriAdapter('android');
+    expect((await a.openPdf())!.bytes).toEqual(new Uint8Array([1]));
+    expect((await a.openPdf())!.bytes).toEqual(new Uint8Array([1])); // the same file again: picked again
+    backend.files.set(id, new TextEncoder().encode('{}'));
+    expect((await a.importNotes!())!.text).toBe('{}');
+    expect(backend.commands()).toEqual(['pick_file', 'read_picked', 'pick_file', 'read_picked', 'pick_file', 'read_picked']);
+    // Every read_picked follows its own pick_file.
+    backend.calls.forEach((c, i) => { if (c.cmd === 'read_picked') expect(backend.calls[i - 1]!.cmd).toBe('pick_file'); });
+    // An id already read is refused, also when handed back.
+    await expect(a.openPdf(id)).rejects.toBe('not a file picked in this session');
+  });
+
+  it('passes on read_picked refusing a file over its limit', async () => {
+    backend.picker.next = 'content://x/document/9';
+    backend.failing.set('read_picked', 'the file is larger than 512 MB');
+    await expect(createTauriAdapter('android').openPdf()).rejects.toBe('the file is larger than 512 MB');
+    backend.failing.set('read_picked', 'the file is larger than 256 MB');
+    await expect(createTauriAdapter('android').importNotes!()).rejects.toBe('the file is larger than 256 MB');
   });
 
   it('returns null when the picker is cancelled; other errors are passed on', async () => {
@@ -322,44 +364,50 @@ describe('export and print', () => {
   });
 
   it('iOS: shares tmp/<name>, the file the share plugin would copy it to', async () => {
-    backend.replies.set('plugin:sharekit|share_file', null);
+    backend.replies.set('share_pdf', null);
     const a = createTauriAdapter('ios');
     let shared: Uint8Array | undefined;
-    backend.replies.set('plugin:sharekit|share_file', () => { shared = backend.files.get('/tmp/My deck-notes.pdf'); return null; });
+    backend.replies.set('share_pdf', () => { shared = backend.files.get('/tmp/My deck-notes.pdf'); return null; });
     expect(await a.exportPdf(pdfBytes, 'My deck-notes.pdf')).toBe(true);
     expect(shared).toEqual(pdfBytes);
-    expect(backend.calls.find(c => c.cmd === 'plugin:sharekit|share_file')!.args).toMatchObject({
-      url: 'file:///tmp/My%20deck-notes.pdf', mimeType: 'application/pdf', title: 'My deck-notes.pdf',
-    });
+    // The name of the file written for sharing, never a path or URL; no sharekit plugin call from the page.
+    expect(backend.calls.find(c => c.cmd === 'share_pdf')!.args).toEqual({ name: 'My deck-notes.pdf' });
     expect([...backend.files.keys()]).toEqual(['/tmp/My deck-notes.pdf']); // kept until the next share
-    expect(backend.commands()).toEqual(['write_share_file', 'plugin:sharekit|share_file']);
+    expect(backend.commands()).toEqual(['write_share_file', 'share_pdf']);
+  });
+
+  it('shares only after writing the file (share_pdf refuses any other)', async () => {
+    backend.replies.set('share_pdf', null);
+    backend.failing.set('write_share_file', 'No space left on device');
+    await expect(createTauriAdapter('android').print!(pdfBytes, 'a.pdf')).rejects.toBe('No space left on device');
+    expect(backend.commands()).toEqual(['write_share_file']);
   });
 
   it('Android: prints through the share sheet from a cache subdirectory', async () => {
     backend.share.dir = '/cache/share';
-    backend.replies.set('plugin:sharekit|share_file', null);
+    backend.replies.set('share_pdf', null);
     const a = createTauriAdapter('android');
     let shared: Uint8Array | undefined;
-    backend.replies.set('plugin:sharekit|share_file', () => { shared = backend.files.get('/cache/share/a_b_c.pdf'); return null; });
+    backend.replies.set('share_pdf', () => { shared = backend.files.get('/cache/share/a_b_c.pdf'); return null; });
     expect(await a.print!(pdfBytes, 'a/b:c.pdf')).toBe(true);
     expect(shared).toEqual(pdfBytes);
     expect(backend.files.size).toBe(0);
-    expect(backend.calls.find(c => c.cmd === 'plugin:sharekit|share_file')!.args).toMatchObject({ url: 'file:///cache/share/a_b_c.pdf' });
+    expect(backend.calls.find(c => c.cmd === 'share_pdf')!.args).toEqual({ name: 'a_b_c.pdf' });
     expect(backend.calls.find(c => c.cmd === 'remove_share_file')!.args).toEqual({ name: 'a_b_c.pdf' });
     expect(backend.forms).toEqual(['base64']);
   });
 
   it('a dismissed share sheet is no export; other share errors are passed on', async () => {
-    backend.replies.set('plugin:sharekit|share_file', new Error('Share cancelled'));
+    backend.replies.set('share_pdf', new Error('Share cancelled'));
     expect(await createTauriAdapter('ios').exportPdf(pdfBytes, 'a.pdf')).toBe(false);
     backend.files.clear();
-    backend.replies.set('plugin:sharekit|share_file', new Error('Invalid file URL'));
+    backend.replies.set('share_pdf', new Error('Invalid file URL'));
     await expect(createTauriAdapter('android').print!(pdfBytes, 'a.pdf')).rejects.toBe('Invalid file URL');
     expect(backend.files.size).toBe(0); // Android: removed in both cases
   });
 
   it('iOS: keeps the shared file until the next share (an activity may still read it)', async () => {
-    backend.replies.set('plugin:sharekit|share_file', null);
+    backend.replies.set('share_pdf', null);
     const a = createTauriAdapter('ios');
     await a.exportPdf(pdfBytes, 'one.pdf');
     expect([...backend.files.keys()]).toEqual(['/tmp/one.pdf']);
@@ -368,13 +416,11 @@ describe('export and print', () => {
   });
 
   it('sends the shared file name percent-encoded in a header, with the bytes as the body', async () => {
-    backend.replies.set('plugin:sharekit|share_file', null);
+    backend.replies.set('share_pdf', null);
     await createTauriAdapter('ios').exportPdf(pdfBytes, '講義 #1.pdf');
     expect(backend.files.get('/tmp/講義 #1.pdf')).toEqual(pdfBytes);
     expect(backend.forms).toEqual(['raw']);
-    expect(backend.calls.find(c => c.cmd === 'plugin:sharekit|share_file')!.args).toMatchObject({
-      url: `file:///tmp/${encodeURIComponent('講義 #1.pdf')}`,
-    });
+    expect(backend.calls.find(c => c.cmd === 'share_pdf')!.args).toEqual({ name: '講義 #1.pdf' });
   });
 
   it('leaves printing to the front end on the desktop', () => {

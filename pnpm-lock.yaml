@@ -43,9 +43,6 @@ importers:
 
   apps/web:
     dependencies:
-      '@choochmeque/tauri-plugin-sharekit-api':
-        specifier: 0.3.1
-        version: 0.3.1
       '@inkslide/annotate':
         specifier: workspace:*
         version: link:../../packages/annotate
@@ -129,9 +126,6 @@ importers:
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.5)(happy-dom@20.14.6)(jiti@2.7.0)
 
 packages:
-
-  '@choochmeque/tauri-plugin-sharekit-api@0.3.1':
-    resolution: {integrity: sha512-Cdd1wPW9Arang3sapz1LXDdklY06wnaf+zqsT+iS1c64cyozjhKYwAzLdirJY0HtlPlaZ7G5PsCfqgLoXkpqlg==}
 
   '@electron-internal/extract-zip@1.0.6':
     resolution: {integrity: sha512-/aQLgFDdCSnwChfUwqekSmE1q2dCTzhUy5saIHBb5vyYn5LzWaKPaIz1wM0lDMCZYBoIG4svJNvAJb6vkI8BuA==}
@@ -2125,10 +2119,6 @@ packages:
     engines: {node: '>=10'}
 
 snapshots:
-
-  '@choochmeque/tauri-plugin-sharekit-api@0.3.1':
-    dependencies:
-      '@tauri-apps/api': 2.12.4
 
   '@electron-internal/extract-zip@1.0.6': {}
 
