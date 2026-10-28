@@ -185,7 +185,7 @@ print windows links are only refused.
 
 ## Presenter mode
 
-View → Presenter Mode (F5, desktop only) opens a second window, the audience window, for a
+View → Presenter Mode (F5) opens a second window, the audience window, for a
 projector: full screen on a display other than the app window's, else a 960×540 window
 (`apps/desktop/src/main/presenter.ts`, `audiencePlacement`). On Wayland it is always the
 window: the compositor ignores positions, so a full-screen window could cover the app window
@@ -205,7 +205,10 @@ the sender is the app window), so it reads no files; it only receives.
   not be sent), `page`, `strokes` (all strokes of one page), `delta` (a page's stroke ids in
   order, and only the new and changed strokes), `images` (all images of one page, with the
   image data only for images the audience does not have yet), `blanks` (every blank page), `live` (the stroke being written, points from index `from`
-  on), `live-end` and `laser` (points). `parsePresenterMessage` rebuilds a message from its
+  on), `live-end`, `laser` (points), and the previews of an erase or a move while it
+  happens: `erasing` (the ids of the strokes the page shows, in order, the pieces cut from
+  strokes that the audience does not have yet, the ids of erased images), `moving` (ids and
+  offset) and `preview-end`. `parsePresenterMessage` rebuilds a message from its
   known fields and refuses wrong types and oversized ones; main runs it before relaying, the
   audience page again on arrival, and `createStroke` / `createImage` check strokes and images
   once more when they are applied (`applyRemoteStrokes`, `applyRemoteImages`). Images have
@@ -225,20 +228,53 @@ the sender is the app window), so it reads no files; it only receives.
   and the laser go at most every 30 ms (`LIVE_MS`), the stroke with only the points that
   changed since the last message (`commonPrefix`). `live-end` follows the finished stroke's
   `strokes`, so the audience never shows neither.
+  Erasing and moving are mirrored while they happen: the erasers and the selector report
+  their preview through `ToolSync.preview` (`ToolHost.sync`) and its end after their command
+  (or on cancel). The presenter sends the latest preview at most every `LIVE_MS`, as ids and
+  an offset, with each cut piece only once; at the end the page's real changes go first and
+  `preview-end` after them in the same task. An audience that loads mid-gesture gets the
+  preview with all its pieces again.
 - **Audience side** (`audience.ts`): messages are handled one at a time, in order (opening the
   PDF is async). The PDF is rendered with PDF.js like the viewer's (bitmap cache, the next
   page pre-rendered), always the whole page fitted to the window; notes go into a `NotesDoc`
   through `load`, `applyRemoteStrokes` (which keeps a stroke it already has, so its SVG node
   is not drawn again) and `applyRemoteBlanks`; the live stroke and the laser
-  are drawn in the page's SVG (`render.liveStroke`, `render.laser`). Nothing takes input.
+  are drawn in the page's SVG (`render.liveStroke`, `render.laser`). A preview is drawn over
+  the page (`syncLayer` with the previewed strokes, `translateStrokes` for a move) and
+  `preview-end` draws the page as its document has it again. Nothing takes input in the
+  desktop app.
 - **Ending:** closing the audience window, F5 or View → Presenter Mode again, or Escape in the
   audience window (which has no menu on Linux and Windows; F11 there toggles full screen).
   Closing the app window closes the audience window.
 
-Erasing and moving strokes are mirrored when they are done, not while they happen. The
-browser, PWA and Tauri builds have no presenter mode: the presenter and audience modules are
-transport independent, so a `BroadcastChannel` and `window.open` could carry the same
-messages there.
+**In the browser and the PWA** (`apps/web/src/presenter-web.ts`, `presenter-link.ts`) there is
+no main process. F5 (with a PDF open) or the toolbar's presenter button opens
+`audience.html#<id>` with `window.open` (a click or a key: pop-up blockers allow only
+those; a blocked pop-up shows a banner). The two windows talk over a `BroadcastChannel` named
+after `<id>`, a per-tab id kept in sessionStorage. A channel rather than the pop-up's
+`postMessage`: only same-origin pages can join it (the browser enforces it, nothing to check
+by hand), and either window can reload and find the other again; a reloaded tab has no
+reference to the pop-up it opened. The same presenter (`createPresenter`) sends through it,
+and the audience checks every message with `parsePresenterMessage` as on the desktop.
+
+```
+ presenter tab                    BroadcastChannel inkslide-presenter-<id>     audience pop-up
+ presenter.ts ── PresenterLink ──► m (presenter message) ─────────────────► AudienceLink ── audience.ts
+               ◄── hello / bye ──                         ◄── ready / gone / quit ──►
+```
+
+The link (`parseLinkMessage` checks it): the presenter tab says `ready` when it loads (a new
+link id per load); the audience says `hello` when it loads, to the presenter whose `ready` it
+heard last, and that presenter sends everything (`setActive(true)`). `bye` (the audience
+window closes or reloads; also the pop-up seen closed, checked every second) stops the
+sending; `gone` (the presenter tab closes or reloads) makes the audience wait for it; `quit`
+(F5 again) closes the audience window. Each tab has its own channel, so two tabs never mirror
+into one window; a tab duplicated by the browser shares the id, and the last one to start
+wins (the other hears the `hello` to it and stops). The audience page shows a hint to click
+(or press F11) for full screen, as a page may only ask for it on a click, and closes on F5 or
+Escape out of full screen. `audience.html` is a second Vite entry, so it gets the same CSP
+and is in the service worker's precache (it works offline). The Tauri builds have no
+presenter mode (no second window on phones and tablets): no button, and F5 is left alone.
 
 **userData** (`~/.config/Inkslide` on Linux): `notes/` (notes that cannot go next to the PDF,
 backups, kept unreadable copies), `recent-files.v2.json` (older builds: `recent-files.json`), `window-state.json`,
@@ -450,13 +486,15 @@ startup bundle. The adapter then saves the bytes.
 
 - Unit tests (Vitest) in each package's `test/`: geometry, model, io (v1/v2), tools, input,
   autosave, DOM rendering (happy-dom), legacy parity, presenter messages, images and snapshots; export (checked with
-  PDF.js); web helpers, the web adapter and the presenter side of presenter mode; desktop path
+  PDF.js); web helpers, the web adapter, the presenter side of presenter mode and its browser link; desktop path
   rules, notes and backup stores, preferences, file helpers, open requests, menu, window
   hardening, audience window placement, packaging config.
 - End-to-end tests (Playwright) in `apps/web/e2e` against the production build, with
   synthetic pen and touch events; `backup.spec.ts` uses a stand-in Electron bridge for the
   second read, the backup offer, the kept unreadable copy and Revert to Backup;
-  `presenter.spec.ts` passes an app window's presenter messages to the audience page.
+  `presenter.spec.ts` passes an app window's presenter messages to the audience page (also
+  live erasing and moving), and runs the browser version with a real pop-up: reloads of either
+  window, closing, a blocked pop-up and two presenter tabs.
 - Desktop smoke test (`apps/desktop/test/smoke.mjs`) launches Electron with a fixture page
   and drives the bridge end to end (also the backup and revert, the unreadable copy, cleanup
   of old copies, switching backups off, printing, a second instance
