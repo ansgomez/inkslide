@@ -7,7 +7,7 @@
  * only .pdf files (others open from their bytes, without a path).
  */
 import { resolve } from 'node:path';
-import { MAX_TEXT_BYTES } from './fsutil';
+import { MAX_PDF_BYTES, MAX_TEXT_BYTES } from './fsutil';
 
 /** Paths the renderer may read: granted ones plus those `extra` accepts (the recent files). */
 export class PathGrants {
@@ -51,5 +51,12 @@ export function checkDroppedPdf(value: unknown): string {
 export function checkText(value: unknown, maxBytes = MAX_TEXT_BYTES): string {
   if (typeof value !== 'string') throw new Error('notes must be a string');
   if (value.length > maxBytes || Buffer.byteLength(value, 'utf8') > maxBytes) throw new Error('notes too large');
+  return value;
+}
+
+/** PDF bytes from IPC (export, print): a Uint8Array of at most `maxBytes`. */
+export function checkPdfBytes(value: unknown, what: string, maxBytes = MAX_PDF_BYTES): Uint8Array {
+  if (!(value instanceof Uint8Array)) throw new Error(`${what} bytes must be a Uint8Array`);
+  if (value.byteLength > maxBytes) throw new Error(`${what}: the PDF is too large`);
   return value;
 }

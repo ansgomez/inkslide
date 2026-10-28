@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { checkDroppedPdf, checkPath, checkText, PathGrants } from '../src/main/access';
+import { checkDroppedPdf, checkPath, checkPdfBytes, checkText, PathGrants } from '../src/main/access';
 
 describe('PathGrants', () => {
   it('allows granted and extra paths only, normalized', () => {
@@ -26,5 +26,11 @@ describe('PathGrants', () => {
     expect(() => checkText('€€€', 8)).toThrow('too large'); // 3 code units, 9 bytes
     expect(() => checkText('x'.repeat(9), 8)).toThrow('too large');
     for (const bad of [undefined, null, 42, {}]) expect(() => checkText(bad)).toThrow('must be a string');
+  });
+  it('checkPdfBytes takes a Uint8Array up to the limit', () => {
+    const b = new Uint8Array(8);
+    expect(checkPdfBytes(b, 'print', 8)).toBe(b);
+    expect(() => checkPdfBytes(new Uint8Array(9), 'print', 8)).toThrow('print: the PDF is too large');
+    for (const bad of [undefined, 'x', [1, 2], new ArrayBuffer(4)]) expect(() => checkPdfBytes(bad, 'export')).toThrow('Uint8Array');
   });
 });

@@ -27,7 +27,7 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
-import { checkDroppedPdf, checkPath, checkText, PathGrants } from './access';
+import { checkDroppedPdf, checkPath, checkPdfBytes, checkText, PathGrants } from './access';
 import { CrashRecovery } from './crashRecovery';
 import { MAX_PDF_BYTES, MAX_TEXT_BYTES, readFileLimited, writeExport } from './fsutil';
 import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
@@ -40,7 +40,7 @@ import { OpenRequests } from './openRequests';
 import { APP_ORIGIN, APP_SCHEME, isSha256, pdfFromArgv, resolveWebEntry, testEnv, webFileFor, type WebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
 import { audienceEntry, audienceKey, audiencePlacement } from './presenter';
-import { printPdf } from './print';
+import { PrintGate, printPdf } from './print';
 import { RECENT_MAX, recentInfo, RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
 
@@ -530,8 +530,8 @@ function start(): void {
     return text;
   });
 
-  handle(IPC.exportPdf, async (bytes: unknown, suggestedName: unknown): Promise<boolean> => {
-    if (!(bytes instanceof Uint8Array)) throw new Error('export bytes must be a Uint8Array');
+  handle(IPC.exportPdf, async (value: unknown, suggestedName: unknown): Promise<boolean> => {
+    const bytes = checkPdfBytes(value, 'export');
     let name = basename(typeof suggestedName === 'string' && suggestedName ? suggestedName : 'annotated.pdf');
     if (extname(name).toLowerCase() !== '.pdf') name += '.pdf';
     const r = await saveDialog({
@@ -544,12 +544,15 @@ function start(): void {
     return true;
   });
 
-  handle(IPC.print, (bytes: unknown, name: unknown): Promise<boolean> => {
-    if (!(bytes instanceof Uint8Array)) throw new Error('print bytes must be a Uint8Array');
-    return printPdf(bytes, typeof name === 'string' ? name : '', {
-      parent: win,
+  // One print at a time per window (PrintGate), of at most MAX_PDF_BYTES.
+  const prints = new PrintGate();
+  handle(IPC.print, (value: unknown, name: unknown): Promise<boolean> => {
+    const bytes = checkPdfBytes(value, 'print');
+    const parent = win!; // the sender, checked by handle()
+    return prints.run(parent, () => printPdf(bytes, typeof name === 'string' ? name : '', {
+      parent,
       toPdf: smokeMode ? testVars.printToPdf : undefined,
-    });
+    }));
   });
 
   handle(IPC.importNotes, async (): Promise<{ name: string; text: string } | null> => {

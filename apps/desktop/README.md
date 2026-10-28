@@ -28,7 +28,7 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 | `src/main/openRequests.ts` | PDFs to open before the page has loaded: the first through `initialPath()`, the others sent once it has. |
 | `src/main/paths.ts` | Front end location (dev, packaged, override) and the `app://inkslide/` URLs it is served under, the test-only environment variables, the PDF in a command line, the app-storage notes path. |
 | `src/main/recent.ts`, `windowState.ts`, `preferences.ts`, `jsonStore.ts` | Recent files (with the hash and page count, for the start screen list), window state and preferences (backups on or off) in `userData`. |
-| `src/main/print.ts` | Printing: the exported PDF in a hidden window, Chromium's PDF viewer, the system print dialog. |
+| `src/main/print.ts` | Printing: the exported PDF in a hidden window, Chromium's PDF viewer, the system print dialog; one print at a time per window (`PrintGate`), of at most 2 GB. |
 | `src/main/harden.ts` | Window lockdown shared by all windows: webPreferences, no navigation, permissions (fullscreen only). |
 | `src/main/menu.ts` | File and View menus (Revert to Backup…, Keep a Backup of the Notes; Presenter Mode, F5; Reload only in development builds). |
 | `src/main/presenter.ts` | Presenter mode: where the audience window opens (full screen on another display), its page (`audience.html`), its keys (Esc ends, F11 full screen). Main relays the app window's presenter messages to it, checked by `parsePresenterMessage`. |

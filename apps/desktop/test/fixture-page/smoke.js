@@ -117,7 +117,12 @@ async function close() {
 /** Print the PDF from the command line (main writes it to INKSLIDE_PRINT_TO_PDF instead of the dialog). */
 async function print() {
   const pdf = await bridge.openPdf(await bridge.initialPath());
-  const printed = await bridge.print(pdf.bytes, pdf.name);
+  // A second print while one runs is refused (one at a time per window).
+  const first = bridge.print(pdf.bytes, pdf.name);
+  let refused = '';
+  await bridge.print(pdf.bytes, pdf.name).catch(e => { refused = String(e.message || e); });
+  assert(/already in progress/.test(refused), `second print refused: ${refused}`);
+  const printed = await first;
   assert(printed === true, 'print resolved true');
   return { printed: pdf.name };
 }

@@ -141,7 +141,9 @@ Main checks every call:
 - hashes must be 64 hex characters, text and PDFs have size limits (notes in UTF-8 bytes,
   256 MB; PDFs 2 GB). Main reads a PDF, an imported notes file or a sidecar through one
   handle: only a regular file (no FIFO or device), its size taken from that handle, and the
-  read stops at the limit (`fsutil.ts`, `readFileLimited`, `readFileChecked`);
+  read stops at the limit (`fsutil.ts`, `readFileLimited`, `readFileChecked`). PDF bytes
+  from the page (export, print) have the PDF limit, and a window prints one PDF at a time
+  (`print.ts`, `PrintGate`: another request while its dialog is open is refused);
 - an export may not overwrite the open PDF (also not through a link or another letter case),
   and a symlink at the chosen name is replaced by the export, never written through
   (`writeExport`).
