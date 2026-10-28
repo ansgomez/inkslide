@@ -930,7 +930,20 @@ export class NotesDoc {
     const notices: string[] = [];
     let rawPages = file.pages || [];
     if (!Array.isArray(rawPages)) { warnings.push('Skipped the pages: not a list'); rawPages = []; }
-    for (const raw of rawPages) {
+    // A blank page id that is not a usable id (as itemId; presenter mode sends ids up to
+    // MAX_ID_LENGTH) gets a fresh one, unused in the file. Blank pages are referenced by
+    // nothing else (`after` is a slide number), so the order stays as it is.
+    const fileIds = new Set(rawPages.map(r => (r && typeof r.id === 'string' ? r.id : '')));
+    let fresh = 0;
+    const freshId = (): string => {
+      let id: string;
+      do { id = `b-${this.blankPrefix}-load${++fresh}`; } while (fileIds.has(id));
+      return id;
+    };
+    for (let raw of rawPages) {
+      if (raw && raw.kind === 'blank' && !(typeof raw.id === 'string' && raw.id && raw.id.length <= MAX_ID_LENGTH)) {
+        raw = { ...raw, id: freshId() };
+      }
       const page = parsePage(raw, this.deck, warnings, strokeIds, kept, notices, budget);
       if (!page) continue;
       if (seenPages.has(page.id)) { warnings.push(`Skipped duplicate page ${page.id}`); continue; }

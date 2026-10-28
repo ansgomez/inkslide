@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { History, NotesDoc, createStroke, checkFormat, deckWarnings, type BlankPage, type Command } from '../src/model';
+import { History, MAX_ID_LENGTH, NotesDoc, createStroke, checkFormat, deckWarnings, type BlankPage, type Command } from '../src/model';
 import type { Point, Stroke } from '../src/geometry';
 import { deckFromPdf } from '../src/io';
 
@@ -503,5 +503,34 @@ describe('applyRemoteStrokes keeps the strokes it has', () => {
   it('still checks new strokes', () => {
     const doc = pdfDoc();
     expect(() => doc.applyRemoteStrokes('p1', [{ id: 'x', tool: 'pen', color: '', size: 1, points: [[NaN, 0]] }])).toThrow(/finite/);
+  });
+});
+
+describe('blank page ids on load', () => {
+  it('gives a blank page with an unusable id a fresh one, keeping the order and the rest', () => {
+    const doc = pdfDoc();
+    const long = 'b'.repeat(MAX_ID_LENGTH + 1);
+    const blank = (id: unknown, after: number, x: number) => ({
+      id, kind: 'blank', after, paper: 'grid', strokes: [{ id: `s${x}`, tool: 'pen', color: '#000', size: 4, points: [[x, x]] }],
+    });
+    const { warnings } = doc.load({
+      format: 'marp-notes', version: 2, deck: doc.toJSON().deck,
+      pages: [blank(long, 1, 1), blank('ok', 1, 2), blank(42, 1, 3), blank('', 2, 4), blank('b-x-load1', 2, 5)],
+    });
+    expect(warnings).toEqual([]);
+    const blanks = doc.blankOrder;
+    expect(blanks).toHaveLength(5);
+    expect(blanks[1]).toBe('ok');
+    expect(blanks[4]).toBe('b-x-load1');
+    expect(new Set(blanks).size).toBe(5);
+    for (const id of blanks) expect(id.length).toBeLessThanOrEqual(MAX_ID_LENGTH);
+    // Order, owners, paper and strokes are kept.
+    expect(blanks.map(id => doc.strokes(id)[0].points[0][0])).toEqual([1, 2, 3, 4, 5]);
+    expect(blanks.map(id => (doc.getPage(id) as BlankPage).after)).toEqual([1, 1, 1, 2, 2]);
+    expect(doc.sequence()).toEqual(['p1', ...blanks.slice(0, 3), 'p2', ...blanks.slice(3), 'p3']);
+    // Saved with the new ids; loading that again keeps them.
+    const again = pdfDoc();
+    again.load(doc.toJSON());
+    expect(again.blankOrder).toEqual(blanks);
   });
 });
