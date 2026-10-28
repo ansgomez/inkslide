@@ -27,18 +27,22 @@ const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
 /**
  * In-memory OPFS "notes" directory whose writes can be made to fail (all of
  * them, those of files matching `failNames`, or where `failWrite(name)` says
- * so), and whose reads of files matching `failReads` fail. Files keep their
- * write time (`times`); `writes` lists the files written, in order, and
- * `textReads` counts the reads of each file's content. `afterList` runs once
- * a listing (values()) has returned every file.
+ * so; with `failClose`, on close() instead), whose reads of files matching
+ * `failReads` fail, and whose removals fail with `failRemoves`. Files keep
+ * their write time (`times`); `writes` lists the files written, in order,
+ * `aborts` the writables aborted, and `textReads` counts the reads of each
+ * file's content. `afterList` runs once a listing (values()) has returned
+ * every file.
  */
 function fakeOpfs() {
   const files = new Map<string, string>();
   const times = new Map<string, number>();
   const writes: string[] = [];
   const textReads = new Map<string, number>();
+  const aborts: string[] = [];
   const state = {
     failWrites: false, failNames: null as RegExp | null, failReads: null as RegExp | null,
+    failClose: false, failRemoves: false,
     /** Opening the notes directory fails with this. */
     dirError: null as DOMException | null,
     failWrite: null as ((name: string) => boolean) | null,
@@ -65,7 +69,11 @@ function fakeOpfs() {
       let data = '';
       return {
         async write(t: string) { data = t; },
-        async close() { files.set(name, data); times.set(name, Date.now()); writes.push(name); },
+        async close() {
+          if (state.failClose) throw new DOMException('disk error', 'InvalidStateError');
+          files.set(name, data); times.set(name, Date.now()); writes.push(name);
+        },
+        async abort() { aborts.push(name); },
       };
     },
   });
@@ -76,6 +84,7 @@ function fakeOpfs() {
       return fileHandle(name);
     },
     async removeEntry(name: string) {
+      if (state.failRemoves) throw new DOMException('locked', 'NoModificationAllowedError');
       times.delete(name);
       if (!files.delete(name)) throw new DOMException('missing', 'NotFoundError');
     },
@@ -92,7 +101,7 @@ function fakeOpfs() {
   };
   // The page can write OPFS (createWritable: Chromium, Firefox, Safari 26+).
   vi.stubGlobal('FileSystemFileHandle', class { createWritable() {} });
-  return { files, times, writes, textReads, state, storage: { getDirectory: async () => root } };
+  return { files, times, writes, aborts, textReads, state, storage: { getDirectory: async () => root } };
 }
 
 function fakeLocalStorage(opts: { full?: boolean } = {}) {
@@ -137,6 +146,38 @@ describe('web adapter notes storage', () => {
     await a.writeNotes(pdf, 'newest', 'abc');
     expect(await a.readNotes(pdf, 'abc')).toBe('newest');
     expect(localStorage.getItem(notesKey(pdf, 'abc'))).toBeNull();
+  });
+
+  it('a write that falls back to localStorage is read back even when the older OPFS file can not be removed', async () => {
+    const opfs = fakeOpfs();
+    vi.stubGlobal('navigator', { storage: opfs.storage });
+    vi.stubGlobal('localStorage', fakeLocalStorage());
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(1_000_000);
+    const a = createWebAdapter();
+    await a.writeNotes(pdf, 'old', 'abc');
+    vi.setSystemTime(1_001_000);
+    opfs.state.failClose = true; // the write fails on close() (the file stays locked until aborted)
+    opfs.state.failRemoves = true;
+    await a.writeNotes(pdf, 'new', 'abc');
+    expect(opfs.aborts).toEqual([notesKey(pdf, 'abc').replace(/[^A-Za-z0-9_-]/g, '_') + '.json']);
+    expect([...opfs.files.values()]).toContain('old'); // still there, and readable
+    expect(await a.readNotes(pdf, 'abc')).toBe('new');
+    // OPFS works again: it takes over and the localStorage copy goes.
+    vi.setSystemTime(1_002_000);
+    opfs.state.failClose = opfs.state.failRemoves = false;
+    await a.writeNotes(pdf, 'newest', 'abc');
+    expect(await a.readNotes(pdf, 'abc')).toBe('newest');
+    expect(localStorage.getItem(notesKey(pdf, 'abc'))).toBeNull();
+  });
+
+  it('notes kept in both places without times (an older build) are read from OPFS', async () => {
+    const opfs = fakeOpfs();
+    vi.stubGlobal('navigator', { storage: opfs.storage });
+    vi.stubGlobal('localStorage', fakeLocalStorage());
+    opfs.files.set(notesKey(pdf, 'abc').replace(/[^A-Za-z0-9_-]/g, '_') + '.json', 'in opfs');
+    localStorage.setItem(notesKey(pdf, 'abc'), 'in localStorage');
+    expect(await createWebAdapter().readNotes(pdf, 'abc')).toBe('in opfs');
   });
 
   it('where OPFS can not be written, a failed write leaves no empty file that hides the older notes', async () => {

@@ -295,6 +295,12 @@ themselves fall back to.
 - `writeNotes` reads the notes it is about to replace if a backup is due, writes the new
   notes, and only then the backup, so near the quota the backup never takes the room the
   notes need. A failed backup read or write is logged and never fails the save.
+- Notes are written to OPFS, else to `localStorage`; the other copy is then removed. Both can
+  remain (removing the older OPFS file failed too), so the `localStorage` item
+  `inkslide-notes-time:<sha256>` keeps when each copy was saved, `{local, opfs}` in ms, taken
+  when the save began: `readNotes` reads the newer copy, and the OPFS file when the
+  `localStorage` copy has no time (older data). A write keeps a copy newer than its own start.
+  `writeOpfsFile` aborts a writable whose write or close failed, so the file is not left locked.
 - An OPFS notes file that exists but cannot be read rejects (only `NotFoundError` means "no
   notes"), so `readNotes` reports it and `revertToBackup` stops without changing anything;
   but if `localStorage` holds the key (where a failed OPFS write put the newer notes), that

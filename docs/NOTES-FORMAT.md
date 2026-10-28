@@ -283,6 +283,12 @@ There are no file paths. Notes are kept in the site's storage, keyed by the PDF'
   browser has it;
 - else `localStorage`, key `inkslide-notes:<sha256>`.
 
+When an OPFS write fails, the notes go to `localStorage` instead and the OPFS file is removed.
+If it cannot be removed, both copies exist; the `localStorage` item
+`inkslide-notes-time:<sha256>`, `{"local": <ms>, "opfs": <ms>}`, says when each copy was saved
+(when its save began), and the newer one is read. Without a time for the `localStorage` copy
+(notes saved by an older version) the OPFS file is read.
+
 Clearing the site data deletes the notes. The same PDF opened from another folder or under
 another name finds its notes, because the key is the hash.
 

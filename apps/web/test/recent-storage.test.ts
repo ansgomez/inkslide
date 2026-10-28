@@ -76,7 +76,7 @@ function fakeIndexedDb() {
 function fakeOpfs() {
   const files = new Map<string, Uint8Array>();
   /** failWrites: writes fail with a `failWith` error (default: a locked file). */
-  const state = { failWrites: false, failWith: 'NoModificationAllowedError' };
+  const state = { failWrites: false, failWith: 'NoModificationAllowedError', aborts: 0 };
   const dir = {
     async getFileHandle(name: string, opts?: { create?: boolean }) {
       if (!files.has(name) && !opts?.create) throw new DOMException('missing', 'NotFoundError');
@@ -94,6 +94,7 @@ function fakeOpfs() {
               data = d.slice();
             },
             async close() { files.set(name, data); },
+            async abort() { state.aborts++; },
           };
         },
       };
@@ -135,6 +136,7 @@ describe('recent copies', () => {
   it('fall back to IndexedDB when the OPFS write fails, leaving no empty file', async () => {
     opfs.state.failWrites = true;
     await backend.writeCopy('abc', PDF);
+    expect(opfs.state.aborts).toBe(1); // the failed writable is not left open
     expect(opfs.files.size).toBe(0);
     expect(idb.stores.get('copies')!.size).toBe(1);
     expect(await backend.readCopy('abc')).toEqual(PDF);
