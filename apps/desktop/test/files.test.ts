@@ -397,6 +397,9 @@ describe('notes backup', () => {
     expect(isUsableNotes(notes(1))).toBe(true);
     expect(isUsableNotes(notes(0))).toBe(false);
     expect(isUsableNotes(JSON.stringify({ format: 'marp-notes', version: 2, deck: {}, pages: [{ id: 'b-1', kind: 'blank', after: 1, strokes: [] }] }))).toBe(true);
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
+    expect(isUsableNotes(JSON.stringify({ format: 'marp-notes', version: 3, deck: {}, pages: [
+      { id: 'p1', kind: 'slide', slide: 1, strokes: [], images: [{ id: 'i', x: 0, y: 0, w: 1, h: 1, src: png }] }] }))).toBe(true);
     expect(isUsableNotes('{ broken')).toBe(false);
     expect(isUsableNotes(JSON.stringify({ format: 'marp-notes', version: 99, deck: {}, pages: [] }))).toBe(false);
   });

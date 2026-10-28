@@ -10,6 +10,8 @@
  *   pen          filled outlinePath(strokeOutline(points, size))
  *   highlighter  stroked centerlinePath, width = size, round caps / joins,
  *                opacity 0.35 and multiply blend, below the pen strokes
+ *   image        the PNG or JPEG as an image XObject (embedded once per
+ *                distinct image), stretched to its rectangle, below all ink
  *   paper        white page; lined / grid rules, PAPER_STYLE of render.ts
  * Notes are read through NotesDoc (io.loadNotes), so v1 Marp notes are scaled,
  * malformed pages and strokes are skipped with a warning and pages beyond the
@@ -17,7 +19,7 @@
  */
 import {
   LineCapStyle, LineJoinStyle, PDFDocument, PDFName, PDFNumber,
-  concatTransformationMatrix, fill, popGraphicsState, pushGraphicsState, setFillingRgbColor,
+  concatTransformationMatrix, drawObject, fill, popGraphicsState, pushGraphicsState, setFillingRgbColor,
   setGraphicsState, setLineCap, setLineJoin, setLineWidth, setStrokingRgbColor, stroke as strokeOp,
   type PDFOperator, type PDFPage, type PDFRef,
 } from 'pdf-lib';
@@ -25,7 +27,7 @@ import {
   centerlinePath, getOutlineEngine, outlinePath, strokeOutline,
   type OutlineEngine, type Stroke,
 } from '@inkslide/annotate/geometry';
-import { NotesDoc, type NotesJSON, type Paper, type Size } from '@inkslide/annotate/model';
+import { NotesDoc, imageType, type NotesJSON, type PageImage, type Paper, type Size } from '@inkslide/annotate/model';
 import { loadNotes } from '@inkslide/annotate/io';
 import { PAPER_STYLE } from '@inkslide/annotate/render';
 import { displayMatrix, displaySize, parseColor, rectOp, svgPathOperators, type Box, type Matrix } from './ops';
@@ -180,18 +182,33 @@ export async function exportAnnotatedPdfWithReport(
   const warnings = notes ? loadNotes(doc, withoutLaser(notes)).warnings : [];
   if (opts.onWarning) warnings.forEach(opts.onWarning);
   const painter = new Painter(pdf, opts.outline || getOutlineEngine());
+  const sequence = doc.sequence();
+  // Images are embedded first (pdf-lib embeds asynchronously); one that does not decode is left out.
+  for (const id of sequence) {
+    const page = doc.getPage(id);
+    for (const image of page ? page.images : []) {
+      const problem = await painter.embed(image);
+      if (problem) {
+        const message = `Skipped an image on page ${id}: ${problem}`;
+        warnings.push(message);
+        if (opts.onWarning) opts.onWarning(message);
+      }
+    }
+  }
 
   let index = 0;
-  for (const id of doc.sequence()) {
+  for (const id of sequence) {
     const page = doc.getPage(id); // null: a slide page without notes (no load() when notes are null)
     if (!page || page.kind === 'slide') {
       index++;
-      if (page && page.strokes.length) painter.paint(pages[page.slide - 1], frames[page.slide - 1], null, page.strokes);
+      if (page && (page.strokes.length || page.images.length)) {
+        painter.paint(pages[page.slide - 1], frames[page.slide - 1], null, page.strokes, page.images);
+      }
     } else {
       const size = frames[page.after - 1].size;
       const target = pdf.insertPage(index++, [size[0], size[1]]);
       const frame: Frame = { box: { x: 0, y: 0, width: size[0], height: size[1] }, rotation: 0, unit: 1, size };
-      painter.paint(target, frame, page.paper, page.strokes);
+      painter.paint(target, frame, page.paper, page.strokes, page.images);
     }
   }
 
@@ -217,13 +234,34 @@ class Painter {
   private states = new Map<string, PDFRef>();
   /** Resource name of each state per page dict. */
   private names = new WeakMap<object, Map<string, PDFName>>();
+  /** Image XObjects by data URL (a pasted image twice is embedded once); null: it does not decode. */
+  private images = new Map<string, PDFRef | null>();
+  /** Resource name of each image per page dict. */
+  private imageNames = new WeakMap<object, Map<string, PDFName>>();
 
   constructor(private pdf: PDFDocument, private engine: OutlineEngine) {}
 
-  paint(page: PDFPage, frame: Frame, paper: Paper | null, strokes: readonly Stroke[]): void {
+  /** Embed an image's PNG or JPEG for paint(); resolves to why it could not be, or ''. */
+  async embed(image: PageImage): Promise<string> {
+    if (!this.images.has(image.src)) {
+      let ref: PDFRef | null = null;
+      try {
+        // pdf-lib takes the data URL as it is; the model checked its type and signature.
+        const embedded = imageType(image.src) === 'image/png'
+          ? await this.pdf.embedPng(image.src) : await this.pdf.embedJpg(image.src);
+        ref = embedded.ref;
+      } catch (_) { /* a broken PNG or JPEG behind a valid signature */ }
+      this.images.set(image.src, ref);
+    }
+    return this.images.get(image.src) ? '' : 'the image data could not be read';
+  }
+
+  paint(page: PDFPage, frame: Frame, paper: Paper | null, strokes: readonly Stroke[], images: readonly PageImage[] = []): void {
     page.node.normalize(); // wraps the existing content in q/Q
     const ops: PDFOperator[] = [pushGraphicsState(), concatTransformationMatrix(...frameMatrix(frame))];
     if (paper) ops.push(...paperOperators(paper, frame.size));
+    // Images lie below all ink, as on the screen (render.ts: g.ann-img below g.ann-hl).
+    for (const i of images) ops.push(...this.image(page, i));
     // The screen draws all highlighter strokes in a group below the pen group.
     for (const s of strokes) if (s.tool === 'highlighter') ops.push(...this.highlighter(page, s));
     for (const s of strokes) if (s.tool === 'pen') ops.push(...this.pen(page, s));
@@ -251,6 +289,27 @@ class Painter {
       setStrokingRgbColor(c.r, c.g, c.b),
       setLineWidth(s.size), setLineCap(LineCapStyle.Round), setLineJoin(LineJoinStyle.Round),
       ...path, strokeOp(), popGraphicsState(),
+    ];
+  }
+
+  /**
+   * An image stretched to its rectangle. An image XObject fills the unit
+   * square with its first row at y = 1; display coordinates run down, so the
+   * square is flipped onto (x, y + h) … (x + w, y).
+   */
+  private image(page: PDFPage, i: PageImage): PDFOperator[] {
+    const ref = this.images.get(i.src);
+    if (!ref) return [];
+    const { Resources } = page.node.normalizedEntries();
+    let names = this.imageNames.get(Resources);
+    if (!names) this.imageNames.set(Resources, names = new Map());
+    let name = names.get(i.src);
+    if (!name) names.set(i.src, name = page.node.newXObject('InkImg', ref));
+    return [
+      pushGraphicsState(),
+      concatTransformationMatrix(i.w, 0, 0, -i.h, i.x, i.y + i.h),
+      drawObject(name),
+      popGraphicsState(),
     ];
   }
 

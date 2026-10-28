@@ -56,6 +56,7 @@ interface Item {
   layer: render.Layer | null;
   badgeKey: string;
   notesKey: unknown;
+  imagesKey: unknown;
 }
 
 /** The overview of `host.doc`; its keys are bound until destroy(). */
@@ -112,7 +113,7 @@ export function createOverview(host: OverviewHost): Overview {
       btn.append(tile, num, badges);
       btn.addEventListener('click', () => { api.close(); host.jump(n); });
       grid.appendChild(btn);
-      items.push({ n, btn, tile, badges, canvas: null, url: '', layer: null, badgeKey: '', notesKey: null });
+      items.push({ n, btn, tile, badges, canvas: null, url: '', layer: null, badgeKey: '', notesKey: null, imagesKey: null });
     }
     root.append(head, grid);
     for (const type of ['pointerdown', 'click', 'wheel', 'touchstart', 'touchmove', 'touchend'] as const) {
@@ -174,14 +175,16 @@ export function createOverview(host: OverviewHost): Overview {
 
   function syncNotes(item: Item): void {
     if (!item.layer) return;
-    const strokes = doc.strokes(`p${item.n}`);
-    if (strokes === item.notesKey) return;
+    const strokes = doc.strokes(`p${item.n}`), images = doc.images(`p${item.n}`);
+    if (strokes === item.notesKey && images === item.imagesKey) return;
     item.notesKey = strokes;
+    item.imagesKey = images;
     render.syncLayer(item.layer, strokes);
+    render.syncImages(item.layer, images);
   }
 
-  const hasNotes = (n: number): boolean => doc.strokes(`p${n}`).length > 0 ||
-    doc.blanksAfter(n).some(id => doc.strokes(id).length > 0);
+  const has = (id: string): boolean => doc.strokes(id).length > 0 || doc.images(id).length > 0;
+  const hasNotes = (n: number): boolean => has(`p${n}`) || doc.blanksAfter(n).some(has);
 
   function update(): void {
     if (!ui) return;

@@ -18,16 +18,16 @@ import '@inkslide/annotate/toolbar.css';
 | Module | DOM | Content |
 |---|---|---|
 | `geometry` | no | Smoothing, pressure width, stroke outlines (classic Marp outline or perfect-freehand), bounding boxes, hit tests, partial erase, lasso, laser trail. |
-| `model` | no | `NotesDoc` (pages, blank pages, kept pages, change events), `History` (undo/redo), `createStroke`, the notes file JSON (`toJSON` / `load`), deck warnings. |
+| `model` | no | `NotesDoc` (pages, blank pages, kept pages, page images, change events), `History` (undo/redo), `createStroke`, `createImage` and the image limits, the notes file JSON (`toJSON` / `load`), deck warnings. |
 | `io` | no | Notes file text (`serializeNotes`, `parseNotes`, `loadNotes`), v1 to PDF scaling, `deckFromPdf`, `sha256Hex`, the sidecar name, the `PlatformAdapter` interface. |
-| `clipboard` | no | Copy and paste of strokes: the window's clip, its system clipboard text, `placeClip` (new ids, scaling, offset, clamping). |
+| `clipboard` | no | Copy and paste of strokes and images: the window's clip, its system clipboard text, `placeItems` (new ids, scaling, offset, clamping). |
 | `autosave` | no | `createAutosave`: debounced, serialized, retried writes and the saved / dirty / saving / error state. |
-| `tools` | no¹ | Pen, highlighter, selector, laser, erasers; colors, sizes, prefs. |
+| `tools` | no¹ | Pen, highlighter, selector, laser, erasers, snapshot; colors, sizes, prefs. |
 | `input` | yes | Pointer routing to the tools, pen buttons, palm rejection, two-finger swipe. |
-| `render` | yes | SVG annotation layers, page surfaces with paper (`PAPER_STYLE`, also used by the PDF export), selection and eraser overlays, laser. |
+| `render` | yes | SVG annotation layers (images, highlighter, pen), page surfaces with paper (`PAPER_STYLE`, also used by the PDF export), selection and eraser overlays, laser. |
 | `toolbar` | yes | The Marp Notes toolbar (groups, dock, icons) and keyboard shortcuts. Styles: `toolbar.css`. |
 | `pages` | no | `PagesController` interface, page counter text, G + number parsing, the pages toolbar group. |
-| `app` | yes | `createAnnotator`: ties doc, tools, input, toolbar and keys together. |
+| `app` | yes | `createAnnotator`: ties doc, tools, input, toolbar and keys together; snapshots and pasted images through host callbacks. |
 
 ¹ The tools draw through an injectable `ToolRenderer` (default: `render`).
 
@@ -36,7 +36,11 @@ import '@inkslide/annotate/toolbar.css';
 ```ts
 const doc = new NotesDoc(deckFromPdf({ title, pageSizes, sha256 }));
 loadNotesText(doc, savedText);                       // optional
-const app = createAnnotator({ doc, activeSurface: () => current });
+const app = createAnnotator({
+  doc, activeSurface: () => current,
+  captureArea: (pageId, rect) => drawArea(pageId, rect),   // optional: the snapshot tool
+  notify: text => showMessage(text),                       // optional
+});
 
 const { svg, layer } = render.createPageSurface(doc.pageSize('p1'));
 current = { pageId: 'p1', svg, layer };
@@ -52,6 +56,14 @@ app.toggle(true);                                    // annotate mode on
 The host (the viewer in `apps/web`) places the SVG over the page, creates surfaces per page,
 calls `app.pageChanged(previous)` on a page turn, and writes `serializeNotes(doc)` through its
 platform adapter, usually with `createAutosave`.
+
+The snapshot tool needs the host to draw the area, since the core has no PDF renderer:
+`captureArea(pageId, rect)` resolves to `{ src, png? }`, a PNG or JPEG data URL within the
+model's limits (`MAX_IMAGE_CHARS`) and optionally a PNG `Blob` for the system clipboard. The
+app makes it the window's clip, at the area's place, and goes back to the previous tool.
+`importImage(blob)` does the same for an image pasted from another program (with its pixel
+size, `width` and `height`). Without them the snapshot tool captures nothing and pasted
+images are ignored.
 
 Coordinates are page units (PDF points for PDFs, viewBox px for Marp slides), origin top-left.
 Tool sizes are defined for a 1280×720 slide and scaled per page by `render.pageUnit`.

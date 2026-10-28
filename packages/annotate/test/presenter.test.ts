@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Point } from '../src/geometry';
 import { commonPrefix, parsePresenterMessage, PRESENTER_LIMITS } from '../src/presenter';
+import { NotesDoc } from '../src/model';
+import { deckFromPdf } from '../src/io';
 
 const stroke = { id: 's1', tool: 'pen', color: '#000', size: 4, points: [[1, 2, 0.4], [3, 4]] };
 
@@ -73,5 +75,40 @@ describe('commonPrefix', () => {
     expect(commonPrefix(a, [[0, 0, 0.5], [2, 2, 0.5]])).toBe(1);
     expect(commonPrefix([], a)).toBe(0);
     expect(commonPrefix(a, [[0, 0, 0.6]])).toBe(0);
+  });
+});
+
+describe('parsePresenterMessage: images', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP8z8DAwMDAyPCfgYGBiQEJAAAqNwIDlBYW1QAAAABJRU5ErkJggg==';
+  const msg = (images: unknown) => ({ type: 'images', page: 'p1', images, extra: 1 });
+
+  it('keeps the known fields of each image; the data is optional', () => {
+    expect(parsePresenterMessage(msg([{ id: 'a', x: 1, y: 2, w: 3, h: 4, src: PNG, z: 9 }, { id: 'b', x: 0, y: 0, w: 1, h: 1 }])))
+      .toEqual({ type: 'images', page: 'p1', images: [{ id: 'a', x: 1, y: 2, w: 3, h: 4, src: PNG }, { id: 'b', x: 0, y: 0, w: 1, h: 1 }] });
+  });
+
+  it('refuses bad images, other data and too many', () => {
+    const ok = { id: 'a', x: 1, y: 2, w: 3, h: 4 };
+    expect(() => parsePresenterMessage(msg([{ ...ok, w: 0 }]))).toThrow(/image geometry/);
+    expect(() => parsePresenterMessage(msg([{ ...ok, x: NaN }]))).toThrow(/image geometry/);
+    expect(() => parsePresenterMessage(msg([{ ...ok, src: 'data:image/svg+xml;base64,PHN2Zz4=' }]))).toThrow(/image data/);
+    expect(() => parsePresenterMessage(msg([{ ...ok, id: 5 }]))).toThrow(/image id/);
+    expect(() => parsePresenterMessage(msg('x'))).toThrow(/images/);
+    expect(() => parsePresenterMessage(msg(Array.from({ length: PRESENTER_LIMITS.images + 1 }, () => ok)))).toThrow(/images/);
+  });
+});
+
+describe('NotesDoc.applyRemoteImages', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP8z8DAwMDAyPCfgYGBiQEJAAAqNwIDlBYW1QAAAABJRU5ErkJggg==';
+
+  it('sets a page\'s images, keeps unchanged ones as they are and skips bad ones', () => {
+    const doc = new NotesDoc(deckFromPdf({ title: 't', pageSizes: [[960, 540]] }));
+    expect(doc.applyRemoteImages('p1', [{ id: 'a', x: 1, y: 2, w: 3, h: 4, src: PNG }, { id: 'bad', x: 0, y: 0, w: -1, h: 1, src: PNG }])).toBe(true);
+    const [a] = doc.images('p1');
+    expect(doc.images('p1').map(i => i.id)).toEqual(['a']);
+    doc.applyRemoteImages('p1', [{ id: 'a', x: 1, y: 2, w: 3, h: 4, src: PNG }, { id: 'b', x: 5, y: 5, w: 5, h: 5, src: PNG }]);
+    expect(doc.images('p1')[0]).toBe(a);
+    expect(doc.history.canUndo()).toBe(false);
+    expect(doc.applyRemoteImages('b-unknown', [])).toBe(false);
   });
 });

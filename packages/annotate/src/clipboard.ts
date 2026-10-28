@@ -1,17 +1,20 @@
-/* Inkslide annotate - copy and paste of strokes (pure, no DOM)
+/* Inkslide annotate - copy and paste of strokes and images (pure, no DOM)
  *
- * A clip is a copy of some strokes with the size of the page they came
- * from. The app keeps one clip per window (shared by every document opened
- * in it) and also writes it to the system clipboard as JSON text with a
- * format marker, so another window can paste it.
+ * A clip is a copy of some strokes and images (snapshots) with the size of
+ * the page they came from. The app keeps one clip per window (shared by
+ * every document opened in it) and also writes it to the system clipboard
+ * as JSON text with a format marker, so another window can paste it.
  *
- * placeClip() turns a clip into new strokes for a target page: new ids,
- * scaled to the target page size, kept at the same place on the page,
- * offset while they would sit exactly on strokes already there (the
+ * placeItems() turns a clip into new strokes and images for a target page:
+ * new ids, scaled to the target page size, kept at the same place on the
+ * page, offset while they would sit exactly on items already there (the
  * originals, or an earlier paste), and clamped to the page.
  */
-import { pointsBBox, strokeBBox, unionBBox, type BBox, type Point, type Stroke } from './geometry';
-import { createStroke, newId, serializeStroke, type Size, type StrokeJSON } from './model';
+import { pointsBBox, rectBBox, strokeBBox, unionBBox, type BBox, type Point, type Stroke } from './geometry';
+import {
+  createImage, createStroke, newId, serializeImage, serializeStroke, MAX_DOC_IMAGE_CHARS, MAX_PAGE_IMAGES,
+  type ImageJSON, type PageImage, type Size, type StrokeJSON,
+} from './model';
 
 /** `format` field of a clip on the system clipboard. */
 export const CLIP_FORMAT = 'inkslide-strokes';
@@ -24,11 +27,13 @@ const MAX_STEPS = 50;
 /** Most strokes, and points in all, of a clip read from the system clipboard. */
 export const MAX_CLIP_STROKES = 10000, MAX_CLIP_POINTS = 1000000;
 
-/** Copied strokes and the size of the page they were copied from. */
+/** Copied strokes and images and the size of the page they were copied from. */
 export interface Clip {
   /** [width, height] of the source page, in its page units. */
   size: Size;
   strokes: readonly Stroke[];
+  /** Images (snapshots), drawn below the strokes. */
+  images?: readonly PageImage[];
 }
 
 /** A clip as stored on the system clipboard (JSON text). */
@@ -37,11 +42,16 @@ export interface ClipJSON {
   version: number;
   size: Size;
   strokes: StrokeJSON[];
+  /** Left out when the clip has none (a reader without images still reads the strokes). */
+  images?: ImageJSON[];
 }
 
-/** A clip of `strokes` from a page of `size` (an empty list gives null). */
-export function makeClip(strokes: readonly Stroke[], size: Size): Clip | null {
-  return strokes.length ? { size: [size[0], size[1]], strokes: strokes.slice() } : null;
+/** A clip of `strokes` and `images` from a page of `size` (nothing gives null). */
+export function makeClip(strokes: readonly Stroke[], size: Size, images: readonly PageImage[] = []): Clip | null {
+  if (!strokes.length && !images.length) return null;
+  const clip: Clip = { size: [size[0], size[1]], strokes: strokes.slice() };
+  if (images.length) clip.images = images.slice();
+  return clip;
 }
 
 // The clip of this window: copy in one document, paste in another.
@@ -88,12 +98,14 @@ export function serializeClip(clip: Clip): string {
     format: CLIP_FORMAT, version: CLIP_VERSION,
     size: [clip.size[0], clip.size[1]], strokes: clip.strokes.map(serializeStroke),
   };
+  if (clip.images && clip.images.length) data.images = clip.images.map(serializeImage);
   return JSON.stringify(data);
 }
 
 /**
  * The clip in system clipboard text; null if the text is no clip (any other
- * text, a newer version, no valid strokes). Malformed strokes are skipped.
+ * text, a newer version, nothing valid in it). Malformed strokes and images
+ * are skipped; images beyond the limits of a page make it no clip.
  */
 export function parseClip(text: unknown): Clip | null {
   if (typeof text !== 'string' || !text.includes(CLIP_FORMAT)) return null;
@@ -111,31 +123,61 @@ export function parseClip(text: unknown): Clip | null {
   for (const s of data.strokes) {
     try { strokes.push(createStroke({ ...s, id: null })); } catch (_) { /* skipped */ }
   }
-  return makeClip(strokes, [size[0], size[1]]);
+  const rawImages = Array.isArray(data.images) ? data.images : [];
+  if (rawImages.length > MAX_PAGE_IMAGES) return null;
+  const images: PageImage[] = [];
+  let chars = 0;
+  for (const i of rawImages) {
+    try {
+      const image = createImage({ ...i, id: null });
+      chars += image.src.length;
+      images.push(image);
+    } catch (_) { /* skipped */ }
+  }
+  if (chars > MAX_DOC_IMAGE_CHARS) return null;
+  return makeClip(strokes, [size[0], size[1]], images);
 }
 
-/** Where a clip is pasted: the target page's size and strokes, and its offset step in page units. */
+/** Where a clip is pasted: the target page's size, strokes and images, and its offset step in page units. */
 export interface PasteTarget {
   size: Size;
   strokes: readonly Stroke[];
+  images?: readonly PageImage[];
   /** Offset per repeated paste, in page units (PASTE_OFFSET × the page's tool unit). */
   step: number;
 }
 
-/**
- * The strokes of a paste onto a page (new ids; nothing is added to the
- * page). On a page of another size the clip is scaled by the smaller of the
- * width and height ratios, and its center keeps its relative place on the
- * page. It is kept on the page and, while its first stroke would sit exactly
- * on a stroke of the page, moved by `step` (see freeShift). Strokes the
- * scaling breaks (out of range, from a crafted clip) are dropped.
- */
+/** New strokes and images of a paste (see placeItems). */
+export interface Placed {
+  strokes: Stroke[];
+  images: PageImage[];
+}
+
+/** The strokes of a paste of a clip without images (see placeItems). */
 export function placeClip(clip: Clip, target: PasteTarget): Stroke[] {
+  return placeItems(clip, target).strokes;
+}
+
+/**
+ * The strokes and images of a paste onto a page (new ids; nothing is added
+ * to the page). On a page of another size the clip is scaled by the smaller
+ * of the width and height ratios, and its center keeps its relative place on
+ * the page. It is kept on the page and, while its first stroke (or, without
+ * strokes, its first image) would sit exactly on an equal item of the page,
+ * moved by `step` (see freeShift). Items the scaling breaks (out of range,
+ * from a crafted clip) are dropped.
+ */
+export function placeItems(clip: Clip, target: PasteTarget): Placed {
   const [w, h] = target.size;
   const sx = w / clip.size[0], sy = h / clip.size[1];
   const scale = Math.min(sx, sy);
   const same = Math.abs(scale - 1) < 1e-9 && Math.abs(sx - sy) < 1e-9;
-  const center = clip.strokes.length ? boxCenter(pointsBBox(clip.strokes.flatMap(s => s.points))) : [0, 0];
+  const clipImages = clip.images || [];
+  const extent = unionBBox([
+    ...(clip.strokes.length ? [pointsBBox(clip.strokes.flatMap(s => s.points))] : []),
+    ...clipImages.map(rectBBox),
+  ]);
+  const center = extent ? boxCenter(extent) : [0, 0];
   const base: Stroke[] = [];
   for (const s of clip.strokes) {
     const scaled = same ? s : {
@@ -149,31 +191,49 @@ export function placeClip(clip: Clip, target: PasteTarget): Stroke[] {
     };
     try { base.push(createStroke(scaled)); } catch (_) { /* dropped */ }
   }
-  if (!base.length) return [];
-  const box = unionBBox(base.map(strokeBBox))!;
-  const shift = freeShift(base[0], box, target);
-  const out: Stroke[] = [];
+  const baseImages: PageImage[] = [];
+  for (const i of clipImages) {
+    try {
+      baseImages.push(same ? i : createImage({
+        ...i, x: (i.x - center[0]) * scale + center[0] * sx, y: (i.y - center[1]) * scale + center[1] * sy,
+        w: i.w * scale, h: i.h * scale,
+      }));
+    } catch (_) { /* dropped */ }
+  }
+  if (!base.length && !baseImages.length) return { strokes: [], images: [] };
+  const box = unionBBox([...base.map(strokeBBox), ...baseImages.map(rectBBox)])!;
+  const pageImages = target.images || [];
+  const taken = base.length
+    ? (d: readonly [number, number]): boolean => target.strokes.some(s => samePlace(s, base[0], d))
+    : (d: readonly [number, number]): boolean => pageImages.some(i => sameImagePlace(i, baseImages[0], d));
+  const shift = freeShift(taken, box, target);
+  const strokes: Stroke[] = [];
   for (const s of base) {
     try {
-      out.push(createStroke({
+      strokes.push(createStroke({
         id: newId(), tool: s.tool, color: s.color, size: s.size,
         points: s.points.map(p => [p[0] + shift[0], p[1] + shift[1], p[2]]),
       }));
     } catch (_) { /* dropped */ }
   }
-  return out;
+  const images: PageImage[] = [];
+  for (const i of baseImages) {
+    try {
+      images.push(createImage({ ...i, id: newId(), x: i.x + shift[0], y: i.y + shift[1] }));
+    } catch (_) { /* dropped */ }
+  }
+  return { strokes, images };
 }
 
 /**
- * The shift that keeps `box` on the page and puts `first` on no equal stroke
- * of the page: none if that is free, else k steps down and right, for
- * k = 1, 2, …; on an axis where the page ends, k steps up or left instead.
- * Only if that finds no free place within MAX_STEPS steps, the other
- * directions; if they find none either, the last place tried.
+ * The shift that keeps `box` on the page and is not `taken` (the first item
+ * would sit on an equal one of the page): none if that is free, else k steps
+ * down and right, for k = 1, 2, …; on an axis where the page ends, k steps
+ * up or left instead. Only if that finds no free place within MAX_STEPS
+ * steps, the other directions; if they find none either, the last place tried.
  */
-function freeShift(first: Stroke, box: BBox, target: PasteTarget): [number, number] {
+function freeShift(taken: (d: readonly [number, number]) => boolean, box: BBox, target: PasteTarget): [number, number] {
   const [w, h] = target.size;
-  const taken = (d: readonly [number, number]): boolean => target.strokes.some(s => samePlace(s, first, d));
   const start = clampShift(box, 0, 0, w, h);
   const step = Number.isFinite(target.step) && target.step > 0 ? target.step : 0;
   if (!step || !taken(start)) return start;
@@ -201,6 +261,12 @@ function clampShift(box: BBox, dx: number, dy: number, w: number, h: number): [n
     return Math.min(Math.max(d, -min), size - max);
   };
   return [fit(box.minX, box.maxX, dx, w), fit(box.minY, box.maxY, dy, h)];
+}
+
+/** Whether image `a` shows what `b` shows, where `b` moved by `shift` would be (within the rounding of a saved file). */
+function sameImagePlace(a: PageImage, b: PageImage, shift: readonly [number, number]): boolean {
+  const near = (u: number, v: number): boolean => Math.abs(u - v) < 0.01;
+  return near(a.x, b.x + shift[0]) && near(a.y, b.y + shift[1]) && near(a.w, b.w) && near(a.h, b.h) && a.src === b.src;
 }
 
 /** Whether `a` has the look and the points of `b` moved by `shift` (within the rounding of a saved file). */

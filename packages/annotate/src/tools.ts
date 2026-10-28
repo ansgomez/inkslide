@@ -4,13 +4,14 @@
  * A tool is { id, down, move, up, cancel, hover, leave, deactivate }; every
  * handler gets (surface, pt, event) with pt = [x, y, pressure] in page units.
  * Tools edit the document only through NotesDoc commands, so every finished
- * gesture is one undo step. The laser never touches the document.
+ * gesture is one undo step. The laser never touches the document, and the
+ * snapshot tool only hands the area to the host (ToolHost.snapshot).
  */
 import {
-  isLasso, pathLength, rectPolygon, splitByEraser, smoothPoints, strokeHitsSegment, strokesInPolygon,
-  type BBox, type Point, type Stroke, type StrokeTool, type XY,
+  isLasso, pathLength, rectHitsSegment, rectPolygon, rectsInPolygon, splitByEraser, smoothPoints, strokeHitsSegment,
+  strokesInPolygon, type BBox, type Point, type RectLike, type Stroke, type StrokeTool, type XY,
 } from './geometry';
-import { createStroke, type NotesDoc } from './model';
+import { createStroke, type NotesDoc, type PageImage } from './model';
 import * as render from './render';
 import type { Layer } from './render';
 
@@ -44,7 +45,7 @@ export const SIZES = {
 export const SIZE_PRESETS = [1, 3, 5, 7] as const;
 
 /** Every tool. */
-export type ToolId = 'pen' | 'highlighter' | 'selector' | 'laser' | 'eraser' | 'partial';
+export type ToolId = 'pen' | 'highlighter' | 'selector' | 'laser' | 'eraser' | 'partial' | 'snapshot';
 /** Tools with a size setting. */
 export type SizedTool = keyof typeof SIZES;
 /** Index into SIZES[tool] (a step of the size scale). */
@@ -58,6 +59,7 @@ export interface Prefs {
   partial: { size: SizeIndex };
   selector: Record<string, never>;
   laser: Record<string, never>;
+  snapshot: Record<string, never>;
 }
 
 /** Prefs before the user changes anything. */
@@ -68,6 +70,7 @@ export const DEFAULT_PREFS: Readonly<Prefs> = {
   partial: { size: 3 },
   selector: {},
   laser: {},
+  snapshot: {},
 };
 
 /** A drawable page on screen: a PDF page, a blank page or a Marp slide. */
@@ -80,7 +83,7 @@ export interface Surface {
   blank?: boolean;
 }
 
-/** Selected strokes on one page; box is their bounding box. */
+/** Selected strokes and images on one page (`ids` holds both); box is their bounding box. */
 export interface Selection {
   pageId: string;
   ids: string[];
@@ -97,6 +100,8 @@ export interface ToolHost {
   surfaces: { forEach(fn: (s: Surface) => void): void };
   /** Mirror of the laser to another window (presenter mode: the web app's presenter.ts). */
   sync?: { laser(pageId: string, pt: Point): void } | null;
+  /** Copy the area `rect` (page units, on the page) of page `pageId` as an image: the snapshot tool's release. */
+  snapshot?(pageId: string, rect: RectLike): void;
 }
 
 /** The event part tools look at (Shift draws straight lines). */
@@ -122,6 +127,8 @@ export type Tools = Record<ToolId, Tool>;
 export interface ToolRenderer {
   liveStroke(layer: Layer, tool: StrokeTool): { update(stroke: Stroke): void; remove(): void };
   syncLayer(layer: Layer, strokes: readonly Stroke[]): void;
+  /** Show exactly `images` (render.syncImages); renderers without it leave images alone. */
+  syncImages?(layer: Layer, images: readonly PageImage[]): void;
   setEraserCursor(layer: Layer, pt: XY | null, r?: number): void;
   translateStrokes(layer: Layer, ids: readonly string[], dx: number, dy: number): void;
   setSelectionBox(layer: Layer, box: BBox | null, dx?: number, dy?: number): void;
@@ -223,10 +230,18 @@ function sameStroke(a: Stroke, b: Stroke): boolean {
 /**
  * Works on a private copy of the page; one command on release, which applies
  * only what was erased to the page as it is then (edits made meanwhile stay).
+ * The stroke eraser also removes the images it touches, but only in a
+ * gesture that erases no stroke: erasing ink written on a snapshot leaves
+ * the snapshot (an image erased earlier in the gesture comes back once a
+ * stroke is hit). The partial eraser leaves images alone (it cannot cut a
+ * piece out of one).
  */
 function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): Tool {
   const partial = id === 'partial';
   let working: Stroke[] | null = null, last: Point | null = null;
+  let images: PageImage[] | null = null; // the page's images left by this gesture
+  let erasedImages: Set<string> | null = null;
+  let inkErased = false; // this gesture erased a stroke: images are spared
   let base: Map<string, Stroke> | null = null; // the page's strokes at down
   let origin: Map<string, string> | null = null; // piece id -> id of the stroke it was cut from
 
@@ -268,12 +283,32 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       working = next;
       R.syncLayer(surface.layer, working);
     }
+    if (partial) return;
+    if (changed && !inkErased) {
+      inkErased = true;
+      if (erasedImages!.size) { // the images this gesture took come back
+        erasedImages!.clear();
+        images = app.doc.images(surface.pageId).slice();
+        if (R.syncImages) R.syncImages(surface.layer, images);
+      }
+    }
+    if (!inkErased && images!.some(i => rectHitsSegment(i, a, b, r))) {
+      images = images!.filter(i => {
+        if (!rectHitsSegment(i, a, b, r)) return true;
+        erasedImages!.add(i.id);
+        return false;
+      });
+      if (R.syncImages) R.syncImages(surface.layer, images);
+    }
   }
 
   return {
     id,
     down(surface, pt) {
       working = app.doc.strokes(surface.pageId).slice();
+      images = app.doc.images(surface.pageId).slice();
+      erasedImages = new Set();
+      inkErased = false;
       base = new Map(working.map(s => [s.id, s]));
       origin = new Map();
       last = pt;
@@ -288,13 +323,18 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
     },
     up(surface) {
       if (!working) return;
-      const result = app.doc.hasPage(surface.pageId) ? erased(app.doc.strokes(surface.pageId)) : null;
-      working = last = base = origin = null;
-      if (result) app.doc.replaceStrokes(surface.pageId, result, partial ? 'partial-erase' : 'erase');
+      const pageThere = app.doc.hasPage(surface.pageId);
+      const result = pageThere ? erased(app.doc.strokes(surface.pageId)) : null;
+      // Images erased by this gesture leave the page as it is now (images added meanwhile stay).
+      const gone = erasedImages!;
+      const leftImages = pageThere && gone.size ? app.doc.images(surface.pageId).filter(i => !gone.has(i.id)) : undefined;
+      working = last = base = origin = images = erasedImages = null;
+      if (result) app.doc.replaceContent(surface.pageId, { strokes: result, images: leftImages }, partial ? 'partial-erase' : 'erase');
     },
     cancel(surface) {
-      working = last = base = origin = null;
+      working = last = base = origin = images = erasedImages = null;
       R.syncLayer(surface.layer, app.doc.strokes(surface.pageId));
+      if (R.syncImages) R.syncImages(surface.layer, app.doc.images(surface.pageId));
       R.setEraserCursor(surface.layer, null);
     },
     hover(surface, pt) { R.setEraserCursor(surface.layer, pt, radius(surface)); },
@@ -373,7 +413,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
         mode = null;
         moving = null;
         if (!app.doc.hasPage(surface.pageId)) return;
-        if (!app.doc.moveStrokes(surface.pageId, s.ids, offset[0], offset[1])) {
+        if (!app.doc.moveItems(surface.pageId, s.ids, offset[0], offset[1])) {
           R.translateStrokes(surface.layer, s.ids, 0, 0);
           R.setSelectionBox(surface.layer, s.box);
         }
@@ -386,14 +426,16 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
       stopMarquee();
       R.setMarquee(surface.layer, null);
       const strokes = app.doc.strokes(surface.pageId);
+      const images = app.doc.images(surface.pageId);
       let ids: string[];
       if (pathLength(p) < 4) {
-        // A tap selects the topmost stroke under the pointer.
-        const hit = strokes.slice().reverse().find(s => strokeHitsSegment(s, p[0], p[0], 4));
+        // A tap selects the topmost stroke under the pointer, else the topmost image (images lie below the ink).
+        const hit = strokes.slice().reverse().find(s => strokeHitsSegment(s, p[0], p[0], 4)) ||
+          images.slice().reverse().find(i => rectHitsSegment(i, p[0], p[0], 0));
         ids = hit ? [hit.id] : [];
       } else {
         const poly = isLasso(p) ? p : rectPolygon(p[0], p[p.length - 1]);
-        ids = strokesInPolygon(strokes, poly);
+        ids = [...rectsInPolygon(images, poly), ...strokesInPolygon(strokes, poly)];
       }
       path = null;
       app.select(ids.length ? { pageId: surface.pageId, ids } : null);
@@ -423,6 +465,52 @@ function laserTool(app: ToolHost, R: ToolRenderer): Tool {
   return { id: 'laser', down: trace, move: trace, hover: trace };
 }
 
+// ── Snapshot ───────────────────────────────────────────────────
+
+/** Smallest snapshot side, in units of a 1280×720 slide (scaled by layer.unit); a smaller drag is a tap. */
+export const SNAPSHOT_MIN = 4;
+
+/**
+ * Drag a rectangle; on release the area, clamped to the page, goes to
+ * app.snapshot (the host captures it). A tap, or an area thinner than
+ * SNAPSHOT_MIN, captures nothing. Cancel (a second finger, Escape, a page
+ * turn) drops the rectangle.
+ */
+function snapshotTool(app: ToolHost, R: ToolRenderer): Tool {
+  let start: Point | null = null;
+  const area = (surface: Surface, a: XY, b: XY): RectLike => {
+    const [w, h] = surface.layer.size || [Infinity, Infinity];
+    const x0 = Math.max(0, Math.min(a[0], b[0])), x1 = Math.min(w, Math.max(a[0], b[0]));
+    const y0 = Math.max(0, Math.min(a[1], b[1])), y1 = Math.min(h, Math.max(a[1], b[1]));
+    return { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
+  };
+  return {
+    id: 'snapshot',
+    down(_surface, pt) { start = pt; },
+    move(surface, pt) {
+      if (!start) return;
+      const r = area(surface, start, pt);
+      R.setMarquee(surface.layer, rectPolygon([r.x, r.y], [r.x + r.w, r.y + r.h]));
+    },
+    up(surface, pt) {
+      if (!start) return;
+      const from = start;
+      start = null;
+      R.setMarquee(surface.layer, null);
+      if (!pt) return; // ended by a cancelled pointer, blur or page turn: nothing to capture
+      const r = area(surface, from, pt);
+      const unit = surface.layer.unit;
+      const min = SNAPSHOT_MIN * (Number.isFinite(unit) && unit > 0 ? unit : 1);
+      if (r.w < min || r.h < min || !app.doc.hasPage(surface.pageId)) return;
+      if (app.snapshot) app.snapshot(surface.pageId, r);
+    },
+    cancel(surface) {
+      start = null;
+      R.setMarquee(surface.layer, null);
+    },
+  };
+}
+
 // ── Registry ───────────────────────────────────────────────────
 
 /** Toolbar entry of a tool (see TOOLS). */
@@ -443,6 +531,7 @@ export const TOOLS: readonly ToolInfo[] = [
   { id: 'laser', label: 'Laser pointer', key: 'L', color: false, size: false },
   { id: 'eraser', label: 'Stroke eraser: removes whole strokes', key: 'E', caption: 'stroke', color: false, size: true },
   { id: 'partial', label: 'Partial eraser: erases only what it touches', key: 'Shift+E', caption: 'part', color: false, size: true },
+  { id: 'snapshot', label: 'Snapshot: drag over an area to copy it as an image', key: 'C', color: false, size: false },
 ];
 
 /** Create every tool for an app. */
@@ -454,5 +543,6 @@ export function createTools(app: ToolHost, renderer: ToolRenderer = render): Too
     laser: laserTool(app, renderer),
     eraser: eraserTool(app, 'eraser', renderer),
     partial: eraserTool(app, 'partial', renderer),
+    snapshot: snapshotTool(app, renderer),
   };
 }

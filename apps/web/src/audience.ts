@@ -91,6 +91,7 @@ function surfaceFor(pageId: string): AudienceSurface | null {
   });
   const surface: AudienceSurface = { svg, layer, paper, blank };
   render.syncLayer(layer, doc.strokes(pageId));
+  render.syncImages(layer, doc.images(pageId));
   surfaces.set(pageId, surface);
   return surface;
 }
@@ -214,7 +215,11 @@ async function open(bytes: Uint8Array, title: string): Promise<void> {
     if (d !== doc) return;
     if (kind === 'pages') pagesChanged();
     else if (kind === 'strokes') {
-      for (const [id, s] of surfaces) if (pageId === null || pageId === id) render.syncLayer(s.layer, d.strokes(id));
+      for (const [id, s] of surfaces) {
+        if (pageId !== null && pageId !== id) continue;
+        render.syncLayer(s.layer, d.strokes(id));
+        render.syncImages(s.layer, d.images(id));
+      }
     }
   });
   doc = d;
@@ -273,6 +278,13 @@ async function handle(m: PresenterMessage): Promise<void> {
     const known = new Map<string, StrokeInput>(doc.strokes(m.page).map(s => [s.id, s]));
     for (const s of m.strokes) known.set(s.id, s);
     doc.applyRemoteStrokes(m.page, m.order.flatMap(id => known.get(id) ?? []));
+  } else if (m.type === 'images') {
+    // Images the audience has are named by id only: their data comes from here.
+    const known = new Map(doc.images(m.page).map(i => [i.id, i.src]));
+    doc.applyRemoteImages(m.page, m.images.flatMap(i => {
+      const src = i.src ?? known.get(i.id);
+      return src ? [{ ...i, src }] : [];
+    }));
   } else if (m.type === 'blanks') {
     const listed = new Set(m.blanks.map(b => b.id));
     doc.applyRemoteBlanks(m.blanks, doc.blankOrder.filter(id => !listed.has(id)));

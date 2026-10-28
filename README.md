@@ -23,7 +23,8 @@ automatically in a separate notes file; the PDF itself is never modified.
 - **Pen first:** pressure, the eraser end and the side button; touch never draws once a pen
   is seen.
 - **Tools:** pen, highlighter, selector (tap, box or lasso), laser pointer, stroke and partial
-  eraser, 8 colors, 9 sizes, undo/redo.
+  eraser, snapshot (copy an area as an image and paste it on any page), 8 colors, 9 sizes,
+  undo/redo.
 - **Pages:** page turns by key or two-finger swipe, pinch zoom and zoom buttons, fit width, blank pages with
   plain, lined or grid paper, an overview of all pages.
 - **Notes:** autosaved next to the PDF with crash-safe writes, plus a backup on the desktop and in the browser.
@@ -58,9 +59,10 @@ the file manager. It opens ready to write on.
 |---|---|
 | P, H, S, L | Pen, highlighter, select, laser |
 | E, Shift+E | Stroke eraser, partial eraser |
+| C | Snapshot: drag over an area to copy it as an image |
 | 1–4, [ ] | Size S, M, L, XL; thinner, thicker |
 | Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
-| Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+D | Copy, cut, paste, duplicate the selected strokes |
+| Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+D | Copy, cut, paste, duplicate the selection (strokes and images) |
 | ← → | Previous, next page |
 | G, a number, Enter | Go to that page (G, Enter: overview) |
 | W | Fit width |

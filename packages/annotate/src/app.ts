@@ -12,9 +12,9 @@
  *   app.keymap.push(...);                                          // optional
  *   app.mount();                                                   // keys + toolbar
  */
-import { clipForPaste, getClip, makeClip, markClipSynced, placeClip, serializeClip, setClip, PASTE_OFFSET, type Clip } from './clipboard';
-import { strokeBBox, unionBBox, type Stroke } from './geometry';
-import type { NotesDoc } from './model';
+import { clipForPaste, getClip, makeClip, markClipSynced, placeItems, serializeClip, setClip, PASTE_OFFSET, type Clip } from './clipboard';
+import { rectBBox, strokeBBox, unionBBox, type RectLike, type Stroke } from './geometry';
+import { createImage, type NotesDoc, type PageImage } from './model';
 import { attachInput, type InputController } from './input';
 import * as render from './render';
 import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, sizeIndex, toolSize, TOOLS, type Prefs, type Selection, type SizedTool, type Surface, type Tool, type ToolId, type ToolRenderer, type Tools } from './tools';
@@ -42,6 +42,7 @@ export function loadPrefs(storage: Pick<Storage, 'getItem'> | null = safeStorage
   const prefs: Prefs = JSON.parse(JSON.stringify(DEFAULT_PREFS));
   try {
     const saved = JSON.parse((storage && storage.getItem(PREFS_KEY)) || 'null');
+    if (saved && saved.tool === 'snapshot') saved.tool = 'pen'; // a one-off tool: never the tool to start with
     if (saved && saved.prefs) {
       // Take only valid values: the key is shared with the Marp decks, and a bad size would break every stroke.
       for (const k in prefs) {
@@ -80,10 +81,20 @@ const systemClipboard = (): Clipboard | undefined => {
   try { return typeof navigator !== 'undefined' ? navigator.clipboard : undefined; } catch (_) { return undefined; }
 };
 
-/** Put text on the system clipboard if the platform allows it; resolves to whether it did. */
-async function writeSystemClipboard(text: string): Promise<boolean> {
+/**
+ * Put text on the system clipboard if the platform allows it, with `png` as
+ * an image for other programs where ClipboardItem exists; resolves to
+ * whether the text got there.
+ */
+async function writeSystemClipboard(text: string, png?: Blob | null): Promise<boolean> {
   try {
     const clipboard = systemClipboard();
+    if (png && clipboard && clipboard.write && typeof ClipboardItem !== 'undefined') {
+      try {
+        await clipboard.write([new ClipboardItem({ 'image/png': png, 'text/plain': new Blob([text], { type: 'text/plain' }) })]);
+        return true;
+      } catch (_) { /* refused (Electron grants no clipboard permission) or no image support: text only */ }
+    }
     if (!clipboard || !clipboard.writeText) return false;
     await clipboard.writeText(text);
     return true;
@@ -102,6 +113,17 @@ function safeStorage(): Storage | null {
   try { return typeof localStorage !== 'undefined' ? localStorage : null; } catch (_) { return null; }
 }
 
+/** An image made by the host (AnnotatorOptions.captureArea and importImage). */
+export interface Capture {
+  /** The image as a PNG or JPEG data URL within the model's limits (model.createImage); it is stored in the notes. */
+  src: string;
+  /** A PNG of it for the system clipboard, so other programs can paste it; optional. */
+  png?: Blob | null;
+  /** Size in pixels (importImage only: an image from another program has no place on the page yet). */
+  width?: number;
+  height?: number;
+}
+
 /** Options of createAnnotator. */
 export interface AnnotatorOptions {
   doc: NotesDoc;
@@ -113,6 +135,19 @@ export interface AnnotatorOptions {
   body?: HTMLElement;
   /** Render functions for the tools; default render.ts (e.g. a canvas live stroke instead). */
   renderer?: ToolRenderer;
+  /**
+   * The snapshot tool's capture: area `rect` (page units) of page `pageId` as it shows (PDF page
+   * or paper, images and ink) as an image; null if there is nothing to capture. Without it the
+   * snapshot tool captures nothing. The host owns the PDF rendering, so the core stays DOM-light.
+   */
+  captureArea?(pageId: string, rect: RectLike): Promise<Capture | null>;
+  /**
+   * An image pasted from another program (Ctrl/Cmd+V with an image on the system clipboard) as a
+   * capture within the model's limits, with its pixel size; null to ignore it. Optional.
+   */
+  importImage?(image: Blob): Promise<Capture | null>;
+  /** Show a short message (a snapshot copied, a paste refused). Optional. */
+  notify?(text: string, kind?: 'info' | 'warn' | 'error'): void;
 }
 
 /** App state and commands shared by the toolbar, the keys and the viewer (see createAnnotator). */
@@ -139,6 +174,7 @@ export interface Annotator {
   currentTool(): Tool;
   activeSurface(): Surface | null;
   activeStrokes(): readonly Stroke[];
+  activeImages(): readonly PageImage[];
   toggle(on?: boolean): void;
   setTool(id: ToolId): void;
   currentColor(): string | null;
@@ -151,9 +187,10 @@ export interface Annotator {
   /** Whether stepSize(dir) changes something (false at the end of the scale). */
   canStepSize(dir: -1 | 1): boolean;
   selectedStrokes(): Stroke[];
+  selectedImages(): PageImage[];
   select(sel: { pageId: string; ids: readonly string[] } | null): void;
   refreshSelection(): void;
-  /** Remove the selected strokes (one undo step, labelled `label`, default 'delete'). */
+  /** Remove the selected strokes and images (one undo step, labelled `label`, default 'delete'). */
   deleteSelection(label?: string): void;
   /** Copy the selection to this window's clip (and, if allowed, the system clipboard). */
   copySelection(): void;
@@ -164,8 +201,16 @@ export interface Annotator {
    * from another window), else this window's clip (see clipboard.clipForPaste).
    */
   paste(): Promise<void>;
-  /** Paste `clip` onto the shown page in one undo step; the pasted strokes become the selection (with the select tool). */
+  /** Paste `clip` onto the shown page in one undo step; the pasted items become the selection (with the select tool). */
   pasteClip(clip: Clip): void;
+  /**
+   * The snapshot tool's release: capture `rect` of page `pageId` (options.captureArea), make it
+   * this window's clip (and, if allowed, the system clipboard's, also as a PNG), say so, and go
+   * back to the tool used before the snapshot tool.
+   */
+  snapshot(pageId: string, rect: RectLike): Promise<void>;
+  /** Leave the snapshot tool for the tool used before it (Escape). */
+  leaveSnapshot(): void;
   /** Paste a copy of the selection onto its page, offset, without touching the clip. */
   duplicateSelection(): void;
   canPaste(): boolean;
@@ -202,20 +247,43 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     return surface ? surface.layer.unit ?? 1 : 1;
   };
   const { prefs, tool } = loadPrefs(storage);
+  const notify = (text: string, kind: 'info' | 'warn' | 'error' = 'info'): void => { if (opts.notify) opts.notify(text, kind); };
+  /** The tool to go back to after a snapshot. */
+  let beforeSnapshot: ToolId = tool;
   /** The tool a size command changes: the current one if it has a size, else the pen. */
   const sizedTool = (): SizedTool => (toolInfo(app.tool).size ? app.tool as SizedTool : 'pen');
   /** The selection as a clip; null without one. */
   const selectionClip = (): Clip | null =>
-    app.selection && makeClip(app.selectedStrokes(), doc.pageSize(app.selection.pageId));
-  /** Add the strokes of `clip` to page `pageId` and select them. */
+    app.selection && makeClip(app.selectedStrokes(), doc.pageSize(app.selection.pageId), app.selectedImages());
+  /** Add the strokes and images of `clip` to page `pageId` and select them. */
   const pasteOnto = (pageId: string, clip: Clip, label: string): void => {
     if (!doc.hasPage(pageId)) return;
     const size = doc.pageSize(pageId);
     const step = PASTE_OFFSET * render.pageUnit(size);
-    const strokes = placeClip(clip, { size, strokes: doc.strokes(pageId), step });
-    if (!doc.addStrokes(pageId, strokes, label)) return;
+    const { strokes, images } = placeItems(clip, { size, strokes: doc.strokes(pageId), images: doc.images(pageId), step });
+    const full = doc.imageRoom(pageId, images);
+    if (full) return notify(`Not pasted: ${full}`, 'warn');
+    if (!doc.addItems(pageId, strokes, images, label)) return;
     if (app.tool !== 'selector') app.setTool('selector');
-    app.select({ pageId, ids: strokes.map(s => s.id) });
+    app.select({ pageId, ids: [...images.map(i => i.id), ...strokes.map(s => s.id)] });
+  };
+  /** Paste an image from another program onto the shown page, fitted into it (see AnnotatorOptions.importImage). */
+  const pasteImage = async (blob: Blob): Promise<void> => {
+    const s = app.activeSurface();
+    if (!s || !opts.importImage) return;
+    let cap: Capture | null;
+    try { cap = await opts.importImage(blob); } catch (e) { return notify(`The image could not be pasted: ${(e as Error).message || e}`, 'warn'); }
+    const now = app.activeSurface();
+    if (!cap || !now || now.pageId !== s.pageId || !doc.hasPage(s.pageId)) return;
+    const [w, h] = doc.pageSize(s.pageId);
+    const pw = cap.width || 1, ph = cap.height || 1;
+    // At most one page unit per pixel, and at most 80 % of the page, centered.
+    const k = Math.min(1, (0.8 * w) / pw, (0.8 * h) / ph);
+    let image: PageImage;
+    try {
+      image = createImage({ x: (w - pw * k) / 2, y: (h - ph * k) / 2, w: pw * k, h: ph * k, src: cap.src });
+    } catch (e) { return notify(`The image could not be pasted: ${(e as Error).message}`, 'warn'); }
+    pasteOnto(s.pageId, makeClip([], [w, h], [image])!, 'paste');
   };
   // The clipboard key waiting for the browser's copy, cut or paste event (see clipboardKey).
   let pendingKey: 'copy' | 'cut' | 'paste' | null = null;
@@ -228,6 +296,11 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       // An image or files on the clipboard have types but no text.
       const clip = clipForPaste(data ? data.getData('text/plain') : null, !!(data && data.types && data.types.length));
       if (clip) app.pasteClip(clip);
+      else {
+        // No clip of Inkslide's: an image copied in another program, if the host can take it.
+        const file = data && data.files ? [...data.files].find(f => f.type === 'image/png' || f.type === 'image/jpeg') : null;
+        if (file) void pasteImage(file);
+      }
       return;
     }
     const clip = selectionClip();
@@ -262,6 +335,10 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       const s = app.activeSurface();
       return s ? doc.strokes(s.pageId) : [];
     },
+    activeImages() {
+      const s = app.activeSurface();
+      return s ? doc.images(s.pageId) : [];
+    },
 
     toggle(on = !app.enabled) {
       if (on === app.enabled) return;
@@ -283,8 +360,9 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
         app.input.cancel();
         const old = app.currentTool();
         if (old.deactivate) old.deactivate();
+        if (id === 'snapshot') beforeSnapshot = app.tool;
         app.tool = id;
-        savePrefs(storage, app);
+        if (id !== 'snapshot') savePrefs(storage, app); // a one-off tool: the saved tool stays the one before
       }
       body.dataset.annTool = id;
       app.refresh();
@@ -355,6 +433,11 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       const ids = new Set(app.selection.ids);
       return doc.strokes(app.selection.pageId).filter(s => ids.has(s.id));
     },
+    selectedImages() {
+      if (!app.selection) return [];
+      const ids = new Set(app.selection.ids);
+      return doc.images(app.selection.pageId).filter(i => ids.has(i.id));
+    },
     select(sel) {
       const prev = app.selection;
       if (prev && surfaces.has(prev.pageId)) render.setSelectionBox(surfaces.get(prev.pageId)!.layer, null);
@@ -366,21 +449,22 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       const sel = app.selection;
       if (!sel) return;
       const strokes = app.selectedStrokes();
+      const images = app.selectedImages();
       const surface = surfaces.get(sel.pageId);
-      if (!strokes.length || !surface) {
+      if ((!strokes.length && !images.length) || !surface) {
         app.selection = null;
         if (surface) render.setSelectionBox(surface.layer, null);
         return;
       }
-      sel.ids = strokes.map(s => s.id);
-      sel.box = unionBBox(strokes.map(strokeBBox));
+      sel.ids = [...images.map(i => i.id), ...strokes.map(s => s.id)];
+      sel.box = unionBBox([...images.map(rectBBox), ...strokes.map(strokeBBox)]);
       render.setSelectionBox(surface.layer, sel.box);
     },
     deleteSelection(label) {
       const sel = app.selection;
       if (!sel) return;
       app.select(null);
-      doc.removeStrokes(sel.pageId, sel.ids, label);
+      doc.removeItems(sel.pageId, sel.ids, label);
     },
 
     // Clipboard
@@ -418,6 +502,30 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       const sel = app.selection;
       const clip = selectionClip();
       if (sel && clip) pasteOnto(sel.pageId, clip, 'duplicate');
+    },
+    async snapshot(pageId, rect) {
+      if (!opts.captureArea) return;
+      let image: PageImage;
+      let png: Blob | null | undefined;
+      try {
+        const cap = await opts.captureArea(pageId, rect);
+        if (!cap) return;
+        image = createImage({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, src: cap.src });
+        png = cap.png;
+      } catch (e) {
+        return notify(`The snapshot failed: ${(e as Error).message || e}`, 'error');
+      }
+      // The image sits where the area was: pasted on a page of the same size, it covers the area exactly.
+      const clip = makeClip([], doc.pageSize(pageId), [image])!;
+      setClip(clip);
+      const text = serializeClip(clip);
+      void writeSystemClipboard(text, png).then(ok => { if (ok && getClip() === clip) markClipSynced(text); });
+      notify('Snapshot copied. Paste it with Ctrl/Cmd+V or the paste button, on any page.');
+      app.leaveSnapshot();
+      app.refresh();
+    },
+    leaveSnapshot() {
+      if (app.tool === 'snapshot') app.setTool(beforeSnapshot !== 'snapshot' ? beforeSnapshot : 'pen');
     },
     canPaste() { return !!getClip(); },
     clipboardKey(kind) {
@@ -482,9 +590,15 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       if (app.onPagesChanged) app.onPagesChanged(pageId);
     } else if (pageId) {
       const surface = surfaces.get(pageId);
-      if (surface) render.syncLayer(surface.layer, doc.strokes(pageId));
+      if (surface) {
+        render.syncLayer(surface.layer, doc.strokes(pageId));
+        render.syncImages(surface.layer, doc.images(pageId));
+      }
     } else if (kind === 'strokes') {
-      surfaces.forEach(s => render.syncLayer(s.layer, doc.strokes(s.pageId))); // every page (load)
+      surfaces.forEach(s => { // every page (load)
+        render.syncLayer(s.layer, doc.strokes(s.pageId));
+        render.syncImages(s.layer, doc.images(s.pageId));
+      });
     }
     // A save changes no strokes: redrawing the box would undo a running drag's offset.
     if (kind !== 'saved' && app.selection && (pageId === null || app.selection.pageId === pageId)) app.refreshSelection();

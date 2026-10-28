@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, TOOLS, type Prefs, type Selection, type Surface, type ToolHost, type ToolRenderer } from '../src/tools';
-import type { NotesDoc } from '../src/model';
+import type { NotesDoc, PageImage } from '../src/model';
 import { pageUnit, type Layer } from '../src/render';
 import { loadPrefs, nearestPreset } from '../src/app';
 import type { Point, Stroke } from '../src/geometry';
@@ -16,13 +16,22 @@ class FakeDoc {
     this.pages.set(pageId, [...this.strokes(pageId), s]);
     return {};
   }
+  imgs = new Map<string, PageImage[]>();
+  images(pageId: string): PageImage[] { return this.imgs.get(pageId) || []; }
   replaceStrokes(pageId: string, after: Stroke[], label: string) {
     this.calls.push({ method: 'replaceStrokes', pageId, args: [after, label] });
     this.pages.set(pageId, after.slice());
     return {};
   }
-  moveStrokes(pageId: string, ids: string[], dx: number, dy: number) {
-    this.calls.push({ method: 'moveStrokes', pageId, args: [ids, dx, dy] });
+  /** Recorded as [strokes, label, images]. */
+  replaceContent(pageId: string, after: { strokes: Stroke[]; images?: PageImage[] }, label: string) {
+    this.calls.push({ method: 'replaceContent', pageId, args: [after.strokes, label, after.images] });
+    this.pages.set(pageId, after.strokes.slice());
+    if (after.images) this.imgs.set(pageId, after.images.slice());
+    return {};
+  }
+  moveItems(pageId: string, ids: string[], dx: number, dy: number) {
+    this.calls.push({ method: 'moveItems', pageId, args: [ids, dx, dy] });
     return dx || dy ? {} : null;
   }
 }
@@ -288,7 +297,7 @@ describe('selector', () => {
     selector.move!(surface, [60, 25, 0.5]);
     expect(R.log).toContain('translate:a:10,20');
     selector.up!(surface, [60, 25, 0.5]);
-    expect(doc.calls).toEqual([{ method: 'moveStrokes', pageId: 'p1', args: [['a'], 10, 20] }]);
+    expect(doc.calls).toEqual([{ method: 'moveItems', pageId: 'p1', args: [['a'], 10, 20] }]);
   });
 
   it('a move without offset resets the preview; cancel undoes the preview', () => {
@@ -392,5 +401,153 @@ describe('loadPrefs', () => {
     expect(prefs.eraser).toEqual(DEFAULT_PREFS.eraser);
     expect(prefs.partial).toEqual(DEFAULT_PREFS.partial);
     expect(loadPrefs({ getItem: () => '{broken' }).prefs).toEqual(DEFAULT_PREFS);
+  });
+});
+
+describe('images', () => {
+  const pic = (id: string, x = 200, y = 200, w = 100, h = 50): PageImage => ({ id, x, y, w, h, src: 'data:image/png;base64,iVBORw0KGgo=' });
+  const withSync = () => {
+    const images: string[] = [];
+    R.r.syncImages = (_l, list) => { images.push(list.map(i => i.id).join(',')); };
+    return images;
+  };
+
+  it('the stroke eraser removes an image it touches when the gesture erases no ink', () => {
+    doc.imgs.set('p1', [pic('i'), pic('far', 600, 600)]);
+    const shown = withSync();
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [250, 210, 0.5]);
+    eraser.move!(surface, [260, 220, 0.5]);
+    expect(shown).toEqual(['far']);
+    eraser.up!(surface, null);
+    expect(doc.calls).toHaveLength(1);
+    expect((doc.calls[0].args[2] as PageImage[]).map(i => i.id)).toEqual(['far']);
+  });
+
+  it('erasing ink written on an image leaves the image, in one command', () => {
+    doc.pages.set('p1', [hline('a', 220, 200, 300)]); // ink on image i
+    doc.imgs.set('p1', [pic('i')]);
+    const shown = withSync();
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [250, 220, 0.5]);
+    eraser.move!(surface, [260, 240, 0.5]);
+    expect(shown).toEqual([]);
+    eraser.up!(surface, null);
+    expect(doc.calls).toHaveLength(1);
+    expect(doc.calls[0].args[0]).toEqual([]);
+    expect(doc.calls[0].args[2]).toBeUndefined(); // images untouched
+    expect(doc.images('p1').map(i => i.id)).toEqual(['i']);
+  });
+
+  it('an image erased before the gesture reaches ink comes back', () => {
+    doc.pages.set('p1', [hline('a', 240, 200, 300)]);
+    doc.imgs.set('p1', [pic('i')]);
+    const shown = withSync();
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [210, 205, 0.5]); // on the image, away from the ink
+    expect(shown).toEqual(['']);
+    eraser.move!(surface, [250, 240, 0.5]); // now through the stroke
+    expect(shown).toEqual(['', 'i']);
+    eraser.up!(surface, null);
+    expect(doc.calls[0].args[0]).toEqual([]);
+    expect(doc.images('p1').map(i => i.id)).toEqual(['i']);
+  });
+
+  it('removes only the images it erased from the page as it is on release', () => {
+    doc.imgs.set('p1', [pic('i')]);
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [250, 225, 0.5]);
+    doc.imgs.set('p1', [pic('i'), pic('new', 600, 600)]); // pasted meanwhile (another window)
+    eraser.up!(surface, null);
+    expect((doc.calls[0].args[2] as PageImage[]).map(i => i.id)).toEqual(['new']);
+  });
+
+  it('the partial eraser leaves images alone', () => {
+    doc.imgs.set('p1', [pic('i')]);
+    const { partial } = createTools(app, R.r);
+    partial.down!(surface, [250, 225, 0.5]);
+    partial.up!(surface, null);
+    expect(doc.calls.every(c => c.args[2] === undefined)).toBe(true); // images not touched
+    expect(doc.images('p1')).toHaveLength(1);
+  });
+
+  it('cancelling the eraser shows the images again', () => {
+    doc.imgs.set('p1', [pic('i')]);
+    const shown = withSync();
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [250, 225, 0.5]);
+    eraser.cancel!(surface);
+    expect(shown).toEqual(['', 'i']);
+    expect(doc.calls).toEqual([]);
+  });
+
+  it('the selector taps strokes before the image under them, and boxes images', () => {
+    doc.pages.set('p1', [hline('a', 220, 200, 300)]);
+    doc.imgs.set('p1', [pic('i')]);
+    const { selector } = createTools(app, R.r);
+    selector.down!(surface, [250, 220, 0.5]);
+    selector.up!(surface, [250, 220, 0.5]);
+    expect(app.selection!.ids).toEqual(['a']);
+    app.select(null);
+    selector.down!(surface, [250, 240, 0.5]); // on the image, off the stroke
+    selector.up!(surface, [250, 240, 0.5]);
+    expect(app.selection!.ids).toEqual(['i']);
+    app.select(null);
+    selector.down!(surface, [190, 190, 0.5]);
+    selector.move!(surface, [320, 260, 0.5]);
+    selector.up!(surface, [320, 260, 0.5]);
+    expect(app.selection!.ids).toEqual(['i', 'a']);
+  });
+
+  it('dragging a selection with images moves them with the strokes', () => {
+    doc.imgs.set('p1', [pic('i')]);
+    app.selection = { pageId: 'p1', ids: ['i'], box: { minX: 200, minY: 200, maxX: 300, maxY: 250 } };
+    const { selector } = createTools(app, R.r);
+    selector.down!(surface, [250, 225, 0.5]);
+    selector.move!(surface, [260, 235, 0.5]);
+    selector.up!(surface, [260, 235, 0.5]);
+    expect(R.log).toContain('translate:i:10,10');
+    expect(doc.calls).toEqual([{ method: 'moveItems', pageId: 'p1', args: [['i'], 10, 10] }]);
+  });
+});
+
+describe('snapshot', () => {
+  const page: Surface = { pageId: 'p1', svg: {} as SVGSVGElement, layer: { unit: 1, size: [960, 540] } as Layer };
+  let shots: { pageId: string; rect: unknown }[];
+  beforeEach(() => {
+    shots = [];
+    app.snapshot = (pageId, rect) => { shots.push({ pageId, rect }); };
+  });
+
+  it('hands the dragged area, clamped to the page, to the host', () => {
+    const { snapshot } = createTools(app, R.r);
+    snapshot.down!(page, [900, 500, 0.5]);
+    snapshot.move!(page, [800, 400, 0.5]);
+    expect(R.log).toEqual(['marquee:4']);
+    snapshot.up!(page, [1000, 300, 0.5]); // beyond the right edge
+    expect(R.log).toEqual(['marquee:4', 'marquee:off']);
+    expect(shots).toEqual([{ pageId: 'p1', rect: { x: 900, y: 300, w: 60, h: 200 } }]);
+    expect(doc.calls).toEqual([]);
+  });
+
+  it('captures nothing for a tap, a thin area, a cancel or a gesture ended without a point', () => {
+    const { snapshot } = createTools(app, R.r);
+    snapshot.down!(page, [100, 100, 0.5]);
+    snapshot.up!(page, [101, 102, 0.5]);
+    snapshot.down!(page, [100, 100, 0.5]);
+    snapshot.up!(page, [300, 103, 0.5]);
+    snapshot.down!(page, [100, 100, 0.5]);
+    snapshot.move!(page, [300, 300, 0.5]);
+    snapshot.cancel!(page);
+    snapshot.up!(page, [300, 300, 0.5]);
+    snapshot.down!(page, [100, 100, 0.5]);
+    snapshot.up!(page, null);
+    expect(shots).toEqual([]);
+    expect(R.log.filter(l => l === 'marquee:off')).toHaveLength(4);
+  });
+
+  it('is in the tool list with key C, and never the tool to start with', () => {
+    expect(TOOLS.find(t => t.id === 'snapshot')).toMatchObject({ key: 'C', color: false, size: false });
+    expect(loadPrefs({ getItem: () => JSON.stringify({ tool: 'snapshot' }) }).tool).toBe('pen');
   });
 });

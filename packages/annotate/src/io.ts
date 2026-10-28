@@ -8,6 +8,7 @@
  *   v1 (Marp HTML decks): deck { title, slides, size }, pages s<n> / blank.
  *   v2 (PDF): deck { source: "pdf", title, slides, size, pageSizes, sha256 },
  *      pages p<n> / blank. Sidecar "<name>.pdf.notes.json".
+ *   v3: v1 or v2 with page images (snapshots); written only when there are any.
  * Backup (same format): the saved notes as they were before a save, in app
  * storage: desktop "<sha256>.notes.backup.json" (apps/desktop/src/main/notes.ts),
  * browser OPFS "notes/inkslide-notes_<sha256>.notes.backup.json"
@@ -185,12 +186,14 @@ export function loadNotes(doc: NotesDoc, data: NotesJSON): LoadResult {
 }
 
 /**
- * Whether `text` is a notes file that loads and has something in it (strokes
- * or blank pages): only such notes are copied to the backup or reverted to.
+ * Whether `text` is a notes file that loads and has something in it (strokes,
+ * images or blank pages): only such notes are copied to the backup or reverted to.
  */
 export function isUsableNotes(text: string): boolean {
+  const some = (list: unknown): boolean => Array.isArray(list) && list.length > 0;
   try {
-    return parseNotes(text).pages.some(p => !!p && (p.kind === 'blank' || (Array.isArray(p.strokes) && p.strokes.length > 0)));
+    const { pages } = parseNotes(text);
+    return Array.isArray(pages) && pages.some(p => !!p && (p.kind === 'blank' || some(p.strokes) || some(p.images)));
   } catch (_) {
     return false;
   }

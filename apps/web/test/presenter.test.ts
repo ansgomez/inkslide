@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Point, Stroke } from '@inkslide/annotate/geometry';
 import { deckFromPdf } from '@inkslide/annotate/io';
-import { createStroke, NotesDoc } from '@inkslide/annotate/model';
+import { createImage, createStroke, NotesDoc } from '@inkslide/annotate/model';
 import { parsePresenterMessage, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import { createPresenter, LIVE_MS, type PresenterTimers } from '../src/presenter';
 
@@ -232,5 +232,50 @@ describe('createPresenter', () => {
     clock.tick();
     expect(take()).toEqual([]);
     expect(presenter.active).toBe(false);
+  });
+});
+
+describe('createPresenter: images', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP8z8DAwMDAyPCfgYGBiQEJAAAqNwIDlBYW1QAAAABJRU5ErkJggg==';
+
+  it('mirrors a page\'s images, with the data only for images the audience does not have', () => {
+    const { presenter, doc, file, clock, take } = setup();
+    presenter.opened(file, doc);
+    presenter.setActive(true);
+    take();
+    const img = createImage({ x: 10, y: 20, w: 100, h: 50, src: PNG });
+    doc.addItems('p1', [], [img]);
+    clock.flush();
+    // The page's first change also sends its strokes (none), as for any page.
+    expect(take()).toEqual([
+      { type: 'images', page: 'p1', images: [{ id: img.id, x: 10, y: 20, w: 100, h: 50, src: PNG }] },
+      { type: 'strokes', page: 'p1', strokes: [] },
+    ]);
+    doc.moveItems('p1', [img.id], 5, 5);
+    clock.flush();
+    expect(take()).toEqual([{ type: 'images', page: 'p1', images: [{ id: img.id, x: 15, y: 25, w: 100, h: 50 }] }]);
+    // A stroke alone changes no images: only strokes go.
+    doc.addStroke('p1', createStroke({ tool: 'pen', color: '#000', size: 4, points: [pt(1)] }));
+    clock.flush();
+    expect(take().map(m => m.type)).toEqual(['delta']);
+    doc.clearPage('p1');
+    clock.flush();
+    expect(take()).toMatchObject([{ type: 'images', page: 'p1', images: [] }, { type: 'delta', order: [] }]);
+  });
+
+  it('counts the images in the notes as known by the audience', () => {
+    const { presenter, doc, file, clock, take } = setup();
+    const img = createImage({ x: 10, y: 20, w: 100, h: 50, src: PNG });
+    doc.addItems('p1', [], [img]);
+    presenter.opened(file, doc);
+    presenter.setActive(true);
+    const [, notes] = take();
+    expect(notes.type === 'notes' && JSON.parse(notes.notes).pages[0].images).toHaveLength(1);
+    doc.moveItems('p1', [img.id], 1, 0);
+    clock.flush();
+    expect(take()).toEqual([
+      { type: 'images', page: 'p1', images: [{ id: img.id, x: 11, y: 20, w: 100, h: 50 }] },
+      { type: 'strokes', page: 'p1', strokes: [] },
+    ]);
   });
 });

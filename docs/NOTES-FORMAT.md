@@ -8,6 +8,7 @@ lecture HTML decks, extended for PDFs:
 |---|---|---|---|
 | 1 | Marp HTML decks | `s1 … sN` | Marp Notes (HTML decks) and Inkslide |
 | 2 | PDFs | `p1 … pN` | Inkslide only |
+| 3 | Notes with images (snapshots), either source | as above | Inkslide with snapshots only |
 
 Sources: `packages/annotate/src/model.ts` (`NotesDoc.toJSON`, `NotesDoc.load`, `checkFormat`,
 `deckWarnings`), `packages/annotate/src/io.ts` (`serializeNotes`, `parseNotes`, `scaleV1ToPdf`,
@@ -49,7 +50,7 @@ does). Readers must not depend on the layout.
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | `"marp-notes"` | Required. Any other value is rejected ("Not a marp-notes file"). |
-| `version` | number | `1` or `2`. Files with a version above 2, any other number (0, negative, fractional) or no numeric version are rejected ("Unsupported notes version"), so a newer Inkslide never has its files silently misread. |
+| `version` | number | `1`, `2` or `3`. Files with a version above 3, any other number (0, negative, fractional) or no numeric version are rejected ("Unsupported notes version"), so a newer Inkslide never has its files silently misread. |
 | `deck` | object | What the notes were made for (see below). |
 | `pages` | array | Pages that have notes (see below). A `pages` that is not an array is skipped with a warning; the file loads without pages. |
 
@@ -91,11 +92,13 @@ Each entry is a slide page (a page of the source document) or a blank page.
 | `after` | – | yes | Number of the source page the blank page follows. |
 | `paper` | – | yes | `"plain"`, `"lined"` or `"grid"`. Unknown values load as `"plain"`. |
 | `strokes` | yes | yes | Strokes, bottom to top. A `strokes` that is not an array is skipped with a warning; the page loads without strokes. |
+| `images` | optional | optional | Version 3: images, bottom to top (see [Images](#images)). Left out when the page has none. An `images` that is not an array is skipped with a warning. |
 
 Writing:
 
 - Pages are written in reading order: source page 1, its blank pages, page 2, …
-- Slide pages without strokes are left out. Blank pages are always written, also when empty.
+- Slide pages without strokes and images are left out. Blank pages are always written, also
+  when empty.
 - Pages kept from a longer PDF (see below) follow at the end, unchanged.
 
 ### Page ids
@@ -128,9 +131,9 @@ on the next save.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | string | Unique within the file. A missing, non-string or duplicate id gets a new one on load. |
+| `id` | string | Unique within the file. A missing, non-string, longer than 200 characters or duplicate id gets a new one on load. |
 | `tool` | `"pen"` or `"highlighter"` | The laser is never stored. Other tools make the stroke invalid. |
-| `color` | string | CSS color, e.g. `#be1e3c`. |
+| `color` | string | CSS color, e.g. `#be1e3c`, at most 100 characters (a longer one makes the stroke invalid). |
 | `size` | number, 0 < size ≤ 10⁶ | Pen: ink width at pressure 0.5. Highlighter: line width. In page units. |
 | `points` | `[x, y, pressure][]`, at least one | Page units, origin top-left, y down; `\|x\|`, `\|y\|` ≤ 10⁶. Pressure 0..1 (clamped on load); a missing pressure loads as 0.5. |
 
@@ -141,6 +144,50 @@ not a number or out of range, no points, non-finite or non-numeric coordinates, 
 beyond ±10⁶ is skipped with a warning; the rest of the page loads. (Such numbers would overflow when rounded for saving, or end up as
 `Infinity` in an exported PDF.) The same check applies to every new or changed stroke, so the
 app never writes one.
+
+## Images
+
+Images are snapshots: an area of a page (PDF render, paper and ink) captured with the snapshot
+tool and pasted onto a page. They live in an `images` array next to `strokes`:
+
+```json
+{ "id": "lq3k9x2a1b-7", "x": 120, "y": 80.5, "w": 320, "h": 180,
+  "src": "data:image/png;base64,iVBORw0KGgo…" }
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Unique within the file, among stroke and image ids. A missing, non-string, longer than 200 characters or duplicate id gets a new one on load. |
+| `x`, `y` | number, ≤ 10⁶ in size | Top-left corner, page units (origin top-left, y down). |
+| `w`, `h` | number, 0 < w, h ≤ 10⁶ | Size on the page, page units. The image is stretched to fill it. |
+| `src` | string | A base64 `data:` URL of type `image/png` or `image/jpeg`; the data must start with the PNG or JPEG signature, and its size in pixels must be readable from the start of the data (PNG: the IHDR chunk; JPEG: the first frame header, SOFn, within the first 256 KB). Nothing else (no SVG, no GIF, no links). |
+
+Images are drawn below all ink (highlighter and pen strokes), in the order of the array.
+Position and size are rounded to 2 decimals when saved.
+
+**Version.** A file with at least one image (on a shown page or a [kept](#pages-beyond-the-pdf)
+one) is written as version 3, whatever the source; a file without images keeps version 1 (Marp)
+or 2 (PDF), byte for byte as before. Builds from before images reject version 3 ("Unsupported
+notes version") and, as for any unreadable notes file, ask before replacing it (the desktop keeps
+a copy first). Without the version change they would have loaded the strokes, ignored the
+images and dropped them on their next autosave without a word. The `images` array still sits
+next to `strokes`, so a reader that skips the version check keeps the ink.
+
+**Limits.** Each image's `src` is at most 3 000 000 characters (about 2.2 MB of image data), a
+page holds at most 32 images, a file at most 256, with at most 24 000 000 characters of `src`
+in all (kept pages count). An image is at most 4096 pixels on a side and 16 000 000 pixels in
+all, whatever its file size: a small PNG can hold a huge image, and decoding one (on screen, in
+a snapshot, in the export) would take seconds and gigabytes. The limits keep the notes file small
+enough to autosave: every save serializes the whole file, base64 image data included, so 24 MB
+of images means writing about 24 MB a few seconds after each change.
+The snapshot tool makes images of at most 2048 px on the long side (PNG; JPEG at 0.9 quality
+when the PNG would exceed the per-image limit). On load an image with a bad `src`, bad numbers
+or beyond a limit is skipped with a warning ("Skipped an image on page …"); the rest of the page
+loads. New and pasted images are checked the same way, and a paste beyond the limits is refused
+with a message.
+
+In the browser, notes that do not fit in OPFS fall back to `localStorage`, which holds about
+5 MB per site: a few large snapshots can make saving fail there (the app shows the error).
 
 ### Tool sizes
 
@@ -272,6 +319,8 @@ data directory once it can be tested on devices).
 - Marp decks still write version 1, so the HTML decks can read what Inkslide writes for them.
   PDFs write version 2, which the HTML decks reject (their reader accepts version 1 only).
 - Readers accept every version up to their own and reject newer ones.
+- Version 3 is written only when the file has images, so notes without images stay readable
+  by older builds.
 - Readers ignore unknown fields, but do not write them back: the model keeps only the fields
   above. New optional fields can be added without a version change only if losing them on a
   save by an older Inkslide is acceptable; a change that old readers would misread needs a new

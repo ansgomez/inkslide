@@ -1,0 +1,183 @@
+/* Images (snapshots) in the export: embedded once, placed like strokes on
+ * rotated, cropped and blank pages (checked against PDF.js), below the ink. */
+import { describe, expect, it } from 'vitest';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, decodePDFRawStream, type PDFPage } from 'pdf-lib';
+import type { ImageJSON, PageJSON } from '@inkslide/annotate/model';
+import { exportAnnotatedPdfWithReport } from '../src/export';
+import { fixturePdf, notesFile, openPdfJs, pdfjs, pen, hl } from './helpers';
+
+/** A 4×2 PNG and an 8×8 JPEG. */
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP8z8DAwMDAyPCfgYGBiQEJAAAqNwIDlBYW1QAAAABJRU5ErkJggg==';
+const JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDySiiiv5yP5MP/2Q==';
+
+const image = (id: string, x: number, y: number, w: number, h: number, src = PNG): ImageJSON => ({ id, x, y, w, h, src });
+const v3 = (pages: PageJSON[], slides = 3) => ({ ...notesFile(pages, slides), version: 3 });
+
+type M = [number, number, number, number, number, number];
+/** m applied first, then ctm (a PDF `cm`). */
+const concat = (ctm: M, m: M): M => [
+  m[0] * ctm[0] + m[1] * ctm[2], m[0] * ctm[1] + m[1] * ctm[3],
+  m[2] * ctm[0] + m[3] * ctm[2], m[2] * ctm[1] + m[3] * ctm[3],
+  m[4] * ctm[0] + m[5] * ctm[2] + ctm[4], m[4] * ctm[1] + m[5] * ctm[3] + ctm[5],
+];
+const apply = (m: M, u: number, v: number): [number, number] => [m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]];
+
+/**
+ * Where PDF.js paints each image of page n, as display rectangles [x, y, w, h]
+ * (its viewport at scale 1): the unit square's top-left and bottom-right
+ * corners through the CTM at the paint.
+ */
+async function paintedImages(bytes: Uint8Array, n: number): Promise<number[][]> {
+  const lib = await pdfjs();
+  const { doc, destroy } = await openPdfJs(bytes);
+  const page = await doc.getPage(n);
+  const vp = page.getViewport({ scale: 1 });
+  const list = await page.getOperatorList();
+  const out: number[][] = [];
+  let ctm: M = [1, 0, 0, 1, 0, 0];
+  const stack: M[] = [];
+  for (let i = 0; i < list.fnArray.length; i++) {
+    const fn = list.fnArray[i], args = list.argsArray[i];
+    if (fn === lib.OPS.save) stack.push(ctm);
+    else if (fn === lib.OPS.restore) ctm = stack.pop() || ctm;
+    else if (fn === lib.OPS.transform) ctm = concat(ctm, args as M);
+    else if (fn === lib.OPS.paintImageXObject || fn === lib.OPS.paintInlineImageXObject) {
+      const [x0, y0] = vp.convertToViewportPoint(...apply(ctm, 0, 1));
+      const [x1, y1] = vp.convertToViewportPoint(...apply(ctm, 1, 0));
+      out.push([x0, y0, x1 - x0, y1 - y0].map(v => Math.round(v * 100) / 100));
+    }
+  }
+  await destroy();
+  return out;
+}
+
+/** Decoded text of a page's last content stream (the one the export appends). */
+function lastStream(page: PDFPage): string {
+  const c = page.node.Contents();
+  const ref = c instanceof PDFArray ? c.get(c.size() - 1) : c;
+  return new TextDecoder().decode(decodePDFRawStream(page.doc.context.lookup(ref) as PDFRawStream).decode());
+}
+
+/** Image XObject dicts of the whole file. */
+function imageXObjects(pdf: PDFDocument): PDFDict[] {
+  return pdf.context.enumerateIndirectObjects().map(([, o]) => (o as { dict?: PDFDict }).dict)
+    .filter((d): d is PDFDict => !!d && d.get(PDFName.of('Subtype')) === PDFName.of('Image'));
+}
+
+describe('images in the export', () => {
+  it('lands where the notes put them on plain, rotated, cropped and blank pages (as PDF.js shows it)', async () => {
+    const src = await fixturePdf();
+    const rect = [120, 60, 200, 100];
+    const at = (id: string) => image(id, rect[0], rect[1], rect[2], rect[3]);
+    const { bytes, warnings } = await exportAnnotatedPdfWithReport(src, v3([
+      { id: 'p1', kind: 'slide', slide: 1, strokes: [], images: [at('a')] },
+      { id: 'p2', kind: 'slide', slide: 2, strokes: [], images: [at('b')] },
+      { id: 'p3', kind: 'slide', slide: 3, strokes: [], images: [at('c')] },
+      { id: 'b-1', kind: 'blank', after: 3, paper: 'grid', strokes: [], images: [at('d')] },
+    ]));
+    expect(warnings).toEqual([]);
+    for (const n of [1, 2, 3, 4]) expect(await paintedImages(bytes, n)).toEqual([rect]);
+  });
+
+  it('places images in the /UserUnit frame as PDF.js shows them', async () => {
+    const pdf = await PDFDocument.create();
+    const page = pdf.addPage([300, 200]);
+    page.node.set(PDFName.of('UserUnit'), PDFNumber.of(2));
+    const src = await pdf.save();
+    const js = await openPdfJs(src);
+    const vp = (await js.doc.getPage(1)).getViewport({ scale: 1 });
+    await js.destroy();
+    expect([vp.width, vp.height]).toEqual([600, 400]);
+    const notes = { ...v3([{ id: 'p1', kind: 'slide', slide: 1, strokes: [pen('d', [[100, 50]], '#000', 10)],
+      images: [image('i', 300, 200, 200, 100)] }], 1) };
+    notes.deck = { ...notes.deck, size: [600, 400], pageSizes: [[600, 400]] };
+    const { bytes, warnings } = await exportAnnotatedPdfWithReport(src, notes);
+    expect(warnings).toEqual([]);
+    expect(await paintedImages(bytes, 1)).toEqual([[300, 200, 200, 100]]);
+    const text = lastStream((await PDFDocument.load(bytes)).getPage(0));
+    expect(text).toMatch(/0\.5 0 0 -0\.5 0 200 cm\n/);
+  });
+
+  it('embeds each distinct image once, PNG and JPEG', async () => {
+    const src = await fixturePdf();
+    const { bytes } = await exportAnnotatedPdfWithReport(src, v3([
+      { id: 'p1', kind: 'slide', slide: 1, strokes: [], images: [image('a', 0, 0, 40, 20), image('b', 300, 200, 80, 40)] },
+      { id: 'p2', kind: 'slide', slide: 2, strokes: [], images: [image('c', 10, 10, 40, 20), image('j', 100, 100, 50, 50, JPEG)] },
+    ]));
+    const out = await PDFDocument.load(bytes);
+    const xobjects = imageXObjects(out);
+    expect(xobjects).toHaveLength(2);
+    const filters = xobjects.map(d => String(d.get(PDFName.of('Filter')))).sort();
+    expect(filters).toEqual(['/DCTDecode', '/FlateDecode']);
+    expect(await paintedImages(bytes, 1)).toEqual([[0, 0, 40, 20], [300, 200, 80, 40]]);
+    expect(await paintedImages(bytes, 2)).toEqual([[10, 10, 40, 20], [100, 100, 50, 50]]);
+  });
+
+  it('draws images below the ink', async () => {
+    const src = await fixturePdf();
+    const { bytes } = await exportAnnotatedPdfWithReport(src, v3([{
+      id: 'p1', kind: 'slide', slide: 1,
+      strokes: [pen('a', [[10, 10], [200, 200]]), hl('h', [[10, 300], [300, 300]])],
+      images: [image('i', 0, 0, 300, 150)],
+    }]));
+    const text = lastStream((await PDFDocument.load(bytes)).getPage(0));
+    const draw = text.indexOf(' Do\n');
+    expect(draw).toBeGreaterThan(0);
+    expect(draw).toBeLessThan(text.indexOf('\nS\n')); // highlighter
+    expect(draw).toBeLessThan(text.indexOf('\nf\n')); // pen
+  });
+
+  it('leaves out a decompression bomb (a small PNG of 16000×16000 pixels) without decoding it', async () => {
+    const zlib = await import('node:zlib');
+    const crc = (buf: Buffer): number => {
+      let c = 0xffffffff;
+      for (const byte of buf) { c ^= byte; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; }
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const chunk = (type: string, data: Buffer): Buffer => {
+      const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+      const out = Buffer.alloc(body.length + 8);
+      out.writeUInt32BE(data.length, 0);
+      body.copy(out, 4);
+      out.writeUInt32BE(crc(body), body.length + 4);
+      return out;
+    };
+    const side = 16000;
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(side, 0);
+    ihdr.writeUInt32BE(side, 4);
+    ihdr[8] = 1; // 1-bit grey
+    const raw = Buffer.alloc(side * (1 + side / 8));
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr),
+      chunk('IDAT', zlib.deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+    const bomb = `data:image/png;base64,${png.toString('base64')}`;
+    expect(bomb.length).toBeLessThan(100_000);
+    const t = Date.now();
+    const { bytes, warnings } = await exportAnnotatedPdfWithReport(await fixturePdf(), v3([{
+      id: 'p1', kind: 'slide', slide: 1, strokes: [], images: [image('bomb', 0, 0, 100, 100, bomb), image('ok', 50, 50, 40, 20)],
+    }]));
+    expect(Date.now() - t).toBeLessThan(5000);
+    expect(warnings).toEqual(['Skipped an image on page p1: Image too large (16000×16000 pixels; at most 4096 on a side)']);
+    expect(await paintedImages(bytes, 1)).toEqual([[50, 50, 40, 20]]);
+  });
+
+  it('skips an image whose data does not decode, with a warning, and exports the rest', async () => {
+    const src = await fixturePdf();
+    // A PNG signature and IHDR followed by garbage passes the notes check but not the decoder.
+    const head = Buffer.alloc(36);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(head);
+    head.writeUInt32BE(13, 8);
+    head.write('IHDR', 12, 'latin1');
+    head.writeUInt32BE(10, 16);
+    head.writeUInt32BE(10, 20);
+    const broken = `data:image/png;base64,${head.toString('base64')}`;
+    const warned: string[] = [];
+    const { bytes, warnings } = await exportAnnotatedPdfWithReport(src, v3([{
+      id: 'p1', kind: 'slide', slide: 1, strokes: [pen('a', [[10, 10], [200, 200]])],
+      images: [image('x', 0, 0, 10, 10, broken), image('ok', 50, 50, 40, 20)],
+    }]), { onWarning: m => warned.push(m) });
+    expect(warnings).toEqual(['Skipped an image on page p1: the image data could not be read']);
+    expect(warned).toEqual(warnings);
+    expect(await paintedImages(bytes, 1)).toEqual([[50, 50, 40, 20]]);
+  });
+});

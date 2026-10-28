@@ -3,6 +3,8 @@
  * Ported from Marp Notes model.js (© Andres Gomez, MIT).
  * Strokes are immutable: every edit replaces a page's stroke array (and any
  * changed stroke object), so a command only needs the before/after arrays.
+ * Images (snapshots pasted onto a page) are kept the same way in a second
+ * array, drawn below all ink; one command can change both arrays.
  *
  * "Slide" pages are the pages of the source document: Marp slides (ids s1…sN)
  * or PDF pages (ids p1…pN). Blank pages sit after a slide page.
@@ -11,8 +13,12 @@ import { round, translatePoints, type Point, type Stroke, type StrokeTool } from
 
 /** `format` field of every notes file. */
 export const FORMAT = 'marp-notes';
-/** Newest notes file version this model reads. Marp decks still write version 1. */
-export const VERSION = 2;
+/**
+ * Newest notes file version this model reads. Marp decks still write version 1, PDFs version 2;
+ * a file with images is version 3, so older builds reject it instead of dropping the images on
+ * their next save (see docs/NOTES-FORMAT.md).
+ */
+export const VERSION = 3;
 /** Stroke tools a notes file may contain. */
 export const TOOLS: readonly StrokeTool[] = ['pen', 'highlighter'];
 /** Papers of blank pages. */
@@ -49,6 +55,7 @@ export interface SlidePage {
   kind: 'slide';
   slide: number;
   strokes: readonly Stroke[];
+  images: readonly PageImage[];
 }
 
 /** A page inserted by the user after a slide page. */
@@ -59,6 +66,7 @@ export interface BlankPage {
   after: number;
   paper: Paper;
   strokes: readonly Stroke[];
+  images: readonly PageImage[];
 }
 
 /** A page of the notes: a source page or a blank page. */
@@ -70,6 +78,31 @@ export interface Command {
   pageId?: string;
   do(): void;
   undo(): void;
+}
+
+/**
+ * An image on a page: a PNG or JPEG data URL drawn into the rectangle x, y,
+ * w, h (page units, origin top-left), below all ink. Like strokes, images
+ * are immutable; a move replaces the object.
+ */
+export interface PageImage {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** "data:image/png;base64,…" or "data:image/jpeg;base64,…". */
+  src: string;
+}
+
+/** Unchecked image data, as accepted by createImage. */
+export interface ImageInput {
+  id?: string | null;
+  x: unknown;
+  y: unknown;
+  w: unknown;
+  h: unknown;
+  src: unknown;
 }
 
 /** Unchecked stroke data, as accepted by createStroke. */
@@ -89,6 +122,8 @@ export interface PageJSON {
   after?: number;
   paper?: Paper;
   strokes: StrokeJSON[];
+  /** Version 3: images, bottom to top; left out when the page has none. */
+  images?: ImageJSON[];
 }
 
 /** One stroke as stored in a notes file. */
@@ -99,6 +134,9 @@ export interface StrokeJSON {
   size: number;
   points: Point[];
 }
+
+/** One image as stored in a notes file (v3). */
+export type ImageJSON = PageImage;
 
 /** Deck information as stored in a notes file (v1: title, slides, size). */
 export interface DeckJSON {
@@ -118,7 +156,7 @@ export interface NotesJSON {
   pages: PageJSON[];
 }
 
-/** kind: 'strokes' (a page's strokes changed), 'pages' (pages added/removed/restyled) or 'saved'. */
+/** kind: 'strokes' (a page's strokes or images changed), 'pages' (pages added/removed/restyled) or 'saved'. */
 export type ChangeKind = 'strokes' | 'pages' | 'saved';
 /** Listener of NotesDoc.onChange; pageId is null for document-wide changes (e.g. 'strokes' of every page after load()). */
 export type ChangeListener = (pageId: string | null, kind: ChangeKind) => void;
@@ -128,6 +166,13 @@ let idCounter = 0;
 const idPrefix = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 /** A new stroke id, unique per window. */
 export const newId = (): string => `${idPrefix}-${(idCounter++).toString(36)}`;
+
+/** Longest stroke or image id kept (presenter mode sends ids up to this length); longer ones get a new id. */
+export const MAX_ID_LENGTH = 200;
+/** Longest stroke color kept (a CSS color; presenter mode sends colors up to this length). */
+export const MAX_COLOR_LENGTH = 100;
+/** `id` if it is a usable id (a non-empty string of at most MAX_ID_LENGTH), else a new one. */
+const itemId = (id: unknown): string => (typeof id === 'string' && id && id.length <= MAX_ID_LENGTH ? id : newId());
 
 /**
  * Largest |x|, |y| and size a stroke may have, in page units. Pages are at most
@@ -157,9 +202,10 @@ export function createStroke({ id, tool, color, size, points }: StrokeInput): St
   if (typeof size !== 'number' || !(size > 0)) throw new Error('Stroke size must be a positive number');
   if (!(size <= MAX_COORD)) throw new Error('Stroke size out of range');
   if (!points.length) throw new Error('Stroke has no points');
+  if (String(color).length > MAX_COLOR_LENGTH) throw new Error('Stroke color too long');
   const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
   return {
-    id: typeof id === 'string' && id ? id : newId(),
+    id: itemId(id),
     tool: tool as StrokeTool,
     color: String(color),
     size,
@@ -173,6 +219,139 @@ export function createStroke({ id, tool, color, size, points }: StrokeInput): St
       return [q[0], q[1], Math.min(1, Math.max(0, pressure))];
     }),
   };
+}
+
+// ── Images ─────────────────────────────────────────────────────
+
+/** Image types a notes file may contain, with the start of their base64 data (the file signature). */
+const IMAGE_MAGIC: Readonly<Record<string, string>> = { 'image/png': 'iVBORw0KGgo', 'image/jpeg': '/9j/' };
+/** Longest data URL of one image, in characters (about 2.2 MB of image data). */
+export const MAX_IMAGE_CHARS = 3_000_000;
+/** Most images on one page. */
+export const MAX_PAGE_IMAGES = 32;
+/** Most images in one document. */
+export const MAX_DOC_IMAGES = 256;
+/** Most data URL characters of all images of one document (they are all in the notes file). */
+export const MAX_DOC_IMAGE_CHARS = 24_000_000;
+
+/**
+ * Most pixels per side, and in all, of an image. A small file can hold a huge
+ * image (a 41 KB PNG of 16000×16000 pixels); decoding one (the export, the
+ * screen, a snapshot) would take seconds and gigabytes. Snapshots are at most
+ * 2048 px on a side; images pasted from other programs are scaled down first.
+ */
+export const MAX_IMAGE_SIDE = 4096, MAX_IMAGE_PIXELS = 16_000_000;
+/** Bytes of a JPEG searched for its frame header (SOFn); our own JPEGs have it in the first few hundred. */
+const JPEG_HEADER_BYTES = 256 * 1024;
+
+const DATA_URL = /^data:(image\/(?:png|jpeg));base64,[A-Za-z0-9+/]*={0,2}$/;
+
+/** Image type and size in pixels. */
+export interface ImageInfo {
+  type: 'image/png' | 'image/jpeg';
+  width: number;
+  height: number;
+}
+
+/** The first `bytes` bytes of base64 `data` (fewer if it is shorter). */
+function headBytes(data: string, bytes: number): Uint8Array {
+  const head = atob(data.slice(0, Math.ceil(bytes / 3) * 4));
+  const out = new Uint8Array(head.length);
+  for (let i = 0; i < head.length; i++) out[i] = head.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Width and height in pixels from the start of a PNG (the IHDR chunk) or
+ * JPEG (the first SOFn frame header, found by walking the marker segments
+ * within the bytes given); null if they are not there (truncated, no frame
+ * header before the scan data, broken segments).
+ */
+export function imagePixelSize(type: string, b: Uint8Array): { width: number; height: number } | null {
+  const u16 = (i: number): number => (b[i] << 8) | b[i + 1];
+  const u32 = (i: number): number => ((b[i] << 24) >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3];
+  if (type === 'image/png') {
+    // Signature (8), chunk length (4), "IHDR" (4), width (4), height (4).
+    if (b.length < 24 || String.fromCharCode(b[12], b[13], b[14], b[15]) !== 'IHDR') return null;
+    return { width: u32(16), height: u32(20) };
+  }
+  if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 1 < b.length) {
+    if (b[i] !== 0xff) return null; // not at a marker: broken
+    const m = b[i + 1];
+    if (m === 0xff) { i++; continue; } // fill byte
+    if (m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; } // no length
+    if (m === 0xd9 || m === 0xda) return null; // end, or the scan, before any frame header
+    if (i + 3 >= b.length) return null;
+    const len = u16(i + 2);
+    if (len < 2) return null;
+    // SOF0–SOF15 except DHT (C4), JPG (C8) and DAC (CC): precision (1), height (2), width (2).
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+      if (i + 8 >= b.length) return null;
+      return { width: u16(i + 7), height: u16(i + 5) };
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+/**
+ * Type and pixel size of an image data URL Inkslide accepts: PNG or JPEG,
+ * base64, the signature checked, at most MAX_IMAGE_SIDE pixels on a side and
+ * MAX_IMAGE_PIXELS in all; otherwise why not.
+ */
+function inspectImage(src: unknown): ImageInfo | string {
+  const bad = 'Image must be a PNG or JPEG data URL';
+  if (typeof src !== 'string') return bad;
+  if (src.length > MAX_IMAGE_CHARS) return 'Image too large';
+  const m = DATA_URL.exec(src);
+  if (!m) return bad;
+  const type = m[1] as ImageInfo['type'];
+  const data = src.slice(src.indexOf(',') + 1);
+  if (data.length % 4 !== 0 || !data.startsWith(IMAGE_MAGIC[type])) return bad;
+  let size: { width: number; height: number } | null;
+  try { size = imagePixelSize(type, headBytes(data, type === 'image/png' ? 24 : JPEG_HEADER_BYTES)); } catch (_) { size = null; }
+  if (!size || !size.width || !size.height) return 'Image size in pixels could not be read';
+  if (size.width > MAX_IMAGE_SIDE || size.height > MAX_IMAGE_SIDE || size.width * size.height > MAX_IMAGE_PIXELS) {
+    return `Image too large (${size.width}×${size.height} pixels; at most ${MAX_IMAGE_SIDE} on a side)`;
+  }
+  return { type, ...size };
+}
+
+/** MIME type of an image data URL Inkslide accepts (see inspectImage); null otherwise. */
+export function imageType(src: unknown): 'image/png' | 'image/jpeg' | null {
+  const info = inspectImage(src);
+  return typeof info === 'string' ? null : info.type;
+}
+
+/** Type and pixel size of an image data URL Inkslide accepts; null otherwise. */
+export function imageInfo(src: unknown): ImageInfo | null {
+  const info = inspectImage(src);
+  return typeof info === 'string' ? null : info;
+}
+
+/**
+ * A checked image: a PNG or JPEG data URL of at most MAX_IMAGE_CHARS and
+ * MAX_IMAGE_SIDE × MAX_IMAGE_SIDE pixels (MAX_IMAGE_PIXELS in all), finite x
+ * and y within ±MAX_COORD, positive finite w and h up to MAX_COORD. Throws on
+ * bad input; a missing or unusable id (not a string, longer than
+ * MAX_ID_LENGTH) gets newId().
+ */
+export function createImage(input: ImageInput): PageImage {
+  const { id, x, y, w, h, src } = (input && typeof input === 'object' ? input : {}) as Partial<ImageInput>;
+  const info = inspectImage(src);
+  if (typeof info === 'string') throw new Error(info);
+  const coord = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= MAX_COORD;
+  if (!coord(x) || !coord(y)) throw new Error('Image position must be finite numbers in range');
+  if (!coord(w) || !coord(h) || !(w > 0) || !(h > 0)) throw new Error('Image size must be positive numbers in range');
+  return { id: itemId(id), x, y, w, h, src: src as string };
+}
+
+/** Images and data URL characters in use (see NotesDoc.imageRoom). */
+interface ImageBudget {
+  count: number;
+  chars: number;
 }
 
 // ── History ────────────────────────────────────────────────────
@@ -281,7 +460,7 @@ export class NotesDoc {
   /** Id of source page n (s<n> or p<n>); creates the page entry if needed. */
   slidePageId(n: number): string {
     const id = this.slideId(n);
-    if (!this.pages.has(id)) this.pages.set(id, { id, kind: 'slide', slide: n, strokes: [] });
+    if (!this.pages.has(id)) this.pages.set(id, { id, kind: 'slide', slide: n, strokes: [], images: [] });
     return id;
   }
   getPage(id: string): Page | null { return this.pages.get(id) || null; }
@@ -350,7 +529,7 @@ export class NotesDoc {
     if (after == null || !inDeck(after, this.deck)) throw new Error(`No page ${afterId}`);
     let id: string;
     do { id = `b-${this.blankPrefix}-${++this.blankCounter}`; } while (this.pages.has(id) || this.kept.some(k => k.id === id));
-    const page: BlankPage = { id, kind: 'blank', after, paper, strokes: [] };
+    const page: BlankPage = { id, kind: 'blank', after, paper, strokes: [], images: [] };
     const anchor = this.pages.get(afterId);
     const idx = anchor && anchor.kind === 'blank'
       ? this.blankOrder.indexOf(afterId) + 1
@@ -369,7 +548,7 @@ export class NotesDoc {
     if (idx !== -1) this.blankOrder.splice(idx, 1); // may already be gone (removed by a peer)
   }
 
-  /** Delete a blank page with its strokes; slide pages cannot be deleted. */
+  /** Delete a blank page with its strokes and images; slide pages cannot be deleted. */
   deletePage(id: string): Command | null {
     const page = this.pages.get(id);
     if (!page || page.kind !== 'blank') return null;
@@ -395,6 +574,41 @@ export class NotesDoc {
     const page = this.pages.get(pageId);
     return page ? page.strokes : [];
   }
+  /** A page's images, bottom to top (all below the strokes); empty for an unknown page. */
+  images(pageId: string): readonly PageImage[] {
+    const page = this.pages.get(pageId);
+    return page ? page.images : [];
+  }
+
+  /**
+   * Why `images` cannot be added to page `pageId` (too many on the page or in
+   * the document, or too much image data in all); null if they can.
+   */
+  imageRoom(pageId: string, images: readonly PageImage[]): string | null {
+    if (!images.length) return null;
+    if (this.images(pageId).length + images.length > MAX_PAGE_IMAGES) return `A page can hold at most ${MAX_PAGE_IMAGES} images.`;
+    const used = this.imageBudget();
+    if (used.count + images.length > MAX_DOC_IMAGES) return `A document can hold at most ${MAX_DOC_IMAGES} images.`;
+    const chars = images.reduce((n, i) => n + i.src.length, 0);
+    if (used.chars + chars > MAX_DOC_IMAGE_CHARS) {
+      return `The images of a document can take at most ${Math.round(MAX_DOC_IMAGE_CHARS / 1e6)} MB of the notes file.`;
+    }
+    return null;
+  }
+
+  /** Images and their data URL characters on all pages (kept pages too: they are saved back). */
+  private imageBudget(): ImageBudget {
+    const used: ImageBudget = { count: 0, chars: 0 };
+    const add = (list: readonly { src?: unknown }[]): void => {
+      for (const i of list) {
+        used.count++;
+        used.chars += i && typeof i.src === 'string' ? i.src.length : 0;
+      }
+    };
+    for (const page of this.pages.values()) add(page.images);
+    for (const k of this.kept) add(Array.isArray(k.images) ? k.images : []);
+    return used;
+  }
 
   // Changes
 
@@ -413,6 +627,14 @@ export class NotesDoc {
     this.emit(pageId);
   }
 
+  /** Apply fn to a page's image list; a page that is gone is skipped. */
+  private mutateImages(pageId: string, fn: (list: PageImage[]) => PageImage[]): void {
+    const page = this.pages.get(pageId) || this.pageOnDemand(pageId);
+    if (!page) return;
+    page.images = fn(page.images.slice());
+    this.emit(pageId);
+  }
+
   /**
    * Change a page from its current strokes to `after` in one undoable step
    * (null if nothing changes). The command stores only the delta - strokes
@@ -421,38 +643,37 @@ export class NotesDoc {
    * window untouched.
    */
   replaceStrokes(pageId: string, after: readonly Stroke[], label = 'edit'): Command | null {
+    return this.replaceContent(pageId, { strokes: after }, label);
+  }
+
+  /**
+   * replaceStrokes for strokes and images: change the lists given in `after`
+   * in one undoable step (null if nothing changes). New and changed images
+   * are checked like loaded ones, and added ones must fit (see imageRoom).
+   */
+  replaceContent(pageId: string, after: { strokes?: readonly Stroke[]; images?: readonly PageImage[] }, label = 'edit'): Command | null {
     const page = this.pages.get(pageId) || this.pageOnDemand(pageId);
     if (!page) throw new Error(`No page ${pageId}`);
-    const before = page.strokes;
-    if (sameArray(before, after)) return null;
-    // Computed outside the closures below, so the undo entry does not keep whole-page maps alive.
-    const { removedIds, added, oldById, newById } = strokeDelta(before, after);
-    if (!removedIds.size && !added.length && !newById.size) return null; // order-only change
-    // New and changed strokes are checked like loaded ones: nothing non-finite is ever stored or saved.
-    for (const s of [...added.map(a => a.stroke), ...newById.values()]) createStroke(s);
-    const addedIds = new Set(added.map(a => a.stroke.id));
-    const insertAll = (list: Stroke[], items: { stroke: Stroke; index: number }[]): Stroke[] => {
-      const present = new Set(list.map(s => s.id));
-      for (const { stroke, index } of items) {
-        if (present.has(stroke.id)) continue;
-        list.splice(Math.min(index, list.length), 0, stroke);
-        present.add(stroke.id);
-      }
-      return list;
-    };
-    let removedAt: { stroke: Stroke; index: number }[] = [];
+    const strokes = after.strokes ? listChange(page.strokes, after.strokes) : null;
+    const images = after.images ? listChange(page.images, after.images) : null;
+    if (!strokes && !images) return null;
+    // New and changed items are checked like loaded ones: nothing non-finite is ever stored or saved.
+    if (strokes) for (const s of strokes.checked) createStroke(s);
+    if (images) {
+      for (const i of images.checked) createImage(i);
+      const full = this.imageRoom(pageId, images.added);
+      if (full) throw new Error(full);
+    }
     return this.history.execute({
       label, pageId,
-      do: () => this.mutate(pageId, list => {
-        removedAt = [];
-        list.forEach((s, index) => { if (removedIds.has(s.id)) removedAt.push({ stroke: s, index }); });
-        const kept = list.filter(s => !removedIds.has(s.id)).map(s => newById.get(s.id) || s);
-        return insertAll(kept, added);
-      }),
-      undo: () => this.mutate(pageId, list => {
-        const kept = list.filter(s => !addedIds.has(s.id)).map(s => oldById.get(s.id) || s);
-        return insertAll(kept, removedAt);
-      }),
+      do: () => {
+        if (strokes) this.mutate(pageId, strokes.redo);
+        if (images) this.mutateImages(pageId, images.redo);
+      },
+      undo: () => {
+        if (images) this.mutateImages(pageId, images.undo);
+        if (strokes) this.mutate(pageId, strokes.undo);
+      },
     });
   }
 
@@ -465,14 +686,30 @@ export class NotesDoc {
     return this.replaceStrokes(pageId, [...this.strokes(pageId), ...strokes], label);
   }
 
+  /** Add strokes and images on top of a page in one command (a paste); their ids must be new. */
+  addItems(pageId: string, strokes: readonly Stroke[], images: readonly PageImage[], label = 'paste'): Command | null {
+    return this.replaceContent(pageId, {
+      strokes: [...this.strokes(pageId), ...strokes], images: [...this.images(pageId), ...images],
+    }, label);
+  }
+
   removeStrokes(pageId: string, ids: readonly string[], label = 'delete'): Command | null {
     const gone = new Set(ids);
     return this.replaceStrokes(pageId, this.strokes(pageId).filter(s => !gone.has(s.id)), label);
   }
 
+  /** Remove the strokes and images `ids` in one command. */
+  removeItems(pageId: string, ids: readonly string[], label = 'delete'): Command | null {
+    const gone = new Set(ids);
+    return this.replaceContent(pageId, {
+      strokes: this.strokes(pageId).filter(s => !gone.has(s.id)),
+      images: this.images(pageId).filter(i => !gone.has(i.id)),
+    }, label);
+  }
+
   clearPage(pageId: string): Command | null {
     if (!this.pages.has(pageId)) return null;
-    return this.replaceStrokes(pageId, [], 'clear');
+    return this.replaceContent(pageId, { strokes: [], images: [] }, 'clear');
   }
 
   /** Replace the strokes `ids` by fn(stroke) in one command. */
@@ -486,6 +723,16 @@ export class NotesDoc {
     if (!Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) return null;
     return this.updateStrokes(pageId, ids,
       s => ({ ...s, points: translatePoints(s.points, dx, dy) }), 'move');
+  }
+
+  /** Move the strokes and images `ids` by (dx, dy) in one command. */
+  moveItems(pageId: string, ids: readonly string[], dx: number, dy: number): Command | null {
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) return null;
+    const set = new Set(ids);
+    return this.replaceContent(pageId, {
+      strokes: this.strokes(pageId).map(s => (set.has(s.id) ? { ...s, points: translatePoints(s.points, dx, dy) } : s)),
+      images: this.images(pageId).map(i => (set.has(i.id) ? { ...i, x: i.x + dx, y: i.y + dy } : i)),
+    }, 'move');
   }
 
   restyleStrokes(pageId: string, ids: readonly string[], style: StrokeStyle): Command | null {
@@ -540,6 +787,32 @@ export class NotesDoc {
   }
 
   /**
+   * A peer's images of a page (presenter mode), bottom to top; false if the page is unknown here.
+   * Invalid images and those beyond MAX_PAGE_IMAGES are left out; an image the page already has
+   * (same id and content) is kept as it is, so the SVG keeps its node (render.syncImages).
+   */
+  applyRemoteImages(pageId: string, images: readonly ImageInput[]): boolean {
+    const page = this.pages.get(pageId) || this.pageOnDemand(pageId);
+    if (!page) return false;
+    const had = new Map(page.images.map(i => [i.id, i]));
+    const list: PageImage[] = [];
+    for (const input of images) {
+      if (list.length >= MAX_PAGE_IMAGES) break;
+      const old = input && typeof input.id === 'string' ? had.get(input.id) : undefined;
+      if (old && old.x === input.x && old.y === input.y && old.w === input.w && old.h === input.h && old.src === input.src) {
+        list.push(old);
+        continue;
+      }
+      try { list.push(createImage(input)); } catch (_) { /* skipped */ }
+    }
+    if (!list.length && !page.images.length) return true;
+    page.images = list;
+    this.remoteDirty = true;
+    this.emit(pageId);
+    return true;
+  }
+
+  /**
    * Upsert the peer's blank pages and delete those in `removed`. Local blank
    * pages the peer does not know yet are kept.
    */
@@ -552,7 +825,7 @@ export class NotesDoc {
       seen.add(meta.id);
       let page = this.pages.get(meta.id);
       if (!page || page.kind !== 'blank') {
-        page = { id: meta.id, kind: 'blank', after, paper: 'plain', strokes: [] };
+        page = { id: meta.id, kind: 'blank', after, paper: 'plain', strokes: [], images: [] };
         this.pages.set(meta.id, page);
       }
       page.after = after;
@@ -584,6 +857,8 @@ export class NotesDoc {
     for (const [id, page] of this.pages) {
       if (!filled.has(id) && page.strokes.length) this.applyRemoteStrokes(id, []);
     }
+    const remoteImages = new Map(pages.map(p => [p.id, Array.isArray(p.images) ? p.images : []]));
+    for (const id of this.pages.keys()) this.applyRemoteImages(id, remoteImages.get(id) || []);
     // Local commands refer to content that was just replaced.
     this.history.clear();
     this.savedTop = null;
@@ -592,32 +867,44 @@ export class NotesDoc {
 
   // Serialization
 
-  /** Marp decks write version 1 (readable by the HTML decks), PDF decks version 2. */
+  /**
+   * Marp decks write version 1 (readable by the HTML decks), PDF decks version 2. A file with
+   * images is version 3 (either deck), so builds without images reject it instead of losing them.
+   */
   toJSON(): NotesJSON {
     const pages: PageJSON[] = [];
+    let images = false;
     for (const id of this.sequence()) {
       const page = this.pages.get(id);
-      if (!page || (page.kind === 'slide' && !page.strokes.length)) continue;
+      if (!page || (page.kind === 'slide' && !page.strokes.length && !page.images.length)) continue;
       const out: PageJSON = { id: page.id, kind: page.kind, strokes: [] };
       if (page.kind === 'slide') out.slide = page.slide;
       else { out.after = page.after; out.paper = page.paper; }
       out.strokes = page.strokes.map(serializeStroke);
+      if (page.images.length) {
+        out.images = page.images.map(serializeImage);
+        images = true;
+      }
       pages.push(out);
     }
-    for (const k of this.kept) pages.push(structuredClone(k));
+    for (const k of this.kept) {
+      pages.push(structuredClone(k));
+      if (Array.isArray(k.images) && k.images.length) images = true;
+    }
     const d = this.deck;
     if (d.source !== 'pdf') {
-      return { format: FORMAT, version: 1, deck: { title: d.title, slides: d.slides, size: [d.size[0], d.size[1]] }, pages };
+      return { format: FORMAT, version: images ? 3 : 1, deck: { title: d.title, slides: d.slides, size: [d.size[0], d.size[1]] }, pages };
     }
     const deck: DeckJSON = { source: 'pdf', title: d.title, slides: d.slides, size: [d.size[0], d.size[1]] };
     if (d.sha256) deck.sha256 = d.sha256;
     if (d.pageSizes) deck.pageSizes = d.pageSizes.map(s => [s[0], s[1]]);
-    return { format: FORMAT, version: 2, deck, pages };
+    return { format: FORMAT, version: images ? 3 : 2, deck, pages };
   }
 
-  /** Any content a notes file would keep: strokes, blank pages, or pages kept beyond the deck. */
+  /** Any content a notes file would keep: strokes, images, blank pages, or pages kept beyond the deck. */
   hasNotes(): boolean {
-    return this.blankOrder.length > 0 || this.kept.length > 0 || [...this.pages.values()].some(p => p.strokes.length > 0);
+    return this.blankOrder.length > 0 || this.kept.length > 0 ||
+      [...this.pages.values()].some(p => p.strokes.length > 0 || p.images.length > 0);
   }
 
   /**
@@ -632,17 +919,19 @@ export class NotesDoc {
     const pages = new Map<string, Page>();
     for (let n = 1; n <= this.deck.slides; n++) {
       const id = this.slideId(n);
-      pages.set(id, { id, kind: 'slide', slide: n, strokes: [] });
+      pages.set(id, { id, kind: 'slide', slide: n, strokes: [], images: [] });
     }
     const blanks: BlankPage[] = [];
-    const strokeIds = new Set<string>();
+    const strokeIds = new Set<string>(); // stroke and image ids
+    // Image limits over the whole file; kept pages count too (they are saved back).
+    const budget: ImageBudget = { count: 0, chars: 0 };
     const seenPages = new Set<string>();
     const kept: PageJSON[] = [];
     const notices: string[] = [];
     let rawPages = file.pages || [];
     if (!Array.isArray(rawPages)) { warnings.push('Skipped the pages: not a list'); rawPages = []; }
     for (const raw of rawPages) {
-      const page = parsePage(raw, this.deck, warnings, strokeIds, kept, notices);
+      const page = parsePage(raw, this.deck, warnings, strokeIds, kept, notices, budget);
       if (!page) continue;
       if (seenPages.has(page.id)) { warnings.push(`Skipped duplicate page ${page.id}`); continue; }
       seenPages.add(page.id);
@@ -672,24 +961,61 @@ export interface StrokeStyle {
   size?: number | ((s: Stroke) => number) | null;
 }
 
-/** What changes from `before` to `after`: removed ids, added strokes (with index), replaced strokes by id. */
-function strokeDelta(before: readonly Stroke[], after: readonly Stroke[]): {
-  removedIds: Set<string>;
-  added: { stroke: Stroke; index: number }[];
-  oldById: Map<string, Stroke>;
-  newById: Map<string, Stroke>;
-} {
+/** The delta of one list (strokes or images) for a command; see listChange. */
+interface ListChange<T> {
+  /** Added and replaced items (checked before the command runs). */
+  checked: T[];
+  /** Added items. */
+  added: T[];
+  redo(list: T[]): T[];
+  undo(list: T[]): T[];
+}
+
+/**
+ * The change of a list from `before` to `after` as a delta - items removed
+ * (with their z-index), added (with their index) and replaced (same id) -
+ * applied to whatever the list holds then; null if nothing changes (also
+ * for an order-only change). Computed outside the closures, so the undo
+ * entry does not keep whole-page maps alive.
+ */
+function listChange<T extends { id: string }>(before: readonly T[], after: readonly T[]): ListChange<T> | null {
+  if (sameArray(before, after)) return null;
   const beforeById = new Map(before.map(s => [s.id, s]));
   const afterIds = new Set(after.map(s => s.id));
   const removedIds = new Set(before.filter(s => !afterIds.has(s.id)).map(s => s.id));
-  const added: { stroke: Stroke; index: number }[] = [];
-  const oldById = new Map<string, Stroke>(), newById = new Map<string, Stroke>();
+  const added: { item: T; index: number }[] = [];
+  const oldById = new Map<string, T>(), newById = new Map<string, T>();
   after.forEach((s, index) => {
     const old = beforeById.get(s.id);
-    if (!old) added.push({ stroke: s, index });
+    if (!old) added.push({ item: s, index });
     else if (old !== s) { oldById.set(s.id, old); newById.set(s.id, s); }
   });
-  return { removedIds, added, oldById, newById };
+  if (!removedIds.size && !added.length && !newById.size) return null;
+  const addedIds = new Set(added.map(a => a.item.id));
+  const insertAll = (list: T[], items: { item: T; index: number }[]): T[] => {
+    const present = new Set(list.map(s => s.id));
+    for (const { item, index } of items) {
+      if (present.has(item.id)) continue;
+      list.splice(Math.min(index, list.length), 0, item);
+      present.add(item.id);
+    }
+    return list;
+  };
+  let removedAt: { item: T; index: number }[] = [];
+  return {
+    checked: [...added.map(a => a.item), ...newById.values()],
+    added: added.map(a => a.item),
+    redo: list => {
+      removedAt = [];
+      list.forEach((s, index) => { if (removedIds.has(s.id)) removedAt.push({ item: s, index }); });
+      const kept = list.filter(s => !removedIds.has(s.id)).map(s => newById.get(s.id) || s);
+      return insertAll(kept, added);
+    },
+    undo: list => {
+      const kept = list.filter(s => !addedIds.has(s.id)).map(s => oldById.get(s.id) || s);
+      return insertAll(kept, removedAt);
+    },
+  };
 }
 
 function checkPaper(paper: string): void {
@@ -712,6 +1038,11 @@ export function serializeStroke(s: Stroke): StrokeJSON {
     id: s.id, tool: s.tool, color: s.color, size: s.size,
     points: s.points.map(p => [round(p[0], 2), round(p[1], 2), round(p[2], 3)]),
   };
+}
+
+/** An image as stored: position and size rounded to 2 decimals. */
+export function serializeImage(i: PageImage): ImageJSON {
+  return { id: i.id, x: round(i.x, 2), y: round(i.y, 2), w: round(i.w, 2), h: round(i.h, 2), src: i.src };
 }
 
 /** Throw unless `data` is a notes file of a version this model reads. */
@@ -755,11 +1086,16 @@ function beyondDeck(raw: PageJSON, deck: Deck): number | null {
 
 function parsePage(
   raw: PageJSON | null, deck: Deck, warnings: string[], strokeIds: Set<string>, kept: PageJSON[], notices: string[],
+  budget: ImageBudget,
 ): Page | null {
   if (!raw || typeof raw.id !== 'string') { warnings.push('Skipped a page without id'); return null; }
   const beyond = beyondDeck(raw, deck);
   if (beyond !== null) {
     kept.push(structuredClone(raw));
+    for (const i of Array.isArray(raw.images) ? raw.images : []) {
+      budget.count++;
+      budget.chars += i && typeof i.src === 'string' ? i.src.length : 0;
+    }
     const what = raw.kind === 'slide' ? `notes for slide ${beyond}` : `blank page ${raw.id} after slide ${beyond}`;
     notices.push(`Kept ${what} (deck has ${deck.slides}): saved with the notes, not shown`);
     return null;
@@ -772,7 +1108,7 @@ function parsePage(
       return null;
     }
     // The id follows this deck (s<n> or p<n>), so v1 Marp notes load onto PDF pages.
-    page = { id: `${slidePrefix(deck.source)}${n}`, kind: 'slide', slide: n, strokes: [] };
+    page = { id: `${slidePrefix(deck.source)}${n}`, kind: 'slide', slide: n, strokes: [], images: [] };
   } else if (raw.kind === 'blank') {
     const after = Number(raw.after);
     if (!inDeck(after, deck)) {
@@ -780,7 +1116,7 @@ function parsePage(
       return null;
     }
     const paper = PAPERS.includes(raw.paper as Paper) ? raw.paper as Paper : 'plain';
-    page = { id: raw.id, kind: 'blank', after, paper, strokes: [] };
+    page = { id: raw.id, kind: 'blank', after, paper, strokes: [], images: [] };
   } else {
     warnings.push(`Skipped page ${raw.id} of unknown kind ${(raw as { kind?: string }).kind}`);
     return null;
@@ -798,5 +1134,24 @@ function parsePage(
     }
   }
   page.strokes = strokes;
+  // Images: checked like strokes, within the limits per page and per file.
+  const images: PageImage[] = [];
+  let rawImages: unknown = raw.images || [];
+  if (!Array.isArray(rawImages)) { warnings.push(`Skipped the images of page ${raw.id}: not a list`); rawImages = []; }
+  for (const i of rawImages as ImageJSON[]) {
+    try {
+      const image = createImage(strokeIds.has(i && i.id) ? { ...i, id: null } : i);
+      if (images.length >= MAX_PAGE_IMAGES) throw new Error(`more than ${MAX_PAGE_IMAGES} images on the page`);
+      if (budget.count >= MAX_DOC_IMAGES) throw new Error(`more than ${MAX_DOC_IMAGES} images in the file`);
+      if (budget.chars + image.src.length > MAX_DOC_IMAGE_CHARS) throw new Error('too much image data in the file');
+      budget.count++;
+      budget.chars += image.src.length;
+      strokeIds.add(image.id);
+      images.push(image);
+    } catch (e) {
+      warnings.push(`Skipped an image on page ${raw.id}: ${(e as Error).message}`);
+    }
+  }
+  page.images = images;
   return page;
 }

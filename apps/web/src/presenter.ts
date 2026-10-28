@@ -9,7 +9,9 @@
  * - a finished edit sends its page's changes at the end of the task (one
  *   message per page, however many changes): all strokes the first time,
  *   then a delta of the new and changed strokes plus the order of the ids
- *   (strokes are immutable, so a changed stroke is a new object);
+ *   (strokes are immutable, so a changed stroke is a new object); a page
+ *   whose images changed also sends them all, with the image data only for
+ *   images the audience does not have yet;
  * - page changes and blank pages (insert, delete, paper) go at once;
  * - a PDF over PRESENTER_LIMITS.pdfBytes is not mirrored: the audience says so;
  * - the stroke being written and the laser go at most every LIVE_MS, the
@@ -18,7 +20,7 @@
  * Nothing is sent while the audience window is closed. Erasing and moving
  * strokes show on the audience when they are done, not while they happen.
  */
-import type { NotesDoc, PdfFile, Point, Stroke, StrokeTool } from '@inkslide/annotate';
+import type { NotesDoc, PageImage, PdfFile, Point, Stroke, StrokeTool } from '@inkslide/annotate';
 import { serializeStroke } from '@inkslide/annotate/model';
 import { commonPrefix, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import type { LiveStroke } from '@inkslide/annotate/render';
@@ -70,6 +72,8 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
   let flushQueued = false;
   /** The strokes the audience has, per page it got them for (by id; the objects tell what changed). */
   const sent = new Map<string, Map<string, Stroke>>();
+  /** The images the audience has, per page (by id; the objects tell what changed). */
+  const sentImages = new Map<string, Map<string, PageImage>>();
   /** All notes went out in this task: the 'pages' event of the same load needs nothing more. */
   let notesSent = false;
   /** The stroke being written: what the audience has, and what it should get. */
@@ -87,8 +91,25 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
     }
   };
 
+  /** A page's images for the audience if they changed: all of them, the data of new ones only. */
+  function sendImages(d: NotesDoc, id: string): void {
+    const images = d.images(id);
+    const had = sentImages.get(id) || new Map<string, PageImage>();
+    if (images.length === had.size && images.every(i => had.get(i.id) === i)) return;
+    post({
+      type: 'images', page: id,
+      images: images.map(i => {
+        const known = had.get(i.id);
+        const base = { id: i.id, x: i.x, y: i.y, w: i.w, h: i.h };
+        return known && known.src === i.src ? base : { ...base, src: i.src };
+      }),
+    });
+    sentImages.set(id, new Map(images.map(i => [i.id, i])));
+  }
+
   /** A page's strokes for the audience: all of them the first time, else what changed. */
   function sendPage(d: NotesDoc, id: string): void {
+    sendImages(d, id);
     const strokes = d.strokes(id);
     const had = sent.get(id);
     if (!had) {
@@ -106,6 +127,9 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
   function postNotes(d: NotesDoc): void {
     dirty.clear();
     sent.clear();
+    // The notes carry the images: the audience has those of every page now.
+    sentImages.clear();
+    for (const [id, p] of d.pages) if (p.images.length) sentImages.set(id, new Map(p.images.map(i => [i.id, i])));
     post({ type: 'notes', notes: JSON.stringify(d.toJSON()) });
     notesSent = true;
     timers.queueMicrotask(() => { notesSent = false; });
@@ -164,6 +188,7 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
 
   function sendAll(): void {
     sent.clear();
+    sentImages.clear();
     if (!active) return;
     if (!file || !doc) {
       post({ type: 'close' });

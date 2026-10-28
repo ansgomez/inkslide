@@ -15,19 +15,31 @@
  *   strokes   all strokes of one page (its first change after open, notes or a reload)
  *   delta     a page's later changes: the ids of all its strokes in order, and only
  *             the strokes that are new or changed (the others are known by id)
+ *   images    all images of one page, in order; `src` only for images the audience
+ *             does not have yet (a moved image keeps its id and data)
  *   blanks    every blank page: id, the page it follows, its paper
  *   live      the stroke being written: points from index `from` on
  *   live-end  the stroke being written is gone (finished or dropped)
  *   laser     laser points on a page
  */
 import type { Point, StrokeTool, Vec2 } from './geometry';
-import type { Paper, StrokeJSON } from './model';
+import { imageType, MAX_COLOR_LENGTH, MAX_DOC_IMAGE_CHARS, MAX_ID_LENGTH, MAX_PAGE_IMAGES, type Paper, type StrokeJSON } from './model';
 
 /** One blank page as sent to the audience. */
 export interface BlankMeta {
   id: string;
   after: number;
   paper: Paper;
+}
+
+/** An image of an `images` message; `src` is left out when the audience has the image (by id). */
+export interface RemoteImage {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  src?: string;
 }
 
 /** A message from the presenter window to the audience window (see the module comment). */
@@ -38,6 +50,7 @@ export type PresenterMessage =
   | { type: 'page'; page: string }
   | { type: 'strokes'; page: string; strokes: StrokeJSON[] }
   | { type: 'delta'; page: string; order: string[]; strokes: StrokeJSON[] }
+  | { type: 'images'; page: string; images: RemoteImage[] }
   | { type: 'blanks'; blanks: BlankMeta[] }
   | { type: 'live'; page: string; tool: StrokeTool; color: string; size: number; from: number; points: Point[] }
   | { type: 'live-end' }
@@ -54,13 +67,17 @@ export const PRESENTER_LIMITS = Object.freeze({
   /** Characters of the notes text (as the desktop app's notes files). */
   notesChars: 256 * 2 ** 20,
   title: 1000,
-  id: 200,
-  color: 100,
+  /** Ids (as the model keeps them, MAX_ID_LENGTH) and page ids. */
+  id: MAX_ID_LENGTH,
+  color: MAX_COLOR_LENGTH,
   /** Strokes on one page, and points in one message (all strokes together). */
   strokes: 100_000,
   points: 10_000_000,
   blanks: 10_000,
   laserPoints: 1000,
+  /** Images of one page, and characters of image data in one message (the notes file's limits). */
+  images: MAX_PAGE_IMAGES,
+  imageChars: MAX_DOC_IMAGE_CHARS,
 });
 
 const PAPER_IDS: readonly string[] = ['plain', 'lined', 'grid'];
@@ -106,6 +123,19 @@ function stroke(v: unknown, budget: { left: number }): StrokeJSON {
   };
 }
 
+/** An image of an `images` message; its data (when sent) is counted against `budget`. */
+function image(v: unknown, budget: { left: number }): RemoteImage {
+  if (!isObject(v)) return fail('image');
+  if (!finite(v.x) || !finite(v.y) || !finite(v.w) || !finite(v.h) || v.w <= 0 || v.h <= 0) fail('image geometry');
+  const out: RemoteImage = { id: text(v.id, PRESENTER_LIMITS.id, 'image id'), x: v.x as number, y: v.y as number, w: v.w as number, h: v.h as number };
+  if (v.src !== undefined) {
+    if (!imageType(v.src) || (v.src as string).length > budget.left) fail('image data');
+    budget.left -= (v.src as string).length;
+    out.src = v.src as string;
+  }
+  return out;
+}
+
 /**
  * A presenter message rebuilt from `value` with only its known fields;
  * throws if it is not one (unknown type, wrong field types, too large).
@@ -138,6 +168,10 @@ export function parsePresenterMessage(value: unknown): PresenterMessage {
         order: list(v.order, PRESENTER_LIMITS.strokes, 'order').map(id => text(id, PRESENTER_LIMITS.id, 'stroke id')),
         strokes: list(v.strokes, PRESENTER_LIMITS.strokes, 'strokes').map(s => stroke(s, budget)),
       };
+    }
+    case 'images': {
+      const budget = { left: PRESENTER_LIMITS.imageChars };
+      return { type: 'images', page: page(), images: list(v.images, PRESENTER_LIMITS.images, 'images').map(i => image(i, budget)) };
     }
     case 'blanks':
       return {

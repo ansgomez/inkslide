@@ -53,8 +53,9 @@ it to the next edge. The choice is remembered.
 | Highlighter | H | Wide, transparent strokes, always drawn under the pen ink. Shift for a straight line. |
 | Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it (− and + make each selected stroke one size thinner or thicker); Delete or Backspace removes it; Esc deselects. Copy, cut, paste and duplicate: see below. |
 | Laser pointer | L | A red trail that fades out. Never saved. |
-| Stroke eraser | E | Removes every stroke it touches. |
-| Partial eraser | Shift+E | Erases only the parts of strokes it touches. |
+| Stroke eraser | E | Removes every stroke it touches, and images it touches when it erases no stroke. |
+| Partial eraser | Shift+E | Erases only the parts of strokes it touches. Images stay. |
+| Snapshot | C | Drag over an area to copy it as an image: the PDF page, the paper and the ink. Paste it with Ctrl/Cmd+V, on any page. See below. |
 
 **Colors:** black, white, red, blue, green, orange, yellow and purple. The pen and the
 highlighter each remember their own color.
@@ -88,8 +89,41 @@ else was copied after the strokes, Ctrl/Cmd+V pastes nothing. In the desktop app
 copied strokes stay within the app window.
 
 **Undo** (Ctrl/Cmd+Z) and **redo** (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y) work per finished stroke,
-erase, move or page change. **Clear page** (trash button) removes all ink on the page and can
-be undone.
+erase, move or page change. **Clear page** (trash button) removes all ink and images on the
+page and can be undone.
+
+## Snapshots
+
+The snapshot tool (camera button, **C**) copies an area of the page as an image. Drag a
+rectangle over it with the pen, the mouse or a finger; on release the area is copied with
+everything it shows (the PDF page or the paper of a blank page, images and ink), a message
+says so, and the tool you used before comes back. A tap, or an area thinner than a few
+points, copies nothing; a second finger cancels the drag, as does **Esc**, which also leaves
+the tool.
+
+**Ctrl/Cmd+V** or the paste button then pastes the image on the shown page: another page, a
+blank page or another PDF opened in the same window. It is placed like pasted strokes: where
+the area was on a page of the same size (a little down and to the right over the same image),
+scaled with the page on a page of another size, and always on the page. A pasted image lies
+below all ink, so you can write on it. Select it with the select tool (tap it where no stroke
+is, or drag a box or lasso around it) to move, copy, cut, duplicate or delete it. The stroke
+eraser (also the pen's eraser end) removes an image only in a stroke that erases no ink: erasing
+what you wrote on a snapshot leaves the snapshot, and an image the stroke already went over comes
+back once it reaches ink. To remove the image itself, erase over a part without ink, or select it
+and press Delete. The partial eraser never touches images. Each paste, move, erase and delete is
+one undo step. Images are saved in the notes and exported and printed with them.
+
+The image has the resolution of the page on screen (at least twice the screen size, at most
+2048 pixels on its long side). Where the platform allows it, the snapshot also goes on the
+system clipboard as a PNG, to paste into other programs; the desktop app does not let its pages
+write to the system clipboard themselves, so there the snapshot stays within the app window. An image copied in
+another program pastes into Inkslide with Ctrl/Cmd+V too (centered, at most 80 % of the page).
+
+A page holds at most 32 images and a PDF's notes at most 256, with about 24 MB of image data in
+all; a paste beyond that is refused with a message. Notes with images are saved in a newer
+format (version 3) that Inkslide versions without snapshots refuse to open rather than lose the
+images; see [NOTES-FORMAT.md](NOTES-FORMAT.md#images). In the browser, very large snapshots can
+exceed the site storage of browsers without OPFS; the app then reports that saving failed.
 
 ## Pen, touch and mouse
 
@@ -258,7 +292,8 @@ checksum, page count or page size). The notes load anyway.
 ## Export
 
 The PDF button (desktop: File → Export Annotated PDF…, Ctrl/Cmd+E) writes a copy of the PDF
-with your ink as vector graphics and the blank pages inserted, named `<name>-notes.pdf`. The
+with your ink as vector graphics, pasted images (below the ink) and the blank pages inserted,
+named `<name>-notes.pdf`. The
 text of the original stays selectable. The original PDF cannot be overwritten. On the web, the
 file is saved through a save dialog where the browser has one; on an iPad (or another touch
 device) the share sheet opens, where **Save to Files** stores it; otherwise it is downloaded.

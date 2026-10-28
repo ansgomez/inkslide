@@ -21,9 +21,14 @@
  * as ImageBitmaps (LRU, at most 6 and 160 MB): the page shown plus the pages before and
  * after it, pre-rendered at their fit size, so a page turn only draws a
  * bitmap.
+ *
+ * Snapshots (the snapshot tool's capture) are drawn by snapshot.ts: the PDF
+ * area rendered again by PDF.js at the page's render scale (at least 2 px
+ * per CSS px, at most 2048 px on the long side), then paper, images and ink.
  */
 import {
-  createAnnotator, NotesDoc, type Annotator, type NotesBackup, type Paper, type PdfFile, type Surface,
+  createAnnotator, NotesDoc, type Annotator, type Capture, type NotesBackup, type Paper, type PdfFile, type RectLike,
+  type Surface,
 } from '@inkslide/annotate';
 import { deckFromPdf, loadNotesText, sha256Hex } from '@inkslide/annotate/io';
 import { PAPERS, pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
@@ -46,6 +51,7 @@ import { flushSave, pageTurned, saveState, scheduleSave, setSaveTarget } from '.
 import type { AppAdapter } from './platform';
 import type { ViewerMirror } from './presenter';
 import { printPageImages } from './print';
+import { captureArea, importImage, snapshotScale } from './snapshot';
 
 /** Gap around the fitted page, CSS px. */
 const PAGE_MARGIN = 6;
@@ -475,6 +481,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     svg.dataset.pageId = pageId;
     const surface: PageSurface = { pageId, svg, layer, paper, n: s.doc.ownerSlide(pageId) ?? undefined, blank };
     render.syncLayer(layer, s.doc.strokes(pageId));
+    render.syncImages(layer, s.doc.images(pageId));
     s.app.surfaces.set(pageId, surface);
     s.app.input.attach(surface);
     return surface;
@@ -526,6 +533,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         surface.n = page.after;
         if (surface.paper) surface.paper.set(page.paper);
         render.syncLayer(surface.layer, s.doc.strokes(id));
+        render.syncImages(surface.layer, s.doc.images(id));
       }
     }
     if (s.current && !s.doc.getPage(s.current) && pdfPageNumber(s.current) === null) show('p1');
@@ -621,6 +629,24 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
       e.preventDefault();
       e.stopImmediatePropagation();
     }
+  }
+
+  // ── Snapshots ────────────────────────────────────────────────
+
+  /** Area `rect` of page `pageId` of a session as an image (AnnotatorOptions.captureArea). */
+  async function snapshotArea(ses: Session, pageId: string, rect: RectLike): Promise<Capture | null> {
+    const page = ses.doc.getPage(pageId);
+    const paper = page && page.kind === 'blank' ? page.paper : null;
+    const n = paper ? null : pdfPageNumber(pageId);
+    if (!paper && n === null) return null;
+    const size = ses.doc.pageSize(pageId);
+    const f = fitFor(pageId);
+    const zoom = s === ses && ses.current === pageId ? view.zoom : 1;
+    const scale = snapshotScale(rect, renderScale(size, f.scale, dpr(), zoom), f.scale);
+    return captureArea({
+      size, paper, strokes: ses.doc.strokes(pageId), images: ses.doc.images(pageId),
+      background: n === null ? undefined : (canvas, area, k) => ses.pdf.renderArea(canvas, n, area, k),
+    }, rect, scale);
   }
 
   // ── Open / close ─────────────────────────────────────────────
@@ -733,7 +759,12 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     : liveInk.renderer;
 
   function startSession(file: PdfFile, sha256: string, pdf: PdfDoc, doc: NotesDoc): void {
-    const app = createAnnotator({ doc, activeSurface: () => currentSurface(), renderer });
+    const app = createAnnotator({
+      doc, activeSurface: () => currentSurface(), renderer,
+      captureArea: (pageId, rect) => snapshotArea(ses, pageId, rect),
+      importImage,
+      notify: (text, kind) => { banner(text, kind); },
+    });
     app.sync = mirror;
     const ses: Session = {
       file, sha256, pdf, doc, app, current: 'p1', defaultPaper: storedPaper(), hasBackup: false,

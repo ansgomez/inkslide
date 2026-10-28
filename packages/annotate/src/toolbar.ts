@@ -25,6 +25,8 @@ export const ICONS: Record<string, string> = {
   eraser: '<path d="M6 11l6-6 5 5-6 6H8z"/><path d="M9 8l5 5"/><path d="M2.5 20c3-2.5 5-2.5 7 0s5 2.5 7 0 3.5-1.5 5-1"/>',
   // Partial eraser: eraser biting a gap out of a line.
   partial: '<path d="M9 13l5-5 4 4-5 5z" fill="currentColor"/><path d="M2 20h7M16 20h6"/>',
+  // Snapshot: a camera.
+  snapshot: '<path d="M3 8.5A1.5 1.5 0 014.5 7h2.7l1.6-2.5h6.4L16.8 7h2.7A1.5 1.5 0 0121 8.5v10a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 18.5z"/><circle cx="12" cy="13.5" r="3.6"/>',
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/>',
   redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/>',
   clear: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13M9 7V4h6v3"/>',
@@ -112,6 +114,8 @@ export interface ToolbarHost {
   redo(): void;
   clearPage(): void;
   activeStrokes(): readonly Stroke[];
+  /** Images of the shown page (Clear page is enabled for them too). */
+  activeImages?(): readonly unknown[];
   deleteSelection(): void;
   select(sel: null): void;
   copySelection(): void;
@@ -122,6 +126,8 @@ export interface ToolbarHost {
   canPaste(): boolean;
   /** Ctrl/Cmd+C, X or V; false leaves the key to the browser (see Annotator.clipboardKey). */
   clipboardKey(kind: 'copy' | 'cut' | 'paste'): boolean;
+  /** Leave the snapshot tool for the tool used before it (Escape). */
+  leaveSnapshot?(): void;
 }
 
 /** Builds a group for an app; called once by createToolbar. */
@@ -218,7 +224,7 @@ registerGroup('history', app => ({
   items: [
     { id: 'undo', title: 'Undo (Ctrl/Cmd+Z)', icon: 'undo', onClick: () => app.undo(), disabled: () => !app.doc.history.canUndo() },
     { id: 'redo', title: 'Redo (Ctrl/Cmd+Shift+Z)', icon: 'redo', onClick: () => app.redo(), disabled: () => !app.doc.history.canRedo() },
-    { id: 'clear', title: 'Clear page (undoable)', icon: 'clear', onClick: () => app.clearPage(), disabled: () => !app.activeStrokes().length },
+    { id: 'clear', title: 'Clear page (undoable)', icon: 'clear', onClick: () => app.clearPage(), disabled: () => !app.activeStrokes().length && !(app.activeImages && app.activeImages().length) },
   ],
 }));
 
@@ -452,7 +458,10 @@ export const letter = (e: KeyboardEvent, k: string): boolean => e.code === `Key$
 const labelOrCode = (e: KeyboardEvent, k: string): boolean =>
   e.key.toLowerCase() === k || (!/^[a-z]$/i.test(e.key) && letter(e, k));
 
-/** Shortcuts of annotate mode: tools, sizes 1–4 and [ ], undo/redo, copy/cut/paste/duplicate, delete or drop the selection. */
+/**
+ * Shortcuts of annotate mode: tools, sizes 1–4 and [ ], undo/redo, copy/cut/paste/duplicate, delete or
+ * drop the selection, leave the snapshot tool.
+ */
 export function defaultKeymap(app: ToolbarHost): Shortcut[] {
   const mod = (e: KeyboardEvent): boolean => (e.ctrlKey || e.metaKey) && !e.altKey;
   // Copy, cut, paste and duplicate act on the shown page: not while the overview covers it.
@@ -470,7 +479,7 @@ export function defaultKeymap(app: ToolbarHost): Shortcut[] {
     { test: e => edit(e, 'v'), run: () => app.clipboardKey('paste') },
     { test: e => edit(e, 'd') && !!app.selection, run: () => app.duplicateSelection() },
     tool('p', 'pen'), tool('h', 'highlighter'), tool('s', 'selector'),
-    tool('l', 'laser'), tool('e', 'eraser'), tool('e', 'partial', true),
+    tool('l', 'laser'), tool('e', 'eraser'), tool('e', 'partial', true), tool('c', 'snapshot'),
     ...SIZE_PRESETS.map((step, i): Shortcut => ({
       test: e => (e.code === `Digit${i + 1}` || e.code === `Numpad${i + 1}`) && noMods(e),
       run: () => app.setSize(step),
@@ -482,6 +491,7 @@ export function defaultKeymap(app: ToolbarHost): Shortcut[] {
     })),
     { test: e => (e.key === 'Delete' || e.key === 'Backspace') && !!app.selection, run: () => app.deleteSelection() },
     { test: e => e.key === 'Escape' && !!app.selection, run: () => app.select(null) },
+    { test: e => e.key === 'Escape' && app.tool === 'snapshot' && !!app.leaveSnapshot, run: () => app.leaveSnapshot!() },
   ];
 }
 
