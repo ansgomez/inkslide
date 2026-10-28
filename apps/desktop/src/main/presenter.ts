@@ -174,11 +174,30 @@ export function readingWithin<T>(p: Promise<T>, ms: number): Promise<T | null> {
 }
 
 /**
+ * `read`, but while one call is still running (a hung page: readingWithin
+ * gives up waiting but cannot cancel it) later calls get that same call
+ * instead of starting another, so calls cannot pile up.
+ */
+export function oneAtATime<T>(read: () => Promise<T>): () => Promise<T> {
+  let running: Promise<T> | null = null;
+  return () => {
+    if (!running) {
+      const p = read();
+      running = p;
+      const done = (): void => { if (running === p) running = null; };
+      p.then(done, done);
+    }
+    return running;
+  };
+}
+
+/**
  * The Wayland audience follower: main calls tick() every AUDIENCE_POLL_MS. It
  * reads the audience page, the app page only when the audience reading
  * changed (or every APP_READ_EVERY checks), and makes the audience window
  * full screen when audienceAutoFullScreen says so. A tick still running is
- * not overlapped; a reading that hangs counts as unknown after `timeoutMs`.
+ * not overlapped; a reading that hangs counts as unknown after `timeoutMs`,
+ * and no new one is asked of that page until it answers (oneAtATime).
  */
 export function audienceFollower(deps: AudienceFollowerDeps, timeoutMs = AUDIENCE_READ_TIMEOUT_MS): { tick(): Promise<void> } {
   let state = AUTO_FULL_SCREEN_START;
@@ -186,14 +205,16 @@ export function audienceFollower(deps: AudienceFollowerDeps, timeoutMs = AUDIENC
   let ticks = 0;
   let app: ScreenReport | null = null;
   let lastAudience = '';
+  const readAudience = oneAtATime(() => deps.readAudience());
+  const readApp = oneAtATime(() => deps.readApp());
   return {
     async tick() {
       if (busy || !deps.alive()) return;
       busy = true;
       try {
-        const audience = await readingWithin(deps.readAudience(), timeoutMs);
+        const audience = await readingWithin(readAudience(), timeoutMs);
         const key = JSON.stringify(audience);
-        if (!app || key !== lastAudience || ticks % APP_READ_EVERY === 0) app = await readingWithin(deps.readApp(), timeoutMs);
+        if (!app || key !== lastAudience || ticks % APP_READ_EVERY === 0) app = await readingWithin(readApp(), timeoutMs);
         lastAudience = key;
         ticks++;
         if (!deps.alive()) return;
