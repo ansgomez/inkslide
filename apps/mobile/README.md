@@ -30,7 +30,14 @@ smoke test.
   content, whatever it is called. Import (toolbar) brings notes from elsewhere (e.g. a Marp
   deck or the desktop's `*.pdf.notes.json`).
 - **Export:** iPadOS: the share sheet (Save to Files, AirDrop, Mail, Print), as the PWA does.
-  Android: the system save dialog (Storage Access Framework), opened by `save_pdf`.
+  Android: the system save dialog (Storage Access Framework), opened by `save_pdf`. A local
+  file (the desktop target) is replaced through a temp file next to it, flushed and renamed,
+  so a failed export leaves an existing file as it was (and a link there is replaced, not
+  written through). A content URI has no rename: `save_pdf` writes it in place (mode `"wt"`),
+  but only once the whole PDF is decoded and checked in memory, so nothing on the app's side
+  can fail after the old content is gone. What is left: if the provider itself fails
+  mid-write (storage full, a cloud provider disconnecting), an existing document the user
+  chose to replace keeps a partial PDF, and the export reports the error.
 - **Shared files:** the PDF goes to a temp file (iPadOS `tmp/<name>.pdf`, Android
   `cache/share/<name>.pdf`; path separators, `:` and control characters (C0, DEL, C1) in the name become
   `_`, and it is cut to 200 bytes). Android removes it once the share plugin has copied it;

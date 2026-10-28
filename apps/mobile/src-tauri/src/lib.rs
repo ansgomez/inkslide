@@ -155,12 +155,30 @@ fn temp_name(file: &str) -> String {
 /// it, then flushes the directory so the rename survives a power cut.
 fn write_atomic(dir: &Path, file: &str, data: &[u8]) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
-    let tmp = dir.join(temp_name(file));
+    replace_file(&dir.join(file), |f| f.write_all(data))
+}
+
+/// Replaces the file `path` with what `fill` writes: into a new temp file next
+/// to it (flushed to disk), renamed over it, then the folder flushed so the
+/// rename survives a power cut. Until the rename `path` is untouched, so a
+/// failed write leaves it as it was (and the temp file is removed). A link at
+/// `path` is replaced, not written through.
+fn replace_file(path: &Path, fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("not a file: {}", path.display())));
+    };
+    // At most 100 bytes of the name, so the temp file's name stays below 255.
+    let name = name.to_string_lossy();
+    let mut end = name.len().min(100);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let tmp = dir.join(temp_name(&name[..end]));
     let result = (|| {
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(data)?;
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        fill(&mut f)?;
         f.sync_all()?;
-        fs::rename(&tmp, dir.join(file))
+        fs::rename(&tmp, path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -168,6 +186,16 @@ fn write_atomic(dir: &Path, file: &str, data: &[u8]) -> std::io::Result<()> {
     }
     sync_dir(dir);
     Ok(())
+}
+
+/// The local path of a file the save dialog picked, or the target back if it
+/// has none (an Android content URI).
+fn local_path(target: FilePath) -> Result<PathBuf, FilePath> {
+    match target {
+        FilePath::Path(path) => Ok(path),
+        FilePath::Url(url) if url.scheme() == "file" => url.to_file_path().map_err(|()| FilePath::Url(url)),
+        other => Err(other),
+    }
 }
 
 /// fsync of a directory, where the platform supports it (not on Windows, where
@@ -389,16 +417,31 @@ async fn remove_share_file<R: Runtime>(app: AppHandle<R>, shared: State<'_, Shar
 /// Asks where to save a PDF (see [`payload`]; the name is the suggested one)
 /// and writes it there; false if the user cancelled. The target is only the
 /// file picked in this dialog, which the web view never sees.
+///
+/// A local file (the desktop) is replaced through a temp file and a rename
+/// (`replace_file`): a failed export leaves an existing file as it was.
+/// A content URI (Android's Storage Access Framework) has no rename or atomic
+/// replace, so it is opened with mode "wt" and written in place, but only once
+/// the whole PDF is decoded and checked in memory (`payload`): nothing can fail
+/// on our side after the old content is gone. Left: if the provider itself
+/// fails mid-write (storage full, a cloud provider disconnecting), the file
+/// picked in the dialog keeps a partial PDF and the export reports the error.
+/// The dialog creates a new document unless the user picks an existing one.
 #[tauri::command]
 async fn save_pdf<R: Runtime>(app: AppHandle<R>, request: Request<'_>) -> Result<bool, String> {
     let (bytes, name) = request_payload(&request)?;
     let Some(target) = app.dialog().file().set_file_name(name).add_filter("PDF", &["pdf"]).blocking_save_file() else {
         return Ok(false);
     };
-    let mut opts = OpenOptions::new();
-    opts.read(false).write(true).create(true).truncate(true);
-    let mut file = app.fs().open(target, opts).map_err(|e| e.to_string())?;
-    file.write_all(&bytes).and_then(|()| file.sync_all()).map_err(|e| e.to_string())?;
+    match local_path(target) {
+        Ok(path) => replace_file(&path, |f| f.write_all(&bytes)).map_err(|e| e.to_string())?,
+        Err(uri) => {
+            let mut opts = OpenOptions::new();
+            opts.read(false).write(true).create(true).truncate(true);
+            let mut file = app.fs().open(uri, opts).map_err(|e| e.to_string())?;
+            file.write_all(&bytes).and_then(|()| file.sync_all()).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(true)
 }
 
@@ -641,6 +684,56 @@ mod tests {
         assert!(write_atomic(&dir, "d", b"x").is_err());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// save_pdf to a local file: a failed export leaves the existing file as it was.
+    #[test]
+    fn a_failed_replace_keeps_the_old_file() {
+        let dir = std::env::temp_dir().join(format!("inkslide-test-{}", temp_name("r")));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("deck-notes.pdf");
+        fs::write(&path, b"old PDF").unwrap();
+        // The write fails half way (storage full, say).
+        let failed = replace_file(&path, |f| {
+            f.write_all(b"%PDF-1.7 half")?;
+            Err(std::io::Error::other("No space left on device"))
+        });
+        assert_eq!(failed.unwrap_err().to_string(), "No space left on device");
+        assert_eq!(fs::read(&path).unwrap(), b"old PDF");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1); // no temp file left
+        replace_file(&path, |f| f.write_all(b"new PDF")).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new PDF");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        // A long name (the temp file's name is cut) and a folder that is not there.
+        let long = dir.join(format!("{}.pdf", "講".repeat(80)));
+        replace_file(&long, |f| f.write_all(b"x")).unwrap();
+        assert_eq!(fs::read(&long).unwrap(), b"x");
+        assert!(replace_file(&dir.join("missing").join("a.pdf"), |f| f.write_all(b"x")).is_err());
+        assert!(replace_file(Path::new("/"), |f| f.write_all(b"x")).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A link where the export goes is replaced; the file it points to is not written.
+    #[cfg(unix)]
+    #[test]
+    fn replace_does_not_write_through_a_link() {
+        let dir = std::env::temp_dir().join(format!("inkslide-test-{}", temp_name("l")));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("important.docx"), b"keep").unwrap();
+        std::os::unix::fs::symlink(dir.join("important.docx"), dir.join("deck-notes.pdf")).unwrap();
+        replace_file(&dir.join("deck-notes.pdf"), |f| f.write_all(b"%PDF")).unwrap();
+        assert_eq!(fs::read(dir.join("important.docx")).unwrap(), b"keep");
+        assert!(fs::symlink_metadata(dir.join("deck-notes.pdf")).unwrap().file_type().is_file());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_targets() {
+        assert_eq!(local_path(FilePath::from(PathBuf::from("/home/me/a.pdf"))).ok(), Some(PathBuf::from("/home/me/a.pdf")));
+        let file_url = "file:///home/me/My%20deck.pdf".parse::<FilePath>().unwrap();
+        assert_eq!(local_path(file_url).ok(), Some(PathBuf::from("/home/me/My deck.pdf")));
+        let uri = "content://com.android.providers.downloads.documents/document/42".parse::<FilePath>().unwrap();
+        assert_eq!(local_path(uri.clone()).err().map(|f| f.to_string()), Some(uri.to_string()));
     }
 
     #[test]

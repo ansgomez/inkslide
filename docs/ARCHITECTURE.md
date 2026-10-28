@@ -101,7 +101,7 @@ The front end never touches files itself. It talks to a `PlatformAdapter`
 | `openPdf(path?)` | open dialog, or a granted path | file input, or a same-site URL (`?pdf=`) | system picker (`pick_file`, `read_picked` commands) |
 | `readNotes(pdf, sha256)` | sidecar or app storage, the newer one | OPFS, else `localStorage` | app data `notes/<sha256>.notes.json` (`read_notes` command) |
 | `writeNotes(pdf, text, sha256)` | atomic write, sidecar or app storage | OPFS, else `localStorage` | `write_notes` command: temp file, then rename |
-| `exportPdf(bytes, name)` | save dialog, atomic write | save picker, share sheet, else download | iOS: share sheet; Android: save dialog (`save_pdf` command) |
+| `exportPdf(bytes, name)` | save dialog, atomic write | save picker, share sheet, else download | iOS: share sheet; Android: save dialog (`save_pdf` command; a local file atomically, a content URI written in place once the PDF is ready) |
 | `print(bytes, name)` | the PDF itself in a hidden window, system dialog | – (page images, `window.print()`) | share sheet |
 | `importNotes()`, `confirm()` | native dialogs | file input, `window.confirm` | native dialogs |
 | `onOpenRequest(fn)` | second instance, macOS `open-file`, recent files | – | – |
