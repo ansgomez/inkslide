@@ -50,6 +50,15 @@ describe('inkedPages', () => {
     const doc = new NotesDoc(pdfDeck());
     expect(inkedPages(serializeNotes(doc))).toEqual({ pages: 0, blank: 0 });
   });
+  it('counts pages with only images', () => {
+    const image = { id: 'i', x: 0, y: 0, w: 1, h: 1, src: 'data:image/png;base64,iVBORw0KGgo=' };
+    const file = { format: 'marp-notes', version: 3, deck: { source: 'pdf', title: 't', slides: 2, size: [960, 540] }, pages: [
+      { id: 'p1', kind: 'slide', slide: 1, strokes: [], images: [image] },
+      { id: 'b-1', kind: 'blank', after: 1, paper: 'plain', strokes: [], images: [image] },
+      { id: 'p2', kind: 'slide', slide: 2, strokes: [], images: 'x' },
+    ] };
+    expect(inkedPages(JSON.stringify(file))).toEqual({ pages: 1, blank: 1 });
+  });
   it('counts nothing in a file that cannot be read', () => {
     expect(inkedPages('{ not json')).toEqual({ pages: 0, blank: 0 });
     expect(inkedPages('{"format":"other"}')).toEqual({ pages: 0, blank: 0 });

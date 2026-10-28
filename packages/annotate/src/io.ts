@@ -93,13 +93,14 @@ export function parseNotes(text: string): NotesJSON {
   return data;
 }
 
-/** PDF pages and blank pages with at least one stroke in a notes file (recent files list); none if it cannot be read. */
+/** PDF pages and blank pages with at least one stroke or image in a notes file (recent files list); none if it cannot be read. */
 export function inkedPages(text: string): { pages: number; blank: number } {
   const counts = { pages: 0, blank: 0 };
   try {
     const { pages } = parseNotes(text);
     for (const p of Array.isArray(pages) ? pages : []) {
-      if (!p || !Array.isArray(p.strokes) || !p.strokes.length) continue;
+      const some = (list: unknown): boolean => Array.isArray(list) && list.length > 0;
+      if (!p || (!some(p.strokes) && !some(p.images))) continue;
       if (p.kind === 'blank') counts.blank++;
       else counts.pages++;
     }
