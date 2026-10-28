@@ -90,13 +90,17 @@ describe('limits of a notes file', () => {
     const dot = { tool: 'pen', color: '#000', size: 1, points: [[1, 1]] };
     doc.load(file([page(new Array(MAX_STROKES).fill(dot))]));
     expect(doc.strokes('p1')).toHaveLength(MAX_STROKES);
-  });
+  }, 30000); // loads 200 000 strokes
 
   it('lists at most MAX_WARNINGS warnings, then how many more', () => {
     const doc = new NotesDoc(pdfDeck());
-    const { warnings } = loadNotes(doc, file([page(new Array(MAX_WARNINGS + 5).fill(null))]));
+    // Two deck warnings, then one per page (slide 0 is no page).
+    const pages = Array.from({ length: MAX_PAGES }, () => ({ id: 'p0', kind: 'slide', slide: 0 }));
+    const { warnings } = loadNotes(doc, { ...file(pages), deck: { source: 'pdf', title: 'other.pdf', slides: 4, size: [960, 540] } });
+    expect(MAX_PAGES + 2).toBeGreaterThan(MAX_WARNINGS);
     expect(warnings).toHaveLength(MAX_WARNINGS + 1);
-    expect(warnings[MAX_WARNINGS]).toBe('…and 5 more warnings');
+    expect(warnings[0]).toMatch(/other\.pdf/);
+    expect(warnings[MAX_WARNINGS]).toBe(`…and ${MAX_PAGES + 2 - MAX_WARNINGS} more warnings`);
   });
 
   it('quotes at most 100 characters of a file\'s text in a warning', () => {
