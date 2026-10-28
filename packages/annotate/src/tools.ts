@@ -230,14 +230,18 @@ function sameStroke(a: Stroke, b: Stroke): boolean {
 /**
  * Works on a private copy of the page; one command on release, which applies
  * only what was erased to the page as it is then (edits made meanwhile stay).
- * The stroke eraser also removes the images it touches; the partial eraser
- * leaves images alone (it cannot cut a piece out of one).
+ * The stroke eraser also removes the images it touches, but only in a
+ * gesture that erases no stroke: erasing ink written on a snapshot leaves
+ * the snapshot (an image erased earlier in the gesture comes back once a
+ * stroke is hit). The partial eraser leaves images alone (it cannot cut a
+ * piece out of one).
  */
 function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): Tool {
   const partial = id === 'partial';
   let working: Stroke[] | null = null, last: Point | null = null;
   let images: PageImage[] | null = null; // the page's images left by this gesture
   let erasedImages: Set<string> | null = null;
+  let inkErased = false; // this gesture erased a stroke: images are spared
   let base: Map<string, Stroke> | null = null; // the page's strokes at down
   let origin: Map<string, string> | null = null; // piece id -> id of the stroke it was cut from
 
@@ -258,14 +262,6 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
 
   function eraseAlong(surface: Surface, a: Point, b: Point): void {
     const r = radius(surface);
-    if (!partial && images!.some(i => rectHitsSegment(i, a, b, r))) {
-      images = images!.filter(i => {
-        if (!rectHitsSegment(i, a, b, r)) return true;
-        erasedImages!.add(i.id);
-        return false;
-      });
-      if (R.syncImages) R.syncImages(surface.layer, images);
-    }
     let changed = false;
     const next: Stroke[] = [];
     for (const s of working!) {
@@ -287,6 +283,23 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       working = next;
       R.syncLayer(surface.layer, working);
     }
+    if (partial) return;
+    if (changed && !inkErased) {
+      inkErased = true;
+      if (erasedImages!.size) { // the images this gesture took come back
+        erasedImages!.clear();
+        images = app.doc.images(surface.pageId).slice();
+        if (R.syncImages) R.syncImages(surface.layer, images);
+      }
+    }
+    if (!inkErased && images!.some(i => rectHitsSegment(i, a, b, r))) {
+      images = images!.filter(i => {
+        if (!rectHitsSegment(i, a, b, r)) return true;
+        erasedImages!.add(i.id);
+        return false;
+      });
+      if (R.syncImages) R.syncImages(surface.layer, images);
+    }
   }
 
   return {
@@ -295,6 +308,7 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       working = app.doc.strokes(surface.pageId).slice();
       images = app.doc.images(surface.pageId).slice();
       erasedImages = new Set();
+      inkErased = false;
       base = new Map(working.map(s => [s.id, s]));
       origin = new Map();
       last = pt;

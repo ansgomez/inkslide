@@ -412,18 +412,45 @@ describe('images', () => {
     return images;
   };
 
-  it('the stroke eraser removes an image it touches, in the same command as strokes', () => {
-    doc.pages.set('p1', [hline('a', 0)]);
+  it('the stroke eraser removes an image it touches when the gesture erases no ink', () => {
     doc.imgs.set('p1', [pic('i'), pic('far', 600, 600)]);
     const shown = withSync();
     const { eraser } = createTools(app, R.r);
-    eraser.down!(surface, [50, -20, 0.5]);
-    eraser.move!(surface, [250, 210, 0.5]); // through stroke a, ends in image i
+    eraser.down!(surface, [250, 210, 0.5]);
+    eraser.move!(surface, [260, 220, 0.5]);
     expect(shown).toEqual(['far']);
     eraser.up!(surface, null);
     expect(doc.calls).toHaveLength(1);
-    expect(doc.calls[0].args[0]).toEqual([]);
     expect((doc.calls[0].args[2] as PageImage[]).map(i => i.id)).toEqual(['far']);
+  });
+
+  it('erasing ink written on an image leaves the image, in one command', () => {
+    doc.pages.set('p1', [hline('a', 220, 200, 300)]); // ink on image i
+    doc.imgs.set('p1', [pic('i')]);
+    const shown = withSync();
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [250, 220, 0.5]);
+    eraser.move!(surface, [260, 240, 0.5]);
+    expect(shown).toEqual([]);
+    eraser.up!(surface, null);
+    expect(doc.calls).toHaveLength(1);
+    expect(doc.calls[0].args[0]).toEqual([]);
+    expect(doc.calls[0].args[2]).toBeUndefined(); // images untouched
+    expect(doc.images('p1').map(i => i.id)).toEqual(['i']);
+  });
+
+  it('an image erased before the gesture reaches ink comes back', () => {
+    doc.pages.set('p1', [hline('a', 240, 200, 300)]);
+    doc.imgs.set('p1', [pic('i')]);
+    const shown = withSync();
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [210, 205, 0.5]); // on the image, away from the ink
+    expect(shown).toEqual(['']);
+    eraser.move!(surface, [250, 240, 0.5]); // now through the stroke
+    expect(shown).toEqual(['', 'i']);
+    eraser.up!(surface, null);
+    expect(doc.calls[0].args[0]).toEqual([]);
+    expect(doc.images('p1').map(i => i.id)).toEqual(['i']);
   });
 
   it('removes only the images it erased from the page as it is on release', () => {

@@ -53,7 +53,7 @@ it to the next edge. The choice is remembered.
 | Highlighter | H | Wide, transparent strokes, always drawn under the pen ink. Shift for a straight line. |
 | Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it (− and + make each selected stroke one size thinner or thicker); Delete or Backspace removes it; Esc deselects. Copy, cut, paste and duplicate: see below. |
 | Laser pointer | L | A red trail that fades out. Never saved. |
-| Stroke eraser | E | Removes every stroke it touches, and every image. |
+| Stroke eraser | E | Removes every stroke it touches, and images it touches when it erases no stroke. |
 | Partial eraser | Shift+E | Erases only the parts of strokes it touches. Images stay. |
 | Snapshot | C | Drag over an area to copy it as an image: the PDF page, the paper and the ink. Paste it with Ctrl/Cmd+V, on any page. See below. |
 
@@ -106,9 +106,12 @@ blank page or another PDF opened in the same window. It is placed like pasted st
 the area was on a page of the same size (a little down and to the right over the same image),
 scaled with the page on a page of another size, and always on the page. A pasted image lies
 below all ink, so you can write on it. Select it with the select tool (tap it where no stroke
-is, or drag a box or lasso around it) to move, copy, cut, duplicate or delete it; the stroke
-eraser removes it, the partial eraser does not touch it. Each paste, move and delete is one undo
-step. Images are saved in the notes and exported and printed with them.
+is, or drag a box or lasso around it) to move, copy, cut, duplicate or delete it. The stroke
+eraser (also the pen's eraser end) removes an image only in a stroke that erases no ink: erasing
+what you wrote on a snapshot leaves the snapshot, and an image the stroke already went over comes
+back once it reaches ink. To remove the image itself, erase over a part without ink, or select it
+and press Delete. The partial eraser never touches images. Each paste, move, erase and delete is
+one undo step. Images are saved in the notes and exported and printed with them.
 
 The image has the resolution of the page on screen (at least twice the screen size, at most
 2048 pixels on its long side). Where the platform allows it, the snapshot also goes on the
