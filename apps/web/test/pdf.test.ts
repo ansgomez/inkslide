@@ -103,6 +103,23 @@ describe('PDF render queue', () => {
   });
 });
 
+describe('closing a PDF', () => {
+  it('cancels the render running and those queued: none is left waiting', async () => {
+    vi.stubGlobal('createImageBitmap', async () => ({}));
+    const pdf = await openPdfDoc(new Uint8Array());
+    const canvas = document.createElement('canvas');
+    const running = pdf.renderBitmap(1, 1, PRIORITY.current).promise;
+    const queued = [pdf.renderBitmap(2, 1, PRIORITY.neighbor).promise, pdf.renderInto(canvas, 3, 1)];
+    await tick();
+    expect(fake.state.renders.map(r => r.n)).toEqual([1]);
+    await pdf.destroy();
+    for (const p of [running, ...queued]) expect(isCancelled(await p.catch(e => e))).toBe(true);
+    expect(fake.state.renders[0].cancelled).toBe(true);
+    await tick();
+    expect(fake.state.renders.map(r => r.n)).toEqual([1]); // nothing else rendered
+  });
+});
+
 describe('opening a PDF', () => {
   it('asks PDF.js for a few pages at a time, not every page at once', async () => {
     fake.state.pages = 500;

@@ -6,7 +6,8 @@
  * rendered at a time (PDF.js work happens in the worker; the queue keeps
  * prefetching from delaying the page the user waits for). A queued render
  * can be moved up (a pre-render becomes the page on screen) or cancelled
- * (queued: dropped; running: PDF.js's RenderTask is cancelled).
+ * (queued: dropped; running: PDF.js's RenderTask is cancelled). destroy()
+ * cancels every render queued or running, so none is left waiting.
  *
  * All pages are fetched up front, PAGE_FETCHES at a time: their sizes make
  * the notes document (deckFromPdf), and PDF.js keeps the page objects anyway.
@@ -56,6 +57,8 @@ interface Job {
   priority: number;
   seq: number;
   run(): Promise<void>;
+  /** Cancel it, queued or running (the document closes): its promise rejects (isCancelled). */
+  drop(): void;
 }
 
 /** A queued render (renderBitmap). */
@@ -131,6 +134,8 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
 
   const queue: Job[] = [];
   let seq = 0, running = false, destroyed = false;
+  /** The job running, if any. */
+  let current: Job | null = null;
   /** Pages rendered last, oldest first. */
   const rendered: number[] = [];
 
@@ -148,7 +153,9 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
     while (queue.length && !destroyed) {
       queue.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
       const job = queue.shift()!;
+      current = job;
       try { await job.run(); } catch (_) { /* reported through the job's promise */ }
+      current = null;
     }
     running = false;
   }
@@ -163,6 +170,11 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
         reject(ctl.cancelled ? cancelledError() : e);
         throw e;
       }),
+      drop() {
+        ctl.cancelled = true;
+        reject(cancelledError()); // no effect if it already settled
+        if (ctl.task) ctl.task.cancel();
+      },
     };
     queue.push(job);
     void pump();
@@ -236,7 +248,8 @@ export async function openPdfDoc(bytes: Uint8Array): Promise<PdfDoc> {
     },
     async destroy() {
       destroyed = true;
-      queue.length = 0;
+      for (const job of queue.splice(0)) job.drop();
+      current?.drop();
       await task.destroy();
     },
   };
