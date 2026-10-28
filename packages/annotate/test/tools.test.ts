@@ -107,6 +107,38 @@ describe('pen and highlighter', () => {
     expect(s.points[s.points.length - 1]).toEqual([30, 0, 0.8]);
   });
 
+  it('smooths only the new points each frame, and skips a frame without new points', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => frames.push(fn));
+    // Points that count how often their x is read.
+    let reads = 0;
+    const counted = (x: number): Point => {
+      const p: Point = [0, 0, 0.5];
+      Object.defineProperty(p, 0, { get: () => { reads++; return x; } });
+      return p;
+    };
+    const { pen } = createTools(app, R.r);
+    pen.down!(surface, counted(0));
+    for (let i = 1; i <= 500; i++) {
+      pen.move!(surface, counted(i));
+      frames.shift()!(0);
+    }
+    expect(R.live.update).toHaveBeenCalledTimes(501);
+    // Smoothing the whole stroke every frame would read each point about 500 times on average.
+    expect(reads / 501).toBeLessThan(10);
+    // A frame with nothing new draws nothing.
+    pen.move!(surface, counted(501));
+    const frame = frames.shift()!;
+    frame(0);
+    reads = 0;
+    frame(0);
+    expect(reads).toBe(0);
+    expect(R.live.update).toHaveBeenCalledTimes(502);
+    pen.up!(surface, null);
+    const { points } = doc.calls[0].args[0] as Stroke;
+    expect(points[points.length - 1]).toEqual([501, 0, 0.5]);
+  });
+
   it('Shift draws a straight line', () => {
     const { highlighter } = createTools(app, R.r);
     highlighter.down!(surface, [0, 0, 0.5], { shiftKey: true });

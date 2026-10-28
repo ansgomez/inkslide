@@ -8,7 +8,7 @@
  * snapshot tool only hands the area to the host (ToolHost.snapshot).
  */
 import {
-  isLasso, pathLength, rectHitsSegment, rectPolygon, rectsInPolygon, splitByEraser, smoothPoints, strokeHitsSegment,
+  isLasso, pathLength, rectHitsSegment, rectPolygon, rectsInPolygon, splitByEraser, createSmoother, strokeHitsSegment,
   strokesInPolygon, type BBox, type Point, type RectLike, type Stroke, type StrokeTool, type XY,
 } from './geometry';
 import { createStroke, type NotesDoc, type PageImage } from './model';
@@ -167,16 +167,20 @@ function sizeOf(app: ToolHost, tool: SizedTool, surface: Surface): number {
 function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
   let raw: Point[] | null = null, live: ReturnType<ToolRenderer['liveStroke']> | null = null;
   let frame = 0, straight = false, size = 0;
+  // Smooths only the points added since the last frame; `drawn`: what the live stroke shows.
+  let smoother = createSmoother(), drawn = { points: 0, straight: false };
 
   const current = () => {
     const r = raw!;
-    const pts = straight ? [r[0], r[r.length - 1]] : smoothPoints(r);
+    const pts = straight ? [r[0], r[r.length - 1]] : smoother.points(r);
     return { tool: id, color: app.prefs[id].color, size, points: pts };
   };
-  // Redraw the live stroke at most once per frame (moves only collect points).
+  // Redraw the live stroke at most once per frame (moves only collect points), and only if it changed.
   const draw = (): void => {
     frame = 0;
-    if (raw) live!.update({ id: 'live', ...current() });
+    if (!raw || (raw.length === drawn.points && straight === drawn.straight)) return;
+    drawn = { points: raw.length, straight };
+    live!.update({ id: 'live', ...current() });
   };
   const stopFrame = (): void => {
     if (frame) cancelAnimationFrame(frame);
@@ -187,6 +191,8 @@ function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
     id,
     down(surface, pt, e) {
       raw = [pt];
+      smoother = createSmoother();
+      drawn = { points: 0, straight: false };
       size = sizeOf(app, id, surface);
       straight = !!(e && e.shiftKey);
       live = R.liveStroke(surface.layer, id);

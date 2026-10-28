@@ -57,20 +57,47 @@ const pt3 = (p: readonly number[]): Point => [p[0], p[1], p[2]];
 
 /** Exponential smoothing of raw input; keeps the first and last raw point. */
 export function smoothPoints(raw: readonly Point[], streamline = STREAMLINE): Point[] {
-  if (!raw.length) return [];
+  return createSmoother(streamline).points(raw);
+}
+
+/** smoothPoints of a stroke being written, one call per frame (see createSmoother). */
+export interface Smoother {
+  points(raw: readonly Point[]): Point[];
+}
+
+/**
+ * smoothPoints for a list of raw points that only grows (the stroke being
+ * written). Each smoothed point depends only on the one before and its raw
+ * point, so the smoothed points so far are kept and each call reads only the
+ * raw points added since; only the last point (it ends on the last raw point)
+ * is redone. A call without new points returns the previous result. A
+ * shorter list starts over.
+ */
+export function createSmoother(streamline = STREAMLINE): Smoother {
   const t = 1 - streamline;
-  const out: Point[] = [pt3(raw[0])];
-  for (let i = 1; i < raw.length; i++) {
-    const prev = out[out.length - 1];
-    const p = raw[i];
-    if (dist(prev, p) < MIN_GAP) continue;
-    out.push([lerp(prev[0], p[0], t), lerp(prev[1], p[1], t), lerp(prev[2], p[2], t)]);
-  }
-  const last = pt3(raw[raw.length - 1]);
-  const tail = out[out.length - 1];
-  if (out.length > 1 && dist(tail, last) < MIN_GAP) out[out.length - 1] = last;
-  else if (dist(tail, last) > 0) out.push(last);
-  return out;
+  let out: Point[] = [];
+  let read = 0;
+  let result: Point[] = [];
+  return {
+    points(raw) {
+      if (raw.length === read && read) return result;
+      if (raw.length < read) { out = []; read = 0; }
+      if (!raw.length) return [];
+      if (!read) { out = [pt3(raw[0])]; read = 1; }
+      for (; read < raw.length; read++) {
+        const prev = out[out.length - 1];
+        const p = raw[read];
+        if (dist(prev, p) < MIN_GAP) continue;
+        out.push([lerp(prev[0], p[0], t), lerp(prev[1], p[1], t), lerp(prev[2], p[2], t)]);
+      }
+      result = out.slice();
+      const last = pt3(raw[raw.length - 1]);
+      const tail = result[result.length - 1];
+      if (result.length > 1 && dist(tail, last) < MIN_GAP) result[result.length - 1] = last;
+      else if (dist(tail, last) > 0) result.push(last);
+      return result;
+    },
+  };
 }
 
 // ── Width ──────────────────────────────────────────────────────
