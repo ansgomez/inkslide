@@ -214,5 +214,18 @@ export async function sameFile(a: string, b: string): Promise<boolean> {
   }
 }
 
+/**
+ * Write an exported PDF to `file` (from the save dialog), crash-safe. Never
+ * over `openPdf`, the PDF that is open (also not through a link or another
+ * spelling). A symlink at `file` is replaced by the export, not written
+ * through: its target may be any file (a link in a downloaded folder).
+ */
+export async function writeExport(file: string, bytes: Uint8Array, openPdf: string | null): Promise<void> {
+  if (openPdf && await sameFile(file, openPdf)) {
+    throw new Error('The export cannot replace the PDF that is open; choose another name.');
+  }
+  await writeFileAtomic(file, bytes, () => false);
+}
+
 /** Create `dir` and its parents if needed. */
 export const ensureDir = (dir: string): Promise<string | undefined> => mkdir(dir, { recursive: true });

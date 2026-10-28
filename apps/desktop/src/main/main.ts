@@ -29,7 +29,7 @@ import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 import { checkDroppedPdf, checkPath, checkText, PathGrants } from './access';
 import { CrashRecovery } from './crashRecovery';
-import { MAX_PDF_BYTES, MAX_TEXT_BYTES, readFileLimited, sameFile, writeFileAtomic } from './fsutil';
+import { MAX_PDF_BYTES, MAX_TEXT_BYTES, readFileLimited, writeExport } from './fsutil';
 import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
 import { buildMenu } from './menu';
 import {
@@ -540,10 +540,7 @@ function start(): void {
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     });
     if (r.canceled || !r.filePath) return false;
-    if (current && await sameFile(r.filePath, current)) {
-      throw new Error('The export cannot replace the PDF that is open; choose another name.');
-    }
-    await writeFileAtomic(r.filePath, bytes);
+    await writeExport(r.filePath, bytes, current);
     return true;
   });
 

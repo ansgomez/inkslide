@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { canWriteIn, MAX_TEXT_BYTES, readFileChecked, readFileLimited, RefusedLinkError, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
+import { canWriteIn, MAX_TEXT_BYTES, readFileChecked, readFileLimited, RefusedLinkError, renameRetrying, sameFile, writeExport, writeFileAtomic } from '../src/main/fsutil';
 import {
   backupBeforeSave, BACKUP_MIN_AGE_MS, hasBackup, isUsableNotes, notesWritePath, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup,
   cleanupNotesStore, keepUnreadableFor, OLD_COPIES_MAX_AGE_DAYS,
@@ -177,6 +177,32 @@ describe('readFileLimited', () => {
     const fifo = join(dir, 'fifo.pdf');
     if (spawnSync('mkfifo', [fifo]).status !== 0) return; // no mkfifo
     await expect(readFileLimited(fifo, 1024)).rejects.toThrow(/not a file/); // without waiting for a writer
+  });
+});
+
+describe('writeExport', () => {
+  it('never replaces the open PDF, also not through a link', async () => {
+    const dir = tempDir();
+    const pdf = pdfIn(dir);
+    await expect(writeExport(pdf, new Uint8Array([1]), pdf)).rejects.toThrow(/cannot replace the PDF that is open/);
+    if (process.platform !== 'win32') {
+      symlinkSync(pdf, join(dir, 'link.pdf'));
+      await expect(writeExport(join(dir, 'link.pdf'), new Uint8Array([1]), pdf)).rejects.toThrow(/open/);
+    }
+    expect(readFileSync(pdf)).toEqual(Buffer.from(pdfBytes));
+    await writeExport(join(dir, 'out.pdf'), new Uint8Array([1, 2]), pdf);
+    expect([...readFileSync(join(dir, 'out.pdf'))]).toEqual([1, 2]);
+  });
+  it.skipIf(process.platform === 'win32')('replaces a link at the destination instead of writing to its target', async () => {
+    const dir = tempDir();
+    const important = join(dir, 'important-document.docx');
+    writeFileSync(important, 'keep me');
+    const dest = join(dir, 'deck-notes.pdf');
+    symlinkSync(important, dest);
+    await writeExport(dest, new TextEncoder().encode('%PDF-export'), null);
+    expect(readFileSync(important, 'utf8')).toBe('keep me');
+    expect(lstatSync(dest).isSymbolicLink()).toBe(false);
+    expect(readFileSync(dest, 'utf8')).toBe('%PDF-export');
   });
 });
 

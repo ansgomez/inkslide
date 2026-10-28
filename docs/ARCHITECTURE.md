@@ -142,7 +142,9 @@ Main checks every call:
   256 MB; PDFs 2 GB). Main reads a PDF, an imported notes file or a sidecar through one
   handle: only a regular file (no FIFO or device), its size taken from that handle, and the
   read stops at the limit (`fsutil.ts`, `readFileLimited`, `readFileChecked`);
-- an export may not overwrite the open PDF (also not through a link or another letter case).
+- an export may not overwrite the open PDF (also not through a link or another letter case),
+  and a symlink at the chosen name is replaced by the export, never written through
+  (`writeExport`).
 
 Main to renderer messages: `openRequest` (queued in the preload until the front end
 subscribes), `menuCommand` (Export, Import notes), `closeRequest`, and for presenter mode
