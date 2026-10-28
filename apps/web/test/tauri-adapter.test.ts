@@ -32,7 +32,7 @@ function fakeBackend() {
   const share = { dir: '/tmp' };
   /** The file save_pdf's own dialog picks; null: cancelled. */
   const save: { target: string | null } = { target: null };
-  /** What pick_file's picker returns (null: cancelled); picked files are the only ones read_picked reads. */
+  /** What pick_file's picker returns (null: cancelled); picked files are the only ones read_picked reads, each once per pick. */
   const picker: { next: string | null } = { next: null };
   const picked = new Set<string>();
   /** Names write_share_file wrote and remove_share_file has not removed: the only ones share_pdf shares. */
@@ -76,7 +76,7 @@ function fakeBackend() {
       }
       case 'read_picked': {
         const id = args.id as string;
-        if (!picked.has(id)) throw 'not a file picked in this session';
+        if (!picked.delete(id)) throw 'not a file picked in this session'; // read once per pick
         const data = files.get(id);
         if (!data) throw `failed to open file: ${id}`;
         return numberArrays.on ? Array.from(data) : data.slice().buffer;
@@ -284,6 +284,22 @@ describe('files', () => {
   it('can not read a file that was not picked in this session', async () => {
     backend.files.set('/home/me/secret.pdf', new Uint8Array([1]));
     await expect(createTauriAdapter('android').openPdf('/home/me/secret.pdf')).rejects.toBe('not a file picked in this session');
+  });
+
+  it('reads each picked file once, right after picking it (read_picked consumes the pick)', async () => {
+    const id = 'content://x/document/7';
+    backend.files.set(id, new Uint8Array([1]));
+    backend.picker.next = id;
+    const a = createTauriAdapter('android');
+    expect((await a.openPdf())!.bytes).toEqual(new Uint8Array([1]));
+    expect((await a.openPdf())!.bytes).toEqual(new Uint8Array([1])); // the same file again: picked again
+    backend.files.set(id, new TextEncoder().encode('{}'));
+    expect((await a.importNotes!())!.text).toBe('{}');
+    expect(backend.commands()).toEqual(['pick_file', 'read_picked', 'pick_file', 'read_picked', 'pick_file', 'read_picked']);
+    // Every read_picked follows its own pick_file.
+    backend.calls.forEach((c, i) => { if (c.cmd === 'read_picked') expect(backend.calls[i - 1]!.cmd).toBe('pick_file'); });
+    // An id already read is refused, also when handed back.
+    await expect(a.openPdf(id)).rejects.toBe('not a file picked in this session');
   });
 
   it('passes on read_picked refusing a file over its limit', async () => {

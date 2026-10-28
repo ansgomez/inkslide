@@ -9,7 +9,7 @@
  * which take a notes key or a checked file name, never a free path.
  * pick_file opens the system picker (iOS hands over a copy in the app's inbox
  * or a security-scoped URL, Android a content:// URI) and read_picked reads
- * only files picked that way. Next to such a file the app can rarely write,
+ * only files picked that way, each once. Next to such a file the app can rarely write,
  * so there are no sidecars: notes live in the app data directory, keyed by
  * the PDF's SHA-256 (`notes/<sha256>.notes.json`; read_notes, write_notes).
  * write_share_file and remove_share_file use the share folder, and share_pdf
@@ -164,7 +164,7 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
     return orCancel(invoke<string | null>('pick_file', { kind }), null);
   }
 
-  /** Bytes of a file picked in this session (read_picked refuses any other). */
+  /** Bytes of a file picked in this session and not read yet (read_picked refuses any other). */
   async function readPicked(id: string): Promise<Uint8Array> {
     const [, { invoke }] = await use();
     return responseBytes(await invoke<ArrayBuffer | number[]>('read_picked', { id }));
@@ -202,7 +202,8 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
     platform: 'tauri',
 
     async openPdf(given) {
-      // `given`: only a file picked in this session can be read again.
+      // `given`: only a file picked in this session and not read yet (read_picked reads each pick
+      // once); the app hands none (no initialPath or onOpenRequest), so every open picks first.
       const path = given || (await pick('pdf'));
       if (!path) return null;
       return { path: null, name: nameFromPath(path, 'document.pdf'), bytes: await readPicked(path) };

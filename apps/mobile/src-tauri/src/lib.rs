@@ -10,7 +10,8 @@
 //! Every file access goes through the commands below instead:
 //!
 //! - `pick_file` opens the system picker and remembers the chosen file;
-//!   `read_picked` reads only files picked that way in this session.
+//!   `read_picked` reads only files picked that way in this session, once
+//!   per pick (the list of picks not read yet is short and bounded).
 //! - `read_notes` / `write_notes` take a notes key, not a path, and stay in
 //!   `notes/` of the app data directory.
 //! - `write_share_file` / `remove_share_file` take a checked file name and
@@ -31,7 +32,7 @@
 //! apart on top of these calls.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -286,20 +287,33 @@ impl Kind {
     }
 }
 
-/// Files picked with `pick_file` in this session, and their kind, by the id handed to the web view.
+/// How many picked files wait to be read at most; the oldest is forgotten
+/// first. The web view reads each one right after picking it.
+const MAX_PICKED: usize = 8;
+
+/// Files picked with `pick_file` and not read yet, with their kind, by the id
+/// handed to the web view (oldest first). Reading one consumes it: a file is
+/// read once per pick, and the list stays short over a long session.
 #[derive(Default)]
-struct Picked(Mutex<HashMap<String, (FilePath, Kind)>>);
+struct Picked(Mutex<VecDeque<(String, FilePath, Kind)>>);
 
 impl Picked {
     fn add(&self, file: FilePath, kind: Kind) -> String {
         let id = file.to_string();
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), (file, kind));
+        let mut picked = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        picked.retain(|(other, _, _)| *other != id);
+        if picked.len() >= MAX_PICKED {
+            picked.pop_front();
+        }
+        picked.push_back((id.clone(), file, kind));
         id
     }
 
-    fn get(&self, id: &str) -> Result<(FilePath, Kind), String> {
-        let picked = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        picked.get(id).cloned().ok_or_else(|| "not a file picked in this session".to_owned())
+    fn take(&self, id: &str) -> Result<(FilePath, Kind), String> {
+        let mut picked = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let i = picked.iter().position(|(other, _, _)| other == id).ok_or("not a file picked in this session")?;
+        let (_, file, kind) = picked.remove(i).expect("an index from position()");
+        Ok((file, kind))
     }
 }
 
@@ -341,10 +355,10 @@ fn read_all(open: impl FnOnce(OpenOptions) -> std::io::Result<fs::File>, limit: 
 }
 
 /// The bytes of a file picked with `pick_file` in this session (at most
-/// [`Kind::max_bytes`] of its kind); any other path is refused.
+/// [`Kind::max_bytes`] of its kind), once per pick; any other path is refused.
 #[tauri::command]
 async fn read_picked<R: Runtime>(app: AppHandle<R>, picked: State<'_, Picked>, id: String) -> Result<Response, String> {
-    let (file, kind) = picked.get(&id)?;
+    let (file, kind) = picked.take(&id)?;
     let read = read_all(|opts| app.fs().open(file.clone(), opts), kind.max_bytes());
     #[cfg(target_os = "ios")]
     let _ = app.fs().stop_accessing_security_scoped_resource(file);
@@ -630,14 +644,42 @@ mod tests {
     #[test]
     fn reads_only_picked_files() {
         let picked = Picked::default();
-        assert!(picked.get("/etc/passwd").is_err());
+        assert!(picked.take("/etc/passwd").is_err());
         let id = picked.add(FilePath::from(PathBuf::from("/home/me/deck.pdf")), Kind::Pdf);
         assert_eq!(id, "/home/me/deck.pdf");
-        assert_eq!(picked.get(&id).map(|(_, kind)| kind), Ok(Kind::Pdf));
-        assert!(picked.get("/home/me/other.pdf").is_err());
+        assert!(picked.take("/home/me/other.pdf").is_err());
+        assert_eq!(picked.take(&id).map(|(_, kind)| kind), Ok(Kind::Pdf));
         let url = picked.add("content://com.android.providers/document/42".parse::<FilePath>().unwrap(), Kind::Notes);
-        assert_eq!(picked.get(&url).map(|(_, kind)| kind), Ok(Kind::Notes));
-        assert!(picked.get("content://com.android.providers/document/43").is_err());
+        assert!(picked.take("content://com.android.providers/document/43").is_err());
+        assert_eq!(picked.take(&url).map(|(_, kind)| kind), Ok(Kind::Notes));
+    }
+
+    #[test]
+    fn a_pick_is_read_once() {
+        let picked = Picked::default();
+        let id = picked.add(FilePath::from(PathBuf::from("/home/me/deck.pdf")), Kind::Pdf);
+        assert!(picked.take(&id).is_ok());
+        assert!(picked.take(&id).is_err());
+        // Picked again: readable again, once; the kind is the latest pick's.
+        picked.add(FilePath::from(PathBuf::from("/home/me/deck.pdf")), Kind::Pdf);
+        picked.add(FilePath::from(PathBuf::from("/home/me/deck.pdf")), Kind::Notes);
+        assert_eq!(picked.take(&id).map(|(_, kind)| kind), Ok(Kind::Notes));
+        assert!(picked.take(&id).is_err());
+    }
+
+    #[test]
+    fn unread_picks_stay_bounded() {
+        let picked = Picked::default();
+        let ids: Vec<String> =
+            (0..100).map(|i| picked.add(FilePath::from(PathBuf::from(format!("/p/{i}.pdf"))), Kind::Pdf)).collect();
+        assert_eq!(picked.0.lock().unwrap().len(), MAX_PICKED);
+        // The oldest are forgotten, the latest kept.
+        assert!(picked.take(&ids[0]).is_err());
+        assert!(picked.take(&ids[100 - MAX_PICKED - 1]).is_err());
+        for id in &ids[100 - MAX_PICKED..] {
+            assert!(picked.take(id).is_ok(), "{id}");
+        }
+        assert!(picked.0.lock().unwrap().is_empty());
     }
 
     #[test]

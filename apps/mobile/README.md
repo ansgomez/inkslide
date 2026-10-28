@@ -53,7 +53,8 @@ smoke test.
   scope at all, so any fs permission would let the page read whatever the app can reach and
   overwrite the user's PDFs. Every file access is an app command (`src-tauri/src/lib.rs`):
   `pick_file` opens the picker from Rust and remembers the file; `read_picked` reads only
-  files picked so in this session; `read_notes` and `write_notes` take a notes key
+  files picked so in this session, each once per pick (a pick is forgotten once read, and at
+  most the 8 latest picks not read yet are kept); `read_notes` and `write_notes` take a notes key
   (`[A-Za-z0-9_-]`, at most 200 bytes) and stay in `notes/` of the app data directory;
   `write_share_file` and `remove_share_file` take one name ending in `.pdf` (no separators,
   `:`, control characters or leading dot) and stay in the share folder; `share_pdf` takes
