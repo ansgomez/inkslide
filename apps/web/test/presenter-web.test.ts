@@ -25,7 +25,7 @@ let tabs = 0;
  * (null: a browser without them), page events and timers.
  */
 async function tab(net: ReturnType<typeof channels>, locks: ReturnType<typeof fakeLocks> | null,
-  storage = new Map<string, string>()) {
+  storage = new Map<string, string>(), query = true) {
   const clientId = `tab${++tabs}`;
   const clock = manualTimers();
   const popups: { url: string; name: string; closed: boolean; close(): void }[] = [];
@@ -41,7 +41,7 @@ async function tab(net: ReturnType<typeof channels>, locks: ReturnType<typeof fa
     },
     port: net.port,
     storage: { getItem: k => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } },
-    locks: locks ? locks.client(clientId) : null,
+    locks: locks ? locks.client(clientId, query) : null,
     on: (type, fn) => { events.set(type, fn); },
     setInterval: (fn, ms) => { interval = { fn, ms }; return 1; },
     clearInterval: () => { interval = null; },
@@ -249,6 +249,23 @@ describe('createWebPresenter: Web Locks', () => {
     const after = await pending;
     expect(after.id()).toBe(id);
     expect(locks.held.get(lockName(id))).toBe(after.clientId);
+  });
+
+  it('back from the cache where its locks cannot be queried: moves to a new id rather than guess', async () => {
+    const net = channels();
+    const locks = fakeLocks();
+    const t = await tab(net, locks, new Map(), false);
+    const id = t.id();
+    const on = handlers();
+    createAudienceLink(net.port(channelName(id)), on);
+    net.run();
+    t.page('pagehide', true);
+    t.page('pageshow', true);
+    await t.settle();
+    await t.settle();
+    expect(t.id()).not.toBe(id);
+    expect(locks.held.get(lockName(t.id()))).toBe(t.clientId);
+    expect(on.connected).toHaveBeenCalledTimes(1); // no ready on the old id
   });
 
   it('back from the cache still holding its lock: just ready again', async () => {

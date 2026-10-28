@@ -43,12 +43,15 @@
  *
  * The audience answers every `ready` with a hello, also from the presenter it
  * follows (a tab reloaded without `gone`: crashed, discarded, restored). It
- * pings its presenter every BEAT_MS; MISSED_BEATS pings without a word from
- * it (crashed, killed, frozen) count as `gone`. The audience drives this, not
- * the presenter: a hidden presenter tab's timers are throttled by the
- * browser, its message handlers are not. After `gone`, and from the start
- * until a presenter first answers, the audience closes itself when no
- * presenter comes within GRACE_MS.
+ * pings its presenter every BEAT_MS; SILENCE_MS without a word from it
+ * (crashed, killed, frozen) counts as gone. That is long on purpose: a busy
+ * presenter (an export, a large page) must never end presenting. The audience
+ * keeps pinging a silent presenter, and any word from it brings it back (a
+ * hello: everything again). The audience drives this, not the presenter: a
+ * hidden presenter tab's timers are throttled by the browser, its message
+ * handlers are not. After `gone` or the silence, and from the start until a
+ * presenter first answers, the audience closes itself when no presenter
+ * comes (back) within GRACE_MS.
  */
 
 /** One message on the channel (see the module comment). */
@@ -70,11 +73,8 @@ export const PROBE_MS = 400;
 export const GRACE_MS = 10_000;
 /** How often the audience pings its presenter, ms. */
 export const BEAT_MS = 2000;
-/**
- * Pings in a row without an answer after which the presenter counts as gone:
- * (MISSED_BEATS + 1) × BEAT_MS after its last word at most, about 6 s.
- */
-export const MISSED_BEATS = 2;
+/** No word from the presenter for this long counts as gone, ms (a busy tab answers well before). */
+export const SILENCE_MS = 30_000;
 
 /** Ids of windows and of a presenter tab's channel: letters, digits and '-', at most 64. */
 const ID = /^[A-Za-z0-9-]{1,64}$/;
@@ -273,7 +273,7 @@ export interface AudienceHandlers {
 export interface AudienceLink {
   /** Ask for everything again (back from the back/forward cache). */
   hello(): void;
-  /** Stop the timers (tests; a window closing stops them anyway). */
+  /** Stop pinging and waiting (the window closes; one that cannot close follows a presenter that comes). */
   stop(): void;
   /** The audience window closes or reloads. */
   leave(): void;
@@ -283,11 +283,13 @@ export interface AudienceLink {
 export function createAudienceLink(port: LinkPort, on: AudienceHandlers, options: { id?: string; timers?: LinkTimers } = {}): AudienceLink {
   const id = options.id ?? newLinkId();
   const timers = options.timers ?? defaultTimers;
+  /** The presenter followed; kept while it is silent (it may only be busy), null after `gone`. */
   let presenter: string | null = null;
+  /** Its silence counted as gone: the next word from it brings it back. */
+  let silent = false;
+  /** Pings since its last word. */
+  let quiet = 0;
   let grace: unknown = null;
-  /** Heard from the presenter since the last ping; pings in a row without a word. */
-  let heard = false;
-  let missed = 0;
   let beatTimer: unknown = null;
 
   const stopGrace = (): void => {
@@ -299,38 +301,44 @@ export function createAudienceLink(port: LinkPort, on: AudienceHandlers, options
     stopGrace();
     grace = timers.setTimeout(() => { grace = null; on.quit(); }, GRACE_MS);
   };
-  const lost = (): void => {
-    presenter = null;
-    on.gone();
-    armGrace();
-  };
   const beat = (): void => {
     beatTimer = timers.setTimeout(beat, BEAT_MS);
     if (!presenter) return;
-    if (heard) missed = 0;
-    else if (++missed >= MISSED_BEATS) return lost();
-    heard = false;
+    if (++quiet * BEAT_MS >= SILENCE_MS && !silent) {
+      silent = true;
+      on.gone();
+      armGrace();
+    }
     port.post({ kind: 'ping', from: id, to: presenter });
+  };
+  const startBeat = (): void => {
+    if (beatTimer === null) beatTimer = timers.setTimeout(beat, BEAT_MS);
+  };
+  /** Follow `from` (again): it sends everything. */
+  const follow = (from: string): void => {
+    stopGrace();
+    presenter = from;
+    silent = false;
+    quiet = 0;
+    startBeat();
+    port.post({ kind: 'hello', from: id, to: presenter });
+    on.connected();
   };
 
   port.listen(data => {
     const m = parseLinkMessage(data);
     if (!m) return;
-    if (m.kind === 'ready') {
-      // Also from the presenter followed: it may have reloaded without saying gone.
-      stopGrace();
-      presenter = m.from;
-      heard = true;
-      missed = 0;
-      port.post({ kind: 'hello', from: id, to: presenter });
-      on.connected();
-      return;
-    }
+    // `ready` also from the presenter followed: it may have reloaded without saying gone.
+    if (m.kind === 'ready') return follow(m.from);
     if (m.from !== presenter) return; // only the presenter followed is heard
-    heard = true;
+    quiet = 0;
+    if (silent) follow(m.from); // it was only busy
     if (m.kind === 'm') on.message(m.m);
-    else if (m.kind === 'gone') lost();
-    else if (m.kind === 'quit') on.quit();
+    else if (m.kind === 'gone') {
+      presenter = null;
+      on.gone();
+      armGrace();
+    } else if (m.kind === 'quit') on.quit();
   });
   const link: AudienceLink = {
     hello() { port.post({ kind: 'hello', from: id, to: presenter }); },
@@ -339,10 +347,11 @@ export function createAudienceLink(port: LinkPort, on: AudienceHandlers, options
       stopGrace();
       if (beatTimer !== null) timers.clearTimeout(beatTimer);
       beatTimer = null;
+      presenter = null;
     },
   };
   armGrace(); // no presenter answers at all: the window does not wait for ever
-  beatTimer = timers.setTimeout(beat, BEAT_MS);
+  startBeat();
   link.hello();
   return link;
 }

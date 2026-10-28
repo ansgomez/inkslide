@@ -59,13 +59,14 @@ export function fakeLocks() {
   const held = new Map<string, string>(); // lock name -> client id
   return {
     held,
-    client: (clientId: string) => ({
+    /** `query`: false for a browser whose locks cannot be queried. */
+    client: (clientId: string, query = true) => ({
       request: async (name: string, _options: { ifAvailable: true }, callback: (lock: unknown) => unknown) => {
         if (held.has(name)) return callback(null);
         held.set(name, clientId);
         return callback({ name });
       },
-      query: async () => ({ held: [...held].map(([name, c]) => ({ name, clientId: c })) }),
+      ...(query ? { query: async () => ({ held: [...held].map(([name, c]) => ({ name, clientId: c })) }) } : {}),
     }),
     release(clientId: string) { for (const [name, c] of [...held]) if (c === clientId) held.delete(name); },
   };

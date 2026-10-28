@@ -441,7 +441,10 @@ if (bridge && typeof bridge.onAudience === 'function') {
     },
     // F5 in the presenter tab, or no presenter back within GRACE_MS. A window not opened by a
     // script (the URL typed in) stays: it keeps its text and follows a presenter that comes.
-    quit: () => window.close(),
+    quit: () => {
+      link.stop();
+      window.close();
+    },
   });
   window.addEventListener('pagehide', () => link.leave()); // also into the back/forward cache: hello again on return
   window.addEventListener('pageshow', e => { if (e.persisted) link.hello(); });

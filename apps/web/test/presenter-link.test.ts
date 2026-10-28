@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  audienceUrl, BEAT_MS, channelName, createAudienceLink, createPresenterLink, GRACE_MS, idFromHash, isLinkId, MISSED_BEATS, newLinkId,
-  parseLinkMessage, PROBE_MS,
+  audienceUrl, BEAT_MS, channelName, createAudienceLink, createPresenterLink, GRACE_MS, idFromHash, isLinkId, newLinkId,
+  parseLinkMessage, PROBE_MS, SILENCE_MS,
 } from '../src/presenter-link';
 import { bus, manualTimers } from './link-bus';
 
@@ -206,35 +206,61 @@ describe('presenter and audience links', () => {
     expect(clock.pending()).toEqual([PROBE_MS]);
   });
 
-  it('pings its presenter; one that stops answering (crashed, killed) counts as gone, then the window closes', () => {
+  it('a busy presenter (silent for a while) is not given up; a dead one (30 s) is, then the window closes', () => {
     const b = bus();
     const clock = manualTimers();
-    const p = createPresenterLink(b.port(), vi.fn(), () => {}, { id: 'p1' });
-    b.run();
     const on = audienceHandlers();
+    const seen: unknown[] = [];
+    b.port().listen(d => seen.push(d)); // what the audience posts
     createAudienceLink(b.port(), on, { id: 'a1', timers: clock.timers });
+    b.inject({ kind: 'ready', from: 'p1' }); // a presenter that answers nothing after this
     b.run();
-    // Answered beats: it stays.
-    for (let i = 0; i < 2 * MISSED_BEATS; i++) {
-      clock.fireMs(BEAT_MS);
-      b.run();
-    }
+    const beats = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        clock.fireMs(BEAT_MS);
+        b.run();
+      }
+    };
+    // Busy for 10 s (an export): pinged, then it answers; nothing ends.
+    beats(10_000 / BEAT_MS);
+    expect(seen.filter(m => (m as { kind: string }).kind === 'ping')).toHaveLength(10_000 / BEAT_MS);
+    b.inject({ kind: 'beat', from: 'p1' });
+    b.run();
+    clock.fireMs(GRACE_MS);
     expect(on.gone).not.toHaveBeenCalled();
-    // The presenter dies without a word (its channel closes with it).
-    p.close();
-    for (let i = 0; i < MISSED_BEATS; i++) {
-      clock.fireMs(BEAT_MS);
-      b.run();
-    }
-    expect(on.gone).not.toHaveBeenCalled(); // the first ping went out after its last answer
-    for (let i = 0; i < 1; i++) {
-      clock.fireMs(BEAT_MS);
-      b.run();
-    }
-    expect(on.gone).toHaveBeenCalledTimes(1);
     expect(on.quit).not.toHaveBeenCalled();
+    // Silent for SILENCE_MS: counted as gone; still pinged; any word brings it back (hello: everything).
+    beats(SILENCE_MS / BEAT_MS);
+    expect(on.gone).toHaveBeenCalledTimes(1);
+    seen.length = 0;
+    b.inject({ kind: 'm', from: 'p1', m: 'late' });
+    b.run();
+    expect(seen).toContainEqual({ kind: 'hello', from: 'a1', to: 'p1' });
+    expect(on.connected).toHaveBeenCalledTimes(2);
+    expect(on.message).toHaveBeenCalledWith('late');
+    clock.fireMs(GRACE_MS);
+    expect(on.quit).not.toHaveBeenCalled();
+    // Silent for good: the window closes GRACE_MS after the silence counted.
+    beats(SILENCE_MS / BEAT_MS);
+    expect(on.gone).toHaveBeenCalledTimes(2);
     clock.fireMs(GRACE_MS);
     expect(on.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop() ends the pings (a window that cannot close)', () => {
+    const b = bus();
+    const clock = manualTimers();
+    const seen: unknown[] = [];
+    b.port().listen(d => seen.push(d));
+    const link = createAudienceLink(b.port(), audienceHandlers(), { id: 'a1', timers: clock.timers });
+    b.inject({ kind: 'ready', from: 'p1' });
+    b.run();
+    link.stop();
+    expect(clock.pending()).toEqual([]);
+    seen.length = 0;
+    clock.fireMs(BEAT_MS);
+    b.run();
+    expect(seen).toEqual([]);
   });
 
   it('an audience no presenter ever answers closes after GRACE_MS', () => {
