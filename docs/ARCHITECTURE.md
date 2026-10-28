@@ -40,7 +40,7 @@ access.
 | `packages/export` | `@inkslide/export` | Annotated PDF export with pdf-lib. Depends only on `@inkslide/annotate` (model, io, geometry, and the paper look `PAPER_STYLE` from render). |
 | `apps/web` | `@inkslide/web` | The front end: PDF viewer, live ink, gestures, overview, autosave wiring, the web adapter. Built by Vite with `base: './'`, so Electron can load `dist/index.html` from disk. |
 | `apps/desktop` | `@inkslide/desktop` | Electron shell: main process and sandboxed preload, bundled by esbuild into `out/`. Exports only the bridge types (`@inkslide/desktop/bridge`). |
-| `apps/mobile` | `@inkslide/mobile` | Tauri 2 shell for iPad and Android (`src-tauri`): loads `apps/web/dist`, plugins dialog, fs and sharekit, and its own commands for every file access (the page has no fs permission). No front-end code of its own. |
+| `apps/mobile` | `@inkslide/mobile` | Tauri 2 shell for iPad and Android (`src-tauri`): loads `apps/web/dist`, plugins dialog, fs and sharekit (used from Rust only), and its own commands for every file access and sharing (the page has no fs or sharekit permission). No front-end code of its own. |
 
 `packages/annotate/legacy/` holds two original Marp Notes modules for parity tests;
 `packages/annotate/PORTING.md` lists what changed in the port.
@@ -118,8 +118,10 @@ copies (iPadOS) or content URIs (Android), so notes live in the app data directo
 hash. The page has no fs plugin permission (on mobile it reads and writes file and content
 URLs without a scope check): every file access is one of the shell's commands
 (`apps/mobile/src-tauri/src/lib.rs`), which take a notes key or a checked file name, never a
-free path, read only files picked through them, and write only in the app's folders or to
-the file picked in a save dialog they open themselves.
+free path, read only files picked through them, write only in the app's folders or to
+the file picked in a save dialog they open themselves, and share only a file they wrote for
+sharing (`share_pdf` calls the sharekit plugin from Rust; the page has no sharekit
+permission, as its command shares any file URL).
 Both the page's CSP and the shell's must allow Tauri's IPC (`ipc:`,
 `http://ipc.localhost`); the page adds them only in the Tauri build
 (`pnpm --filter @inkslide/web build:tauri`, the shell's `beforeBuildCommand`),

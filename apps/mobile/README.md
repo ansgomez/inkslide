@@ -9,11 +9,11 @@ smoke test.
 |---|---|
 | `src-tauri/tauri.conf.json` | App id `io.github.ansgomez.inkslide`, frontend `../../web/dist` (dev: `http://localhost:5173`), CSP, icons, iOS 17+ / Android 8+ (API 26); Tauri's own file drop is off, so drops reach the page as in the browser. |
 | `src-tauri/capabilities/default.json` | All platforms: message (confirm) dialogs and the app commands `pick_file`, `read_picked`, `read_notes`, `write_notes` and `save_pdf`. No fs plugin permission and no open or save dialog command (see *File access* below). |
-| `src-tauri/capabilities/share-ios.json`, `share-android.json` | Share a file, and the app commands `write_share_file` and `remove_share_file`. |
-| `src-tauri/src/lib.rs` | The app: plugins dialog, fs, sharekit (dialog and fs used from Rust only), and the commands that do every file access (see *File access* below). `main.rs` runs it on the desktop. |
+| `src-tauri/capabilities/share-ios.json`, `share-android.json` | The app commands `write_share_file`, `share_pdf` and `remove_share_file`. No sharekit permission: its own command shares any file URL. |
+| `src-tauri/src/lib.rs` | The app: plugins dialog, fs, sharekit (all three used from Rust only), and the commands that do every file access (see *File access* below). `main.rs` runs it on the desktop. |
 | `src-tauri/build.rs` | Lists the app commands, so each gets an `allow-<command>` permission that a capability must grant. |
 | `../web/src/platform/tauri.ts` | The front end's `PlatformAdapter` for Tauri (selected when `window.__TAURI_INTERNALS__` exists). |
-| `test/config.test.mjs` | `pnpm test`: paths, dev port, icons, both CSPs agree and allow the IPC, the capabilities stay narrow (no fs plugin permission, no open or save dialog), the app commands match their permissions. |
+| `test/config.test.mjs` | `pnpm test`: paths, dev port, icons, both CSPs agree and allow the IPC, the capabilities stay narrow (no fs plugin permission, no open or save dialog, no sharekit command), the app commands match their permissions. |
 | `test/share-names.json` | Names for shared files: what the front end's `shareName` makes of them, checked by both the Rust and the front-end tests. |
 | `test/smoke.mjs` | `pnpm smoke` (Linux): builds the desktop variant with a test script (and the `smoke` feature, which hands one file to `read_picked` as if picked) and checks reading a picked file and the notes through the real plugins and commands. |
 
@@ -49,7 +49,10 @@ smoke test.
   files picked so in this session; `read_notes` and `write_notes` take a notes key
   (`[A-Za-z0-9_-]`, at most 200 bytes) and stay in `notes/` of the app data directory;
   `write_share_file` and `remove_share_file` take one name ending in `.pdf` (no separators,
-  `:`, control characters or leading dot) and stay in the share folder; `save_pdf` opens the
+  `:`, control characters or leading dot) and stay in the share folder; `share_pdf` takes
+  such a name too and hands the share sheet only a regular file that `write_share_file` wrote
+  in this session (the web view has no sharekit permission: the plugin's own `share_file`
+  command shares any file URL, notes and other app files included); `save_pdf` opens the
   save dialog itself and writes only to the file picked there, which the page never sees.
   File bytes go as a raw request body with the name in a header; Android's IPC has no raw
   bodies, so there they go as JSON with the bytes in base64 (a JSON number array is refused:
@@ -61,8 +64,8 @@ smoke test.
   cancel, so `pick_file` and `save_pdf` then return null / false and nothing is shown.
 
 Share uses the community plugin [tauri-plugin-sharekit](https://github.com/Choochmeque/tauri-plugin-sharekit)
-0.3.1 (MIT; Rust crate and `@choochmeque/tauri-plugin-sharekit-api`), as Tauri has no
-official share plugin. On iOS it copies the file to `tmp/<name>` and silently keeps an older
+0.3.1 (MIT; the Rust crate only, called by `share_pdf`), as Tauri has no official share
+plugin. On iOS it copies the file to `tmp/<name>` and silently keeps an older
 file of that name, so the adapter writes the export to exactly that path. On Android it copies
 the file to the root of the app cache (for its FileProvider), so the adapter writes to
 `cache/share/` (a copy onto the same path would empty the file); the plugin's copy stays until

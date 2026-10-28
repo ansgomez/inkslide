@@ -12,8 +12,10 @@
  * only files picked that way. Next to such a file the app can rarely write,
  * so there are no sidecars: notes live in the app data directory, keyed by
  * the PDF's SHA-256 (`notes/<sha256>.notes.json`; read_notes, write_notes).
- * write_share_file and remove_share_file use the share folder; save_pdf opens
- * the save dialog itself and writes to the file picked there.
+ * write_share_file and remove_share_file use the share folder, and share_pdf
+ * hands a file written there to the share sheet (the page has no sharekit
+ * permission); save_pdf opens the save dialog itself and writes to the file
+ * picked there.
  *
  * File bytes go to the app as a raw request body with the name in a header,
  * except on Android, whose IPC has no raw bodies: there they go as JSON
@@ -56,9 +58,6 @@ export function nameFromPath(path: string, fallback: string): string {
   last = last.split(/^content:/i.test(path) ? /[/:]/ : '/').pop() || '';
   return /^[^.].*\.[A-Za-z0-9]+$/.test(last) ? last : fallback;
 }
-
-/** file:// URL of an absolute path (the share plugin wants URLs). */
-export const fileUrl = (path: string): string => `file://${path.split('/').map(encodeURIComponent).join('/')}`;
 
 /** Max. UTF-8 bytes of a shared file's name before ".pdf" (file systems allow 255 in all). */
 const SHARE_NAME_BYTES = 200;
@@ -140,7 +139,6 @@ const orCancel = <T, C>(p: Promise<T>, cancelled: C): Promise<T | C> =>
 const loadPlugins = () => Promise.all([
   import('@tauri-apps/plugin-dialog'),
   import('@tauri-apps/api/core'),
-  import('@choochmeque/tauri-plugin-sharekit-api'),
 ]);
 
 export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
@@ -166,7 +164,8 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
 
   /**
    * Write the PDF to the share folder (write_share_file) and hand it to the
-   * share sheet; false if cancelled. The folder is iOS: tmp/, where the share
+   * share sheet (share_pdf, which shares only a file write_share_file wrote);
+   * false if cancelled. The folder is iOS: tmp/, where the share
    * plugin copies the file to (it does not replace an older copy of the same
    * name, so the export is written there itself); Android: cache/share/, the
    * plugin copies it into the cache root (a copy onto itself would empty it)
@@ -177,14 +176,14 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
    * is removed at the next share (or by the OS).
    */
   async function share(bytes: Uint8Array, name: string): Promise<boolean> {
-    const [, { invoke }, { shareFile }] = await use();
+    const [, { invoke }] = await use();
     const file = shareName(name);
     const remove = (f: string) => invoke('remove_share_file', { name: f }).catch(() => { /* the OS clears it */ });
     if (lastShared && lastShared !== file) await remove(lastShared);
     lastShared = null;
-    const abs = await invoke<string>('write_share_file', ...fileArgs(os, bytes, file));
+    await invoke('write_share_file', ...fileArgs(os, bytes, file));
     try {
-      return await orCancel(shareFile(fileUrl(abs), { mimeType: 'application/pdf', title: name }).then(() => true), false);
+      return await orCancel(invoke('share_pdf', { name: file }).then(() => true), false);
     } finally {
       if (os === 'ios') lastShared = file;
       else await remove(file);

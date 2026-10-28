@@ -7,6 +7,7 @@ const COMMANDS: &[&str] = &[
     "write_notes",
     "save_pdf",
     "write_share_file",
+    "share_pdf",
     "remove_share_file",
 ];
 

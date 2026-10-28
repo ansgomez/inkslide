@@ -62,9 +62,10 @@ function appCommands() {
 
 /**
  * The web view's only file access: these commands, which take a notes key or a
- * checked file name, never a free path (read_picked: only files pick_file picked).
+ * checked file name, never a free path (read_picked: only files pick_file picked;
+ * share_pdf: only files write_share_file wrote).
  */
-const FILE_COMMANDS = ['pick_file', 'read_picked', 'read_notes', 'write_notes', 'save_pdf', 'write_share_file', 'remove_share_file'];
+const FILE_COMMANDS = ['pick_file', 'read_picked', 'read_notes', 'write_notes', 'save_pdf', 'write_share_file', 'share_pdf', 'remove_share_file'];
 
 test('capabilities: least privilege', () => {
   const capDir = join(tauriDir, 'capabilities');
@@ -75,9 +76,11 @@ test('capabilities: least privilege', () => {
     for (const id of ids(cap)) {
       // No fs plugin permission at all (on mobile it reads and writes file and content URLs without
       // a scope check), no open or save dialog command (they add the chosen file to the fs scope),
-      // no shell or http: files only through the app's commands.
-      assert.ok(/^(core:default|dialog:allow-message|sharekit:allow-share-file|allow-(pick-file|read-picked|read-notes|write-notes|save-pdf|write-share-file|remove-share-file))$/.test(id), `${cap.identifier}: ${id}`);
+      // no sharekit command (it shares any file URL), no shell or http: files only through the
+      // app's commands.
+      assert.ok(/^(core:default|dialog:allow-message|allow-(pick-file|read-picked|read-notes|write-notes|save-pdf|write-share-file|share-pdf|remove-share-file))$/.test(id), `${cap.identifier}: ${id}`);
       assert.ok(!/^fs:/.test(id), `${cap.identifier}: ${id}: no fs plugin permission`);
+      assert.ok(!/^sharekit:/.test(id), `${cap.identifier}: ${id}: no sharekit permission (share_pdf shares)`);
       assert.ok(!/^dialog:(allow-(open|save)|default)$/.test(id), `${cap.identifier}: ${id}`);
     }
     // No inline scopes either.
@@ -88,7 +91,7 @@ test('capabilities: least privilege', () => {
   assert.deepEqual(byId['share-ios'].platforms, ['iOS']);
   assert.deepEqual(byId['share-android'].platforms, ['android']);
   for (const id of ['share-ios', 'share-android']) {
-    assert.deepEqual(ids(byId[id]).sort(), ['allow-remove-share-file', 'allow-write-share-file', 'sharekit:allow-share-file'], id);
+    assert.deepEqual(ids(byId[id]).sort(), ['allow-remove-share-file', 'allow-share-pdf', 'allow-write-share-file'], id);
   }
   assert.deepEqual(ids(byId.default).filter(i => /^allow-/.test(i)).sort(),
     ['allow-pick-file', 'allow-read-notes', 'allow-read-picked', 'allow-save-pdf', 'allow-write-notes']);

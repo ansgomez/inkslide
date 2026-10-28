@@ -24,7 +24,6 @@
     "demo": "node scripts/record-demo.mjs"
   },
   "dependencies": {
-    "@choochmeque/tauri-plugin-sharekit-api": "0.3.1",
     "@inkslide/annotate": "workspace:*",
     "@inkslide/export": "workspace:*",
     "@tauri-apps/api": "^2.12.4",

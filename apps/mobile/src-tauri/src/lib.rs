@@ -1,6 +1,6 @@
 //! Inkslide for iPad and Android: a Tauri 2 window around the web front end
-//! (`apps/web/dist`). Sharing is the sharekit plugin; the front end's adapter
-//! is `apps/web/src/platform/tauri.ts`.
+//! (`apps/web/dist`). Sharing is the sharekit plugin, called from Rust; the
+//! front end's adapter is `apps/web/src/platform/tauri.ts`.
 //!
 //! The web view has no fs plugin permission at all and no file dialog of its
 //! own. The dialog plugin's open and save commands add every chosen file to
@@ -14,12 +14,14 @@
 //! - `read_notes` / `write_notes` take a notes key, not a path, and stay in
 //!   `notes/` of the app data directory.
 //! - `write_share_file` / `remove_share_file` take a checked file name and
-//!   stay in the share folder.
+//!   stay in the share folder; `share_pdf` hands such a file, written in this
+//!   session, to the share sheet. The web view has no sharekit permission: the
+//!   plugin's own command shares any file URL it is given.
 //! - `save_pdf` opens the save dialog itself and writes only to the file
 //!   chosen there, which the web view never sees.
 //!
-//! The dialog and fs plugins are still used from Rust (`DialogExt`, `FsExt`:
-//! content URIs on Android, security-scoped URLs on iOS).
+//! The dialog, fs and sharekit plugins are still used from Rust (`DialogExt`,
+//! `FsExt`: content URIs on Android, security-scoped URLs on iOS; `ShareExt`).
 //!
 //! Known limit: on iOS and Android the dialog plugin's Rust API
 //! (`blocking_pick_file`, `blocking_save_file`) reports a failed dialog (no
@@ -29,7 +31,7 @@
 //! apart on top of these calls.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -39,9 +41,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use tauri::ipc::{InvokeBody, Request, Response};
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State, Url, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use tauri_plugin_fs::{FsExt, OpenOptions};
+use tauri_plugin_sharekit::{ShareExt, ShareFileOptions};
 
 /// Suffix of a notes file (`NOTES_SUFFIX` of `@inkslide/annotate/io`).
 const NOTES_SUFFIX: &str = ".notes.json";
@@ -181,6 +184,37 @@ fn share_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     dir.map_err(|e| e.to_string())
 }
 
+/// Names of the files `write_share_file` wrote to the share folder in this
+/// session and `remove_share_file` has not removed: the only ones `share_pdf` shares.
+#[derive(Default)]
+struct Shared(Mutex<HashSet<String>>);
+
+impl Shared {
+    fn add(&self, name: &str) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_owned());
+    }
+
+    fn remove(&self, name: &str) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
+    }
+
+    fn check(&self, name: &str) -> Result<(), String> {
+        let shared = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if shared.contains(name) { Ok(()) } else { Err(format!("not a file written for sharing: {name:?}")) }
+    }
+}
+
+/// The file URL of `dir/name` for the share plugin, if that is a regular file
+/// (not a link, which could point anywhere).
+fn shared_file_url(dir: &Path, name: &str) -> Result<String, String> {
+    let path = dir.join(share_name(name)?);
+    let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() {
+        return Err(format!("not a regular file: {name:?}"));
+    }
+    Url::from_file_path(&path).map(String::from).map_err(|()| format!("no file URL for {name:?}"))
+}
+
 fn notes_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("notes"))
 }
@@ -264,19 +298,36 @@ async fn write_notes<R: Runtime>(app: AppHandle<R>, key: String, text: String) -
     write_atomic(&notes_dir(&app)?, &format!("{key}{NOTES_SUFFIX}"), text.as_bytes()).map_err(|e| e.to_string())
 }
 
-/// Writes a PDF to the share folder under a checked name (see [`payload`]); returns its path.
+/// Writes a PDF to the share folder under a checked name (see [`payload`]), for `share_pdf`.
 #[tauri::command]
-async fn write_share_file<R: Runtime>(app: AppHandle<R>, request: Request<'_>) -> Result<String, String> {
+async fn write_share_file<R: Runtime>(app: AppHandle<R>, shared: State<'_, Shared>, request: Request<'_>) -> Result<(), String> {
     let (bytes, name) = request_payload(&request)?;
-    let dir = share_dir(&app)?;
-    write_atomic(&dir, share_name(&name)?, &bytes).map_err(|e| e.to_string())?;
-    Ok(dir.join(&name).to_string_lossy().into_owned())
+    write_atomic(&share_dir(&app)?, share_name(&name)?, &bytes).map_err(|e| e.to_string())?;
+    shared.add(&name);
+    Ok(())
+}
+
+/// Hands a PDF that `write_share_file` wrote in this session to the share
+/// sheet, titled with its file name. The plugin's errors are passed on as they
+/// are (its "Share cancelled" when the user dismissed the sheet).
+#[tauri::command]
+async fn share_pdf<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    shared: State<'_, Shared>,
+    name: String,
+) -> Result<(), String> {
+    shared.check(&name)?;
+    let url = shared_file_url(&share_dir(&app)?, &name)?;
+    let options = ShareFileOptions { mime_type: Some("application/pdf".into()), title: Some(name), position: None };
+    app.share().share_file(window, url, options).map_err(|e| e.to_string())
 }
 
 /// Removes a file from the share folder; a missing file is no error.
 #[tauri::command]
-async fn remove_share_file<R: Runtime>(app: AppHandle<R>, name: String) -> Result<(), String> {
+async fn remove_share_file<R: Runtime>(app: AppHandle<R>, shared: State<'_, Shared>, name: String) -> Result<(), String> {
     let path = share_dir(&app)?.join(share_name(&name)?);
+    shared.remove(&name);
     match fs::remove_file(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
         _ => Ok(()),
@@ -306,6 +357,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_sharekit::init())
         .manage(Picked::default())
+        .manage(Shared::default())
         .setup(|_app| {
             // The smoke test (apps/mobile/test/smoke.mjs, built with --features smoke) can not use
             // the picker: it hands over one file as if picked.
@@ -317,7 +369,7 @@ pub fn run() {
         })
         // build.rs lists the same commands (an `allow-<command>` permission each).
         .invoke_handler(tauri::generate_handler![
-            pick_file, read_picked, read_notes, write_notes, save_pdf, write_share_file, remove_share_file
+            pick_file, read_picked, read_notes, write_notes, save_pdf, write_share_file, share_pdf, remove_share_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running Inkslide");
@@ -462,6 +514,38 @@ mod tests {
         let url = picked.add("content://com.android.providers/document/42".parse::<FilePath>().unwrap());
         assert!(picked.get(&url).is_ok());
         assert!(picked.get("content://com.android.providers/document/43").is_err());
+    }
+
+    #[test]
+    fn shares_only_files_written_for_sharing() {
+        let shared = Shared::default();
+        assert!(shared.check("a.pdf").is_err());
+        shared.add("a.pdf");
+        assert!(shared.check("a.pdf").is_ok());
+        assert!(shared.check("b.pdf").is_err());
+        shared.remove("a.pdf");
+        assert!(shared.check("a.pdf").is_err());
+    }
+
+    #[test]
+    fn shared_file_urls() {
+        let dir = std::env::temp_dir().join(format!("inkslide-test-{}", temp_name("s")));
+        write_atomic(&dir, "My deck #1.pdf", b"%PDF").unwrap();
+        let url = shared_file_url(&dir, "My deck #1.pdf").unwrap();
+        assert!(url.starts_with("file:///") && url.ends_with("/My%20deck%20%231.pdf"), "{url}");
+        assert_eq!(Url::parse(&url).unwrap().to_file_path().unwrap(), dir.join("My deck #1.pdf"));
+        // Missing, not a share name, a folder.
+        assert!(shared_file_url(&dir, "missing.pdf").is_err());
+        assert!(shared_file_url(&dir, "../My deck #1.pdf").is_err());
+        fs::create_dir(dir.join("d.pdf")).unwrap();
+        assert!(shared_file_url(&dir, "d.pdf").is_err());
+        // A link, even to a file in the folder.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("My deck #1.pdf"), dir.join("link.pdf")).unwrap();
+            assert!(shared_file_url(&dir, "link.pdf").is_err());
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

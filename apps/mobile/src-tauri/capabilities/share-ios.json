@@ -1,12 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "share-ios",
-  "description": "iOS: export and print through the share sheet, from a PDF the app writes to its tmp/ (where the share plugin expects it), removed at the next share.",
+  "description": "iOS: export and print through the share sheet, from a PDF the app writes to its tmp/ (where the share plugin expects it), removed at the next share. The app command share_pdf shares only a file write_share_file wrote; no sharekit permission (its command shares any file URL).",
   "windows": ["main"],
   "platforms": ["iOS"],
   "permissions": [
     "allow-write-share-file",
     "allow-remove-share-file",
-    "sharekit:allow-share-file"
+    "allow-share-pdf"
   ]
 }
