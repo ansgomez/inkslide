@@ -127,10 +127,50 @@ describe('images in the export', () => {
     expect(draw).toBeLessThan(text.indexOf('\nf\n')); // pen
   });
 
+  it('leaves out a decompression bomb (a small PNG of 16000×16000 pixels) without decoding it', async () => {
+    const zlib = await import('node:zlib');
+    const crc = (buf: Buffer): number => {
+      let c = 0xffffffff;
+      for (const byte of buf) { c ^= byte; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; }
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const chunk = (type: string, data: Buffer): Buffer => {
+      const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+      const out = Buffer.alloc(body.length + 8);
+      out.writeUInt32BE(data.length, 0);
+      body.copy(out, 4);
+      out.writeUInt32BE(crc(body), body.length + 4);
+      return out;
+    };
+    const side = 16000;
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(side, 0);
+    ihdr.writeUInt32BE(side, 4);
+    ihdr[8] = 1; // 1-bit grey
+    const raw = Buffer.alloc(side * (1 + side / 8));
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr),
+      chunk('IDAT', zlib.deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+    const bomb = `data:image/png;base64,${png.toString('base64')}`;
+    expect(bomb.length).toBeLessThan(100_000);
+    const t = Date.now();
+    const { bytes, warnings } = await exportAnnotatedPdfWithReport(await fixturePdf(), v3([{
+      id: 'p1', kind: 'slide', slide: 1, strokes: [], images: [image('bomb', 0, 0, 100, 100, bomb), image('ok', 50, 50, 40, 20)],
+    }]));
+    expect(Date.now() - t).toBeLessThan(5000);
+    expect(warnings).toEqual(['Skipped an image on page p1: Image too large (16000×16000 pixels; at most 4096 on a side)']);
+    expect(await paintedImages(bytes, 1)).toEqual([[50, 50, 40, 20]]);
+  });
+
   it('skips an image whose data does not decode, with a warning, and exports the rest', async () => {
     const src = await fixturePdf();
-    // A PNG signature followed by garbage passes the notes check but not the decoder.
-    const broken = 'data:image/png;base64,iVBORw0KGgo' + 'A'.repeat(41);
+    // A PNG signature and IHDR followed by garbage passes the notes check but not the decoder.
+    const head = Buffer.alloc(36);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(head);
+    head.writeUInt32BE(13, 8);
+    head.write('IHDR', 12, 'latin1');
+    head.writeUInt32BE(10, 16);
+    head.writeUInt32BE(10, 20);
+    const broken = `data:image/png;base64,${head.toString('base64')}`;
     const warned: string[] = [];
     const { bytes, warnings } = await exportAnnotatedPdfWithReport(src, v3([{
       id: 'p1', kind: 'slide', slide: 1, strokes: [pen('a', [[10, 10], [200, 200]])],

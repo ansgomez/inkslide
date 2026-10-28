@@ -247,6 +247,10 @@ Windows.
   keep being collected meanwhile;
 - the state (`saved`, `dirty`, `saving`, `error`) colors the save button.
 
+Each write serializes the whole notes file, the base64 data of every image included (images
+are not stored apart). That cost is why images have limits (`model.ts`: 3 MB per image, 32 per
+page, 24 MB per document, 4096 px per side): with them a save writes at most about 24 MB.
+
 `apps/web/src/persist.ts` keeps one controller per open document and writes through the
 adapter. Notes that exist but cannot be read or parsed are never overwritten without asking
 (see Backup for the second read, the backup offer and the kept copy).

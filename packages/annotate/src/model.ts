@@ -167,6 +167,13 @@ const idPrefix = Date.now().toString(36) + Math.random().toString(36).slice(2, 6
 /** A new stroke id, unique per window. */
 export const newId = (): string => `${idPrefix}-${(idCounter++).toString(36)}`;
 
+/** Longest stroke or image id kept (presenter mode sends ids up to this length); longer ones get a new id. */
+export const MAX_ID_LENGTH = 200;
+/** Longest stroke color kept (a CSS color; presenter mode sends colors up to this length). */
+export const MAX_COLOR_LENGTH = 100;
+/** `id` if it is a usable id (a non-empty string of at most MAX_ID_LENGTH), else a new one. */
+const itemId = (id: unknown): string => (typeof id === 'string' && id && id.length <= MAX_ID_LENGTH ? id : newId());
+
 /**
  * Largest |x|, |y| and size a stroke may have, in page units. Pages are at most
  * 14400 pt; beyond this the numbers only come from broken files or edits, and
@@ -195,9 +202,10 @@ export function createStroke({ id, tool, color, size, points }: StrokeInput): St
   if (typeof size !== 'number' || !(size > 0)) throw new Error('Stroke size must be a positive number');
   if (!(size <= MAX_COORD)) throw new Error('Stroke size out of range');
   if (!points.length) throw new Error('Stroke has no points');
+  if (String(color).length > MAX_COLOR_LENGTH) throw new Error('Stroke color too long');
   const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
   return {
-    id: typeof id === 'string' && id ? id : newId(),
+    id: itemId(id),
     tool: tool as StrokeTool,
     color: String(color),
     size,
@@ -226,32 +234,118 @@ export const MAX_DOC_IMAGES = 256;
 /** Most data URL characters of all images of one document (they are all in the notes file). */
 export const MAX_DOC_IMAGE_CHARS = 24_000_000;
 
+/**
+ * Most pixels per side, and in all, of an image. A small file can hold a huge
+ * image (a 41 KB PNG of 16000×16000 pixels); decoding one (the export, the
+ * screen, a snapshot) would take seconds and gigabytes. Snapshots are at most
+ * 2048 px on a side; images pasted from other programs are scaled down first.
+ */
+export const MAX_IMAGE_SIDE = 4096, MAX_IMAGE_PIXELS = 16_000_000;
+/** Bytes of a JPEG searched for its frame header (SOFn); our own JPEGs have it in the first few hundred. */
+const JPEG_HEADER_BYTES = 256 * 1024;
+
 const DATA_URL = /^data:(image\/(?:png|jpeg));base64,[A-Za-z0-9+/]*={0,2}$/;
 
-/** MIME type of an image data URL Inkslide accepts (PNG or JPEG, base64, signature checked); null otherwise. */
-export function imageType(src: unknown): 'image/png' | 'image/jpeg' | null {
-  if (typeof src !== 'string' || src.length > MAX_IMAGE_CHARS) return null;
-  const m = DATA_URL.exec(src);
-  if (!m) return null;
-  const data = src.slice(src.indexOf(',') + 1);
-  return data.length % 4 === 0 && data.startsWith(IMAGE_MAGIC[m[1]]) ? m[1] as 'image/png' | 'image/jpeg' : null;
+/** Image type and size in pixels. */
+export interface ImageInfo {
+  type: 'image/png' | 'image/jpeg';
+  width: number;
+  height: number;
+}
+
+/** The first `bytes` bytes of base64 `data` (fewer if it is shorter). */
+function headBytes(data: string, bytes: number): Uint8Array {
+  const head = atob(data.slice(0, Math.ceil(bytes / 3) * 4));
+  const out = new Uint8Array(head.length);
+  for (let i = 0; i < head.length; i++) out[i] = head.charCodeAt(i);
+  return out;
 }
 
 /**
- * A checked image: a PNG or JPEG data URL of at most MAX_IMAGE_CHARS, finite
- * x and y within ±MAX_COORD, positive finite w and h up to MAX_COORD. Throws
- * on bad input; a missing id gets newId().
+ * Width and height in pixels from the start of a PNG (the IHDR chunk) or
+ * JPEG (the first SOFn frame header, found by walking the marker segments
+ * within the bytes given); null if they are not there (truncated, no frame
+ * header before the scan data, broken segments).
+ */
+export function imagePixelSize(type: string, b: Uint8Array): { width: number; height: number } | null {
+  const u16 = (i: number): number => (b[i] << 8) | b[i + 1];
+  const u32 = (i: number): number => ((b[i] << 24) >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3];
+  if (type === 'image/png') {
+    // Signature (8), chunk length (4), "IHDR" (4), width (4), height (4).
+    if (b.length < 24 || String.fromCharCode(b[12], b[13], b[14], b[15]) !== 'IHDR') return null;
+    return { width: u32(16), height: u32(20) };
+  }
+  if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 1 < b.length) {
+    if (b[i] !== 0xff) return null; // not at a marker: broken
+    const m = b[i + 1];
+    if (m === 0xff) { i++; continue; } // fill byte
+    if (m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; } // no length
+    if (m === 0xd9 || m === 0xda) return null; // end, or the scan, before any frame header
+    if (i + 3 >= b.length) return null;
+    const len = u16(i + 2);
+    if (len < 2) return null;
+    // SOF0–SOF15 except DHT (C4), JPG (C8) and DAC (CC): precision (1), height (2), width (2).
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+      if (i + 8 >= b.length) return null;
+      return { width: u16(i + 7), height: u16(i + 5) };
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+/**
+ * Type and pixel size of an image data URL Inkslide accepts: PNG or JPEG,
+ * base64, the signature checked, at most MAX_IMAGE_SIDE pixels on a side and
+ * MAX_IMAGE_PIXELS in all; otherwise why not.
+ */
+function inspectImage(src: unknown): ImageInfo | string {
+  const bad = 'Image must be a PNG or JPEG data URL';
+  if (typeof src !== 'string') return bad;
+  if (src.length > MAX_IMAGE_CHARS) return 'Image too large';
+  const m = DATA_URL.exec(src);
+  if (!m) return bad;
+  const type = m[1] as ImageInfo['type'];
+  const data = src.slice(src.indexOf(',') + 1);
+  if (data.length % 4 !== 0 || !data.startsWith(IMAGE_MAGIC[type])) return bad;
+  let size: { width: number; height: number } | null;
+  try { size = imagePixelSize(type, headBytes(data, type === 'image/png' ? 24 : JPEG_HEADER_BYTES)); } catch (_) { size = null; }
+  if (!size || !size.width || !size.height) return 'Image size in pixels could not be read';
+  if (size.width > MAX_IMAGE_SIDE || size.height > MAX_IMAGE_SIDE || size.width * size.height > MAX_IMAGE_PIXELS) {
+    return `Image too large (${size.width}×${size.height} pixels; at most ${MAX_IMAGE_SIDE} on a side)`;
+  }
+  return { type, ...size };
+}
+
+/** MIME type of an image data URL Inkslide accepts (see inspectImage); null otherwise. */
+export function imageType(src: unknown): 'image/png' | 'image/jpeg' | null {
+  const info = inspectImage(src);
+  return typeof info === 'string' ? null : info.type;
+}
+
+/** Type and pixel size of an image data URL Inkslide accepts; null otherwise. */
+export function imageInfo(src: unknown): ImageInfo | null {
+  const info = inspectImage(src);
+  return typeof info === 'string' ? null : info;
+}
+
+/**
+ * A checked image: a PNG or JPEG data URL of at most MAX_IMAGE_CHARS and
+ * MAX_IMAGE_SIDE × MAX_IMAGE_SIDE pixels (MAX_IMAGE_PIXELS in all), finite x
+ * and y within ±MAX_COORD, positive finite w and h up to MAX_COORD. Throws on
+ * bad input; a missing or unusable id (not a string, longer than
+ * MAX_ID_LENGTH) gets newId().
  */
 export function createImage(input: ImageInput): PageImage {
   const { id, x, y, w, h, src } = (input && typeof input === 'object' ? input : {}) as Partial<ImageInput>;
-  if (!imageType(src)) {
-    throw new Error(typeof src === 'string' && src.length > MAX_IMAGE_CHARS
-      ? 'Image too large' : 'Image must be a PNG or JPEG data URL');
-  }
+  const info = inspectImage(src);
+  if (typeof info === 'string') throw new Error(info);
   const coord = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= MAX_COORD;
   if (!coord(x) || !coord(y)) throw new Error('Image position must be finite numbers in range');
   if (!coord(w) || !coord(h) || !(w > 0) || !(h > 0)) throw new Error('Image size must be positive numbers in range');
-  return { id: id || newId(), x, y, w, h, src: src as string };
+  return { id: itemId(id), x, y, w, h, src: src as string };
 }
 
 /** Images and data URL characters in use (see NotesDoc.imageRoom). */

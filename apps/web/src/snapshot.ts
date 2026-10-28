@@ -11,13 +11,21 @@
  */
 import type { Capture, PageImage, Paper, RectLike, Size, Stroke } from '@inkslide/annotate';
 import { centerlinePath, outlinePath, strokeOutline } from '@inkslide/annotate/geometry';
-import { MAX_IMAGE_CHARS } from '@inkslide/annotate/model';
+import { imagePixelSize, MAX_IMAGE_CHARS } from '@inkslide/annotate/model';
 import { PAPER_STYLE } from '@inkslide/annotate/render';
 
 /** Longest side of a snapshot, px: bounds memory and the notes file. */
 export const SNAPSHOT_MAX_PX = 2048;
 /** Least pixels per CSS px of the page on screen: sharp when pasted at the same size, also on a 1x screen. */
 export const SNAPSHOT_MIN_DENSITY = 2;
+/**
+ * Most pixels of an image pasted from another program. Larger ones are not
+ * decoded at all (a small file can hold a huge image); smaller ones are
+ * scaled to SNAPSHOT_MAX_PX on the long side while decoding.
+ */
+export const MAX_IMPORT_PIXELS = 100_000_000;
+/** Bytes read from a pasted image to find its size in pixels (see model.imagePixelSize). */
+const IMPORT_HEADER_BYTES = 256 * 1024;
 /** JPEG quality for snapshots whose PNG is too large. */
 export const JPEG_QUALITY = 0.9;
 
@@ -67,9 +75,19 @@ export async function captureArea(page: SnapshotPage, rect: RectLike, scale: num
   }
 }
 
-/** An image from another program (Ctrl/Cmd+V) within the snapshot limits, with its pixel size. */
+/**
+ * An image from another program (Ctrl/Cmd+V) within the snapshot limits, with its pixel size.
+ * Its size is read from the file first: one that cannot be read or is over MAX_IMPORT_PIXELS
+ * is refused before decoding.
+ */
 export async function importImage(blob: Blob): Promise<Capture | null> {
-  const bmp = await createImageBitmap(blob);
+  const head = new Uint8Array(await blob.slice(0, IMPORT_HEADER_BYTES).arrayBuffer());
+  const size = imagePixelSize(blob.type, head);
+  if (!size || !size.width || !size.height) throw new Error('its size in pixels could not be read');
+  if (size.width * size.height > MAX_IMPORT_PIXELS) throw new Error(`it is too large (${size.width}×${size.height} pixels)`);
+  const fit = Math.min(1, SNAPSHOT_MAX_PX / Math.max(size.width, size.height));
+  // One side only keeps the aspect ratio, also when EXIF turns the image (the canvas below caps it again).
+  const bmp = await createImageBitmap(blob, fit < 1 ? { resizeWidth: Math.max(1, Math.round(size.width * fit)), resizeQuality: 'high' } : {});
   const canvas = document.createElement('canvas');
   try {
     const k = Math.min(1, SNAPSHOT_MAX_PX / Math.max(bmp.width, bmp.height));

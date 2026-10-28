@@ -23,7 +23,7 @@
  *   laser     laser points on a page
  */
 import type { Point, StrokeTool, Vec2 } from './geometry';
-import { imageType, MAX_DOC_IMAGE_CHARS, MAX_PAGE_IMAGES, type Paper, type StrokeJSON } from './model';
+import { imageType, MAX_COLOR_LENGTH, MAX_DOC_IMAGE_CHARS, MAX_ID_LENGTH, MAX_PAGE_IMAGES, type Paper, type StrokeJSON } from './model';
 
 /** One blank page as sent to the audience. */
 export interface BlankMeta {
@@ -67,8 +67,9 @@ export const PRESENTER_LIMITS = Object.freeze({
   /** Characters of the notes text (as the desktop app's notes files). */
   notesChars: 256 * 2 ** 20,
   title: 1000,
-  id: 200,
-  color: 100,
+  /** Ids (as the model keeps them, MAX_ID_LENGTH) and page ids. */
+  id: MAX_ID_LENGTH,
+  color: MAX_COLOR_LENGTH,
   /** Strokes on one page, and points in one message (all strokes together). */
   strokes: 100_000,
   points: 10_000_000,

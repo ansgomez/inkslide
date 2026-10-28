@@ -131,9 +131,9 @@ on the next save.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | string | Unique within the file. A missing, non-string or duplicate id gets a new one on load. |
+| `id` | string | Unique within the file. A missing, non-string, longer than 200 characters or duplicate id gets a new one on load. |
 | `tool` | `"pen"` or `"highlighter"` | The laser is never stored. Other tools make the stroke invalid. |
-| `color` | string | CSS color, e.g. `#be1e3c`. |
+| `color` | string | CSS color, e.g. `#be1e3c`, at most 100 characters (a longer one makes the stroke invalid). |
 | `size` | number, 0 < size ≤ 10⁶ | Pen: ink width at pressure 0.5. Highlighter: line width. In page units. |
 | `points` | `[x, y, pressure][]`, at least one | Page units, origin top-left, y down; `\|x\|`, `\|y\|` ≤ 10⁶. Pressure 0..1 (clamped on load); a missing pressure loads as 0.5. |
 
@@ -157,10 +157,10 @@ tool and pasted onto a page. They live in an `images` array next to `strokes`:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | string | Unique within the file, among stroke and image ids. A missing or duplicate id gets a new one on load. |
+| `id` | string | Unique within the file, among stroke and image ids. A missing, non-string, longer than 200 characters or duplicate id gets a new one on load. |
 | `x`, `y` | number, ≤ 10⁶ in size | Top-left corner, page units (origin top-left, y down). |
 | `w`, `h` | number, 0 < w, h ≤ 10⁶ | Size on the page, page units. The image is stretched to fill it. |
-| `src` | string | A base64 `data:` URL of type `image/png` or `image/jpeg`; the data must start with the PNG or JPEG signature. Nothing else (no SVG, no GIF, no links). |
+| `src` | string | A base64 `data:` URL of type `image/png` or `image/jpeg`; the data must start with the PNG or JPEG signature, and its size in pixels must be readable from the start of the data (PNG: the IHDR chunk; JPEG: the first frame header, SOFn, within the first 256 KB). Nothing else (no SVG, no GIF, no links). |
 
 Images are drawn below all ink (highlighter and pen strokes), in the order of the array.
 Position and size are rounded to 2 decimals when saved.
@@ -175,7 +175,11 @@ next to `strokes`, so a reader that skips the version check keeps the ink.
 
 **Limits.** Each image's `src` is at most 3 000 000 characters (about 2.2 MB of image data), a
 page holds at most 32 images, a file at most 256, with at most 24 000 000 characters of `src`
-in all (kept pages count). They keep the notes file small enough to autosave every few seconds.
+in all (kept pages count). An image is at most 4096 pixels on a side and 16 000 000 pixels in
+all, whatever its file size: a small PNG can hold a huge image, and decoding one (on screen, in
+a snapshot, in the export) would take seconds and gigabytes. The limits keep the notes file small
+enough to autosave: every save serializes the whole file, base64 image data included, so 24 MB
+of images means writing about 24 MB a few seconds after each change.
 The snapshot tool makes images of at most 2048 px on the long side (PNG; JPEG at 0.9 quality
 when the PNG would exceed the per-image limit). On load an image with a bad `src`, bad numbers
 or beyond a limit is skipped with a warning ("Skipped an image on page …"); the rest of the page
