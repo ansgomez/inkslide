@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_COLOR_LENGTH, MAX_DOC_IMAGE_PIXELS, MAX_DOC_IMAGES, MAX_PAGE_IMAGE_PIXELS, imagePixels, MAX_ID_LENGTH, MAX_IMAGE_CHARS, MAX_IMAGE_PIXELS, MAX_IMAGE_SIDE, MAX_PAGE_IMAGES, NotesDoc,
+  MAX_COLOR_LENGTH, MAX_DOC_IMAGE_CHARS, MAX_DOC_IMAGE_PIXELS, MAX_DOC_IMAGES, MAX_PAGE_IMAGE_PIXELS, imagePixels, MAX_ID_LENGTH, MAX_IMAGE_CHARS, MAX_IMAGE_PIXELS, MAX_IMAGE_SIDE, MAX_PAGE_IMAGES, NotesDoc,
   VERSION, createImage, createStroke, imageInfo, imageType,
   type NotesJSON, type PageImage,
 } from '../src/model';
@@ -161,6 +161,31 @@ describe('NotesDoc images', () => {
     expect(doc.images('p1')[0]).toMatchObject({ x: 10, y: 20 });
     doc.redo();
     expect(doc.images('p1')[0]).toMatchObject({ x: 15 });
+  });
+
+  it('drops the oldest undo steps once they keep too much image data', () => {
+    const doc = pdfDoc();
+    expect(doc.history.maxRetained).toBe(2 * MAX_DOC_IMAGE_CHARS);
+    doc.history.maxRetained = 3 * PNG.length;
+    doc.addStroke('p1', pen('s')); // keeps no image data
+    expect(doc.history.top()!.retained).toBe(0);
+    doc.addItems('p1', [], [img('a')]);
+    expect(doc.history.top()!.retained).toBe(PNG.length);
+    doc.removeItems('p1', ['a']);
+    doc.moveItems('p1', ['s'], 1, 1);
+    expect(doc.history.undoStack.map(c => c.label)).toEqual(['draw', 'paste', 'delete', 'move']);
+    doc.addItems('p2', [], [img('b'), img('c')]); // 2 more: 4 in all, over 3
+    expect(doc.history.undoStack.map(c => c.label)).toEqual(['delete', 'move', 'paste']);
+    // The latest step stays, even alone over the budget.
+    doc.history.maxRetained = 1;
+    doc.removeItems('p2', ['b', 'c']);
+    expect(doc.history.undoStack.map(c => c.label)).toEqual(['delete']);
+    doc.undo();
+    expect(doc.images('p2')).toHaveLength(2);
+    // Deleting a blank page keeps its images too.
+    const { pageId } = doc.insertBlankPage('p1');
+    doc.addItems(pageId, [], [img('d')]);
+    expect(doc.deletePage(pageId)!.retained).toBe(PNG.length);
   });
 
   it('clears images with the page and counts them as notes', () => {

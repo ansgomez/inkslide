@@ -76,6 +76,8 @@ export type Page = SlidePage | BlankPage;
 export interface Command {
   label?: string;
   pageId?: string;
+  /** Characters of image data the command keeps (for undo or redo); see History.maxRetained. */
+  retained?: number;
   do(): void;
   undo(): void;
 }
@@ -428,19 +430,32 @@ export function imagePixels(image: { src?: unknown }): number {
 /** Command stack; a command is { do(), undo(), label }. */
 export class History {
   limit: number;
+  /**
+   * Most characters of image data the undo history keeps (Command.retained):
+   * deleted or replaced images live on only in their commands, so many large
+   * pastes and deletes would otherwise keep hundreds of MB. Past it the
+   * oldest commands are dropped (the latest one always stays).
+   */
+  maxRetained: number;
   undoStack: Command[] = [];
   redoStack: Command[] = [];
   private listeners: ((h: History) => void)[] = [];
 
-  constructor(limit = 500) {
+  constructor(limit = 500, maxRetained = 2 * MAX_DOC_IMAGE_CHARS) {
     this.limit = limit;
+    this.maxRetained = maxRetained;
   }
-  /** Run a command and push it on the undo stack (dropping the oldest past `limit`); clears redo. */
+  /**
+   * Run a command and push it on the undo stack (dropping the oldest past `limit`, and past
+   * `maxRetained` characters of image data); clears redo.
+   */
   execute<C extends Command>(cmd: C): C {
     cmd.do();
     this.undoStack.push(cmd);
     if (this.undoStack.length > this.limit) this.undoStack.shift();
     this.redoStack.length = 0;
+    let retained = this.undoStack.reduce((n, c) => n + (c.retained || 0), 0);
+    while (retained > this.maxRetained && this.undoStack.length > 1) retained -= this.undoStack.shift()!.retained || 0;
     this.emit();
     return cmd;
   }
@@ -623,7 +638,7 @@ export class NotesDoc {
     if (!page || page.kind !== 'blank') return null;
     const idx = this.blankOrder.indexOf(id);
     return this.history.execute({
-      label: 'delete-page', pageId: id,
+      label: 'delete-page', pageId: id, retained: page.images.reduce((n, i) => n + i.src.length, 0),
       do: () => { this.removeBlank(id); this.emit(id, 'pages'); },
       undo: () => { this.pages.set(id, page); this.blankOrder.splice(idx, 0, id); this.emit(id, 'pages'); },
     });
@@ -742,8 +757,10 @@ export class NotesDoc {
       const full = this.imageRoom(pageId, images.added);
       if (full) throw new Error(full);
     }
+    // Image data this command keeps alive: added, removed and replaced images (moves share their data).
+    const retained = images ? [...images.added, ...images.removed, ...images.replaced].reduce((n, i) => n + i.src.length, 0) : 0;
     return this.history.execute({
-      label, pageId,
+      label, pageId, retained,
       do: () => {
         if (strokes) this.mutate(pageId, strokes.redo);
         if (images) this.mutateImages(pageId, images.redo);
@@ -1063,6 +1080,9 @@ interface ListChange<T> {
   checked: T[];
   /** Added items. */
   added: T[];
+  /** Removed items, and the old versions of replaced ones. */
+  removed: T[];
+  replaced: T[];
   redo(list: T[]): T[];
   undo(list: T[]): T[];
 }
@@ -1101,6 +1121,8 @@ function listChange<T extends { id: string }>(before: readonly T[], after: reado
   return {
     checked: [...added.map(a => a.item), ...newById.values()],
     added: added.map(a => a.item),
+    removed: before.filter(s => removedIds.has(s.id)),
+    replaced: [...oldById.values()],
     redo: list => {
       removedAt = [];
       list.forEach((s, index) => { if (removedIds.has(s.id)) removedAt.push({ item: s, index }); });
