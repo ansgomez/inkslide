@@ -189,7 +189,15 @@ View → Presenter Mode (F5, desktop only) opens a second window, the audience w
 projector: full screen on a display other than the app window's, else a 960×540 window
 (`apps/desktop/src/main/presenter.ts`, `audiencePlacement`). On Wayland it is always the
 window: the compositor ignores positions, so a full-screen window could cover the app window
-on its own display. It loads `audience.html` of the
+on its own display. Once the user has moved it to another display it goes full screen once
+(`audienceFollower`, `audienceAutoFullScreen`): Electron reports no window position, display
+or move event on Wayland, so main reads the audience page's `window.screen` every 0.7 s (the
+app page's when that changes, else every fifth time; 0.5 s timeout) in an isolated world,
+and `screenDisplay` maps it to a display (both in DIPs). Chromium updates `window.screen`
+only when the scale changes, so between displays of the same scale a reading can be stale:
+it acts only when the two displays have different scales, never on the app window's display,
+and the user presses F11 otherwise.
+It loads `audience.html` of the
 same front end build, as `app://inkslide/audience.html` like the app window's page (a second Vite entry, `apps/web/src/audience.ts`) with the same
 webPreferences and preload. Main answers none of its bridge calls (every handler checks that
 the sender is the app window), so it reads no files; it only receives.

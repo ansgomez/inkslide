@@ -40,7 +40,9 @@ import {
 import { CurrentPdf, OpenRequests } from './openRequests';
 import { APP_ORIGIN, APP_SCHEME, isSha256, pdfFromArgv, resolveWebEntry, testEnv, webFileFor, type WebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
-import { audienceEntry, audienceKey, audiencePlacement } from './presenter';
+import {
+  AUDIENCE_POLL_MS, audienceEntry, audienceFollower, audienceKey, audiencePlacement, type ScreenReport,
+} from './presenter';
 import { PrintGate, printPdf } from './print';
 import { RECENT_MAX, recentInfo, RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
@@ -70,6 +72,8 @@ protocol.registerSchemesAsPrivileged([
   { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, codeCache: true } },
 ]);
 const onWayland = process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY);
+/** The isolated world main reads the pages' window.screen in (not the preload's, 999). */
+const AUDIENCE_SCREEN_WORLD = 1001;
 
 if (!app.requestSingleInstanceLock()) {
   // The running instance gets our argv through 'second-instance'.
@@ -403,7 +407,8 @@ function start(): void {
       return;
     }
     const appWin = win;
-    // Wayland: no window positions, so no full screen that could land on the app window's display.
+    // Wayland: no window positions, so no full screen that could land on the app window's display;
+    // followAudience makes it full screen once the user has moved it to another display.
     const place = audiencePlacement(screen.getAllDisplays(), screen.getDisplayMatching(appWin.getBounds()).id, !onWayland);
     const a = new BrowserWindow({
       ...place.bounds,
@@ -438,6 +443,7 @@ function start(): void {
       if (win && loaded) win.webContents.send(IPC.presenterState, true); // the app window sends everything
     });
     wc.on('render-process-gone', () => { if (!a.isDestroyed()) a.close(); });
+    if (onWayland) followAudience(a);
     a.on('closed', () => {
       if (audience !== a) return;
       audience = null;
@@ -451,6 +457,35 @@ function start(): void {
       void a.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(missingPage(entry.file))}`);
     } else void a.loadURL(appUrl(entry.file));
     refreshMenu();
+  }
+
+  /**
+   * Wayland: make the audience window full screen once the user has moved it
+   * to a display other than the app window's (audienceFollower decides).
+   * Electron reports no window position or display there, and no event when a
+   * window moves; the pages' window.screen is the only hint (it follows the
+   * display only when the scale changes, so this works only between displays
+   * of different scales). Read in a separate world the pages cannot touch.
+   */
+  function followAudience(a: BrowserWindow): void {
+    const ask = (w: BrowserWindow | null): Promise<ScreenReport | null> =>
+      !w || w.isDestroyed()
+        ? Promise.resolve(null)
+        : w.webContents
+          .executeJavaScriptInIsolatedWorld(AUDIENCE_SCREEN_WORLD, [{
+            code: '({ availLeft: screen.availLeft, availTop: screen.availTop, availWidth: screen.availWidth, availHeight: screen.availHeight })',
+          }])
+          .then((r: unknown) => (r && typeof r === 'object' ? r as ScreenReport : null));
+    const follower = audienceFollower({
+      readAudience: () => ask(a),
+      readApp: () => ask(win),
+      displays: () => screen.getAllDisplays(),
+      alive: () => !a.isDestroyed() && a.isVisible(),
+      isFullScreen: () => a.isFullScreen(),
+      setFullScreen: () => a.setFullScreen(true),
+    });
+    const timer = setInterval(() => void follower.tick(), AUDIENCE_POLL_MS);
+    a.on('closed', () => clearInterval(timer));
   }
 
   // ── IPC ──────────────────────────────────────────────────────

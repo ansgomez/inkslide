@@ -32,7 +32,7 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 | `src/main/print.ts` | Printing: the exported PDF in a hidden window, Chromium's PDF viewer, the system print dialog; one print at a time per window (`PrintGate`), of at most 2 GB. |
 | `src/main/harden.ts` | Window lockdown shared by all windows: webPreferences, no navigation, permissions (fullscreen only); the app window's links open in the browser only once the user confirms them (`confirmLinks`). |
 | `src/main/menu.ts` | File and View menus (Revert to Backup…, Keep a Backup of the Notes; Presenter Mode, F5; Reload only in development builds). |
-| `src/main/presenter.ts` | Presenter mode: where the audience window opens (full screen on another display), its page (`audience.html`), its keys (Esc ends, F11 full screen). Main relays the app window's presenter messages to it, checked by `parsePresenterMessage`. |
+| `src/main/presenter.ts` | Presenter mode: where the audience window opens (full screen on another display), its page (`audience.html`), its keys (Esc ends, F11 full screen), and on Wayland when it goes full screen by itself after the user has moved it to another display (main reads the pages' `window.screen`; only when the two displays have different scales, since it goes stale otherwise; never on the app window's display). Main relays the app window's presenter messages to it, checked by `parsePresenterMessage`. |
 | `src/preload/preload.ts` | Sandboxed preload: exposes `window.inkslide`. |
 | `src/shared/bridge.ts` | `InkslideBridge` type and IPC channel names; imported by the front end as `@inkslide/desktop/bridge`. |
 
