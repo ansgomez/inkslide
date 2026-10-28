@@ -378,3 +378,18 @@ body.ink-audience * { pointer-events: none; }
   font-size: 18px;
   opacity: 0.6;
 }
+/* Browser audience window: how to go full screen (a page may only ask for it on a click). */
+body.ink-audience.has-hint { cursor: default; }
+.ink-fullscreen-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(32, 32, 32, 0.85);
+  color: #fff;
+  font-size: 15px;
+  white-space: nowrap;
+}

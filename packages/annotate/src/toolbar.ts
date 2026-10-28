@@ -46,6 +46,7 @@ export const ICONS: Record<string, string> = {
   overview: '<rect x="3" y="4" width="7.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="7.5" height="6.5" rx="1"/><rect x="3" y="13.5" width="7.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="7.5" height="6.5" rx="1"/>',
   // Export: a page with an arrow out of it.
   pdf: '<path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/><path d="M9 14h7M13.5 11.5L16 14l-2.5 2.5"/>',
+  present: '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M12 16v4M8 20h8"/><path d="M10 8v4l3.5-2z" fill="currentColor"/>',
   print: '<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/>',
   minus: '<path d="M5 12h14" stroke-width="2.4"/>',
   plus: '<path d="M5 12h14M12 5v14" stroke-width="2.4"/>',

@@ -1,12 +1,19 @@
 /* Inkslide web - the audience window of presenter mode (entry of audience.html)
  *
  * The desktop app opens this page in a second window (View → Presenter Mode),
- * full screen on the other display when there is one. It shows what the
- * presenter's window shows: the page, the ink (also the stroke being written)
- * and the laser, with no toolbar and no input. It reads no files: the PDF and
- * the notes come as presenter messages (@inkslide/annotate/presenter) through
- * the bridge, are checked again here, and are applied to a NotesDoc of its
- * own, which is never saved.
+ * full screen on the other display when there is one; the browser build opens
+ * it as a pop-up (F5), audience.html#<id> with the presenter tab's link id
+ * (presenter-link.ts). It shows what the presenter's window shows: the page,
+ * the ink (also the stroke being written, erased or moved) and the laser, with
+ * no toolbar. It reads no files: the PDF and the notes come as presenter
+ * messages (@inkslide/annotate/presenter) through the bridge or the browser's
+ * channel, are checked again here, and are applied to a NotesDoc of its own,
+ * which is never saved.
+ *
+ * Input: none in the desktop app (main handles its keys). In the browser a
+ * click goes full screen (a page may only ask for it on a click or a key; a
+ * hint says so), and Escape (out of full screen) or F5 closes the window,
+ * ending presenter mode as in the desktop app.
  *
  *   .ink-stage (whole window)
  *     .ink-page             the page, fitted whole (no zoom, no scroll)
@@ -15,7 +22,7 @@
  */
 import '@inkslide/annotate/toolbar.css';
 import './style.css';
-import { NotesDoc, type Paper, type Point } from '@inkslide/annotate';
+import { createStroke, NotesDoc, type Paper, type Point, type Stroke } from '@inkslide/annotate';
 import { deckFromPdf } from '@inkslide/annotate/io';
 import { applyLivePoints, parsePresenterMessage, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import * as render from '@inkslide/annotate/render';
@@ -25,6 +32,7 @@ import { pdfPageNumber } from './counter';
 import { fitTo, renderScale, type FitRect } from './fit';
 import { bitmapKey, createPageBitmaps } from './page-bitmaps';
 import { openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
+import { broadcastPort, channelName, createAudienceLink, idFromHash } from './presenter-link';
 
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
 
@@ -58,6 +66,12 @@ let wanted = '';
 let fit: FitRect | null = null;
 let shownKey = '';
 let live: Live | null = null;
+/**
+ * An erase or move under way on the presenter's page (erasing / moving
+ * messages), shown over the page's strokes until preview-end. `pieces`: the
+ * cut pieces received so far in this gesture, by id.
+ */
+let preview: { page: string; kind: 'erase' | 'move'; ids: string[]; pieces: Map<string, Stroke> } | null = null;
 const surfaces = new Map<string, AudienceSurface>();
 
 const dpr = (): number => window.devicePixelRatio || 1;
@@ -142,7 +156,63 @@ function endLive(): void {
   live = null;
 }
 
+// ── Previews (erasing and moving while they happen) ────────────
+
+/** The page of the preview shows its strokes and images again, as the document has them. */
+function endPreview(): void {
+  if (!preview) return;
+  const surface = surfaces.get(preview.page);
+  if (surface && doc) {
+    render.syncLayer(surface.layer, doc.strokes(preview.page));
+    render.syncImages(surface.layer, doc.images(preview.page));
+    // Items not changed by the move (it was refused) still carry the offset.
+    if (preview.kind === 'move') render.translateStrokes(surface.layer, preview.ids, 0, 0);
+  }
+  preview = null;
+}
+
+/** A preview of `kind` on `page`: the one under way, or a new one (ending any other). */
+function previewOn(page: string, kind: 'erase' | 'move'): NonNullable<typeof preview> {
+  if (preview && (preview.page !== page || preview.kind !== kind)) endPreview();
+  preview ??= { page, kind, ids: [], pieces: new Map() };
+  return preview;
+}
+
+/** The page as the eraser leaves it so far: strokes by id (the page's or pieces), images not erased. */
+function erasing(m: Extract<PresenterMessage, { type: 'erasing' }>): void {
+  if (!doc) return;
+  const pv = previewOn(m.page, 'erase');
+  for (const s of m.strokes) {
+    try {
+      pv.pieces.set(s.id, createStroke(s));
+    } catch (e) {
+      console.error('Presenter mode: a piece could not be shown', e);
+    }
+  }
+  const surface = surfaces.get(m.page);
+  if (!surface) return;
+  const own = new Map(doc.strokes(m.page).map(s => [s.id, s]));
+  render.syncLayer(surface.layer, m.order.flatMap(id => pv.pieces.get(id) ?? own.get(id) ?? []));
+  const hidden = new Set(m.hidden);
+  render.syncImages(surface.layer, doc.images(m.page).filter(i => !hidden.has(i.id)));
+}
+
+/** Strokes and images being dragged: shown moved by (dx, dy). */
+function moving(m: Extract<PresenterMessage, { type: 'moving' }>): void {
+  const pv = previewOn(m.page, 'move');
+  const surface = surfaces.get(m.page);
+  if (surface) {
+    // Items no longer dragged (none, as a rule) go back.
+    const now = new Set(m.ids);
+    render.translateStrokes(surface.layer, pv.ids.filter(id => !now.has(id)), 0, 0);
+    render.translateStrokes(surface.layer, m.ids, m.dx, m.dy);
+  }
+  pv.ids = m.ids;
+}
+
 function show(pageId: string): void {
+  // Another page: the preview of the one left ends (also when the new one is not known yet).
+  if (preview && preview.page !== pageId) endPreview();
   const surface = surfaceFor(pageId);
   if (!surface) {
     wanted = pageId; // shown once its blank page arrives
@@ -196,6 +266,7 @@ new ResizeObserver(() => {
 
 function closeDoc(): void {
   endLive();
+  preview = null;
   surfaces.forEach(s => s.svg.remove());
   surfaces.clear();
   bitmaps.setDoc(null);
@@ -261,6 +332,15 @@ async function handle(m: PresenterMessage): Promise<void> {
     case 'live-end':
       endLive();
       return;
+    case 'erasing':
+      erasing(m);
+      return;
+    case 'moving':
+      moving(m);
+      return;
+    case 'preview-end':
+      endPreview();
+      return;
     case 'laser': {
       const surface = m.page === current ? surfaces.get(current) : undefined;
       if (surface) for (const pt of m.points) render.laser(surface.layer).add(pt);
@@ -309,13 +389,63 @@ function receive(value: unknown): void {
   });
 }
 
-// No input: nothing here takes a click, a key or a menu.
+// No menu.
 document.addEventListener('contextmenu', e => e.preventDefault());
 
+/** How long the full-screen hint stays after the pointer last moved, ms. */
+const HINT_MS = 4000;
+
+/** Browser: the hint, a click for full screen, and the keys that end presenter mode. */
+function browserInput(): void {
+  const hint = $<HTMLElement>('.ink-fullscreen-hint');
+  let hintTimer: ReturnType<typeof setTimeout> | null = null;
+  // F11 is the browser's own full screen (no fullscreenElement), seen as display-mode.
+  const full = (): boolean => !!document.fullscreenElement || matchMedia('(display-mode: fullscreen)').matches;
+  const showHint = (): void => {
+    const on = !full();
+    hint.hidden = !on;
+    document.body.classList.toggle('has-hint', on);
+    if (hintTimer) clearTimeout(hintTimer);
+    hintTimer = on ? setTimeout(() => { hint.hidden = true; document.body.classList.remove('has-hint'); }, HINT_MS) : null;
+  };
+  document.addEventListener('pointermove', showHint);
+  document.addEventListener('fullscreenchange', showHint);
+  document.addEventListener('click', () => {
+    if (full() || !document.documentElement.requestFullscreen) return;
+    document.documentElement.requestFullscreen().catch(e => console.warn('Full screen refused', e));
+  });
+  window.addEventListener('keydown', e => {
+    if (e.key === 'F5' || (e.key === 'Escape' && !full())) {
+      e.preventDefault();
+      window.close();
+    }
+  });
+  showHint();
+}
+
 const bridge = window.inkslide;
+const linkId = idFromHash(location.hash);
 if (bridge && typeof bridge.onAudience === 'function') {
   setWaiting('Waiting for the presenter…');
   bridge.onAudience(receive);
+} else if (!bridge && linkId && typeof BroadcastChannel === 'function') {
+  setWaiting('Waiting for the presenter…');
+  const link = createAudienceLink(broadcastPort(channelName(linkId)), {
+    message: receive,
+    connected: () => {},
+    gone: () => {
+      queue = queue.then(() => {
+        closeDoc();
+        setWaiting('The presenter’s tab was closed or is reloading. Waiting for it…');
+      });
+    },
+    // F5 in the presenter tab, or no presenter back within GRACE_MS. A window not opened by a
+    // script (the URL typed in) stays: it keeps its text and follows a presenter that comes.
+    quit: () => window.close(),
+  });
+  window.addEventListener('pagehide', e => { if (!e.persisted) link.leave(); });
+  window.addEventListener('pageshow', e => { if (e.persisted) link.hello(); });
+  browserInput();
 } else {
-  setWaiting('This is the audience window of the desktop app’s presenter mode (View → Presenter Mode).');
+  setWaiting('This is the audience window of presenter mode: press F5 in Inkslide (desktop app: View → Presenter Mode).');
 }

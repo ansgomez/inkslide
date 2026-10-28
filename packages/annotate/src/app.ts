@@ -18,7 +18,7 @@ import { rectBBox, strokeBBox, unionBBox, type RectLike, type Stroke } from './g
 import { createImage, type NotesDoc, type PageImage } from './model';
 import { attachInput, type InputController } from './input';
 import * as render from './render';
-import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, sizeIndex, toolSize, TOOLS, type Prefs, type Selection, type SizedTool, type Surface, type Tool, type ToolId, type ToolRenderer, type Tools } from './tools';
+import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, sizeIndex, toolSize, TOOLS, type Prefs, type Selection, type SizedTool, type Surface, type Tool, type ToolId, type ToolRenderer, type Tools, type ToolSync } from './tools';
 import { bindKeys, createToolbar, defaultKeymap, type Shortcut, type Toolbar } from './toolbar';
 import type { PagesController } from './pages';
 
@@ -178,7 +178,8 @@ export interface Annotator {
   onPagesChanged: ((pageId: string | null) => void) | null;
   /** Called on every refresh (after the toolbar update). */
   onRefresh: (() => void) | null;
-  sync: { laser(pageId: string, pt: [number, number, number]): void } | null;
+  /** Mirror of the laser and of erase/move previews to another window (presenter mode). */
+  sync: ToolSync | null;
 
   currentTool(): Tool;
   activeSurface(): Surface | null;

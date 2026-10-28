@@ -1,6 +1,6 @@
 /* Inkslide web - presenter mode, the presenter's side
  *
- * While the audience window is open (desktop: View → Presenter Mode), the
+ * While the audience window is open (desktop: View → Presenter Mode; browser: F5), the
  * viewer reports what it shows and this module turns it into presenter
  * messages (@inkslide/annotate/presenter) for that window:
  *
@@ -15,12 +15,16 @@
  * - page changes and blank pages (insert, delete, paper) go at once;
  * - a PDF over PRESENTER_LIMITS.pdfBytes is not mirrored: the audience says so;
  * - the stroke being written and the laser go at most every LIVE_MS, the
- *   stroke only with the points that changed since the last message.
+ *   stroke only with the points that changed since the last message;
+ * - so do erasing and moving while they happen (ToolSync.preview): an
+ *   `erasing` message with the ids the page shows and only the cut pieces
+ *   the audience does not have yet, or a `moving` message with the ids and
+ *   the offset. When the gesture ends (or is cancelled), its page's changes
+ *   go first and `preview-end` after them, in the same task.
  *
- * Nothing is sent while the audience window is closed. Erasing and moving
- * strokes show on the audience when they are done, not while they happen.
+ * Nothing is sent while the audience window is closed.
  */
-import type { NotesDoc, PageImage, PdfFile, Point, Stroke, StrokeTool } from '@inkslide/annotate';
+import type { NotesDoc, PageImage, PdfFile, Point, Stroke, StrokeTool, ToolPreview } from '@inkslide/annotate';
 import { serializeStroke } from '@inkslide/annotate/model';
 import { commonPrefix, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import type { LiveStroke } from '@inkslide/annotate/render';
@@ -38,6 +42,8 @@ export interface ViewerMirror {
   laser(pageId: string, pt: Point): void;
   /** The stroke being written on a page: `inner` draws it here, the result also mirrors it. */
   liveStroke(pageId: string, tool: StrokeTool, inner: LiveStroke): LiveStroke;
+  /** An erase or move as it happens on a page; null: it ended (ToolSync.preview). */
+  preview(pageId: string, preview: ToolPreview | null): void;
 }
 
 /** Presenter mode of one window: the viewer's mirror plus the switch. */
@@ -61,7 +67,7 @@ const defaultTimers: PresenterTimers = {
   queueMicrotask: fn => queueMicrotask(fn),
 };
 
-/** Presenter mode sending through `send` (desktop: the bridge's presenterSend). */
+/** Presenter mode sending through `send` (desktop: the bridge's presenterSend; browser: presenter-link.ts). */
 export function createPresenter(send: (message: PresenterMessage) => void, timers: PresenterTimers = defaultTimers): Presenter {
   let active = false;
   let file: PdfFile | null = null;
@@ -79,6 +85,12 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
   /** The stroke being written: what the audience has, and what it should get. */
   let live: { page: string; tool: StrokeTool; stroke: Stroke | null; sent: readonly Point[]; ended: boolean } | null = null;
   let laser: { page: string; points: [number, number][] } | null = null;
+  /**
+   * The erase or move under way: `dirty` until its latest state is sent,
+   * `pieces` the cut pieces the audience has (by id), `shown` once the
+   * audience got a message of it.
+   */
+  let preview: { page: string; p: ToolPreview; dirty: boolean; pieces: Set<string>; shown: boolean; ended: boolean } | null = null;
   let timer: unknown = null;
 
   const post = (m: PresenterMessage): boolean => {
@@ -160,6 +172,37 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
       live = null;
       if (active) post({ type: 'live-end' });
     }
+    if (preview && preview.ended) {
+      const { shown } = preview;
+      preview = null;
+      if (active && shown) post({ type: 'preview-end' });
+    }
+  }
+
+  /** The preview's latest state, as an erasing or moving message; false if nothing was sent. */
+  function sendPreview(): boolean {
+    const pv = preview!;
+    pv.dirty = false;
+    if (!doc || !doc.hasPage(pv.page)) return false;
+    const { p } = pv;
+    if (p.kind === 'move') {
+      pv.shown = post({ type: 'moving', page: pv.page, ids: p.ids.slice(), dx: p.dx, dy: p.dy }) || pv.shown;
+      return true;
+    }
+    if (p.strokes.length > PRESENTER_LIMITS.strokes) return false; // the result comes when the gesture ends
+    // Strokes of the page (the audience has them) and pieces sent before go by id.
+    const own = new Map(doc.strokes(pv.page).map(s => [s.id, s]));
+    const fresh = p.strokes.filter(s => own.get(s.id) !== s && !pv.pieces.has(s.id));
+    const left = new Set(p.images.map(i => i.id));
+    const ok = post({
+      type: 'erasing', page: pv.page, order: p.strokes.map(s => s.id), strokes: fresh.map(serializeStroke),
+      hidden: doc.images(pv.page).filter(i => !left.has(i.id)).map(i => i.id),
+    });
+    if (ok) {
+      for (const s of fresh) pv.pieces.add(s.id);
+      pv.shown = true;
+    }
+    return true;
   }
 
   function queueFlush(): void {
@@ -190,6 +233,7 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
       laser = null;
       sent = true;
     }
+    if (preview && preview.dirty && !preview.ended && sendPreview()) sent = true;
     if (sent) timer = timers.setTimeout(sendLive, LIVE_MS); // the next update waits its turn
   }
 
@@ -244,9 +288,12 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
       dirty.clear();
       laser = null;
       if (live) live.sent = [];
+      // An audience that (re)loads has no pieces and no preview: the next update sends it all.
+      if (preview && !preview.ended) Object.assign(preview, { dirty: true, pieces: new Set(), shown: false });
       if (timer !== null) timers.clearTimeout(timer);
       timer = null;
       sendAll();
+      if (preview && preview.dirty) scheduleLive();
     },
 
     opened(f, d) {
@@ -254,6 +301,7 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
       doc = d;
       page = '';
       live = null;
+      preview = null;
       dirty.clear();
       watch(d);
       sendAll();
@@ -273,6 +321,21 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
       }
       laser ??= { page: pageId, points: [] };
       laser.points.push([pt[0], pt[1]]);
+      scheduleLive();
+    },
+
+    preview(pageId, p) {
+      if (!p) {
+        if (preview && !preview.ended) {
+          preview.ended = true;
+          // The gesture's command changed the page just before: its page goes first.
+          queueFlush();
+        }
+        return;
+      }
+      // The same gesture keeps the pieces the audience has; a new one starts afresh.
+      const same = preview && !preview.ended && preview.page === pageId && preview.p.kind === p.kind;
+      preview = { page: pageId, p, dirty: true, pieces: same ? preview!.pieces : new Set(), shown: same ? preview!.shown : false, ended: false };
       scheduleLive();
     },
 

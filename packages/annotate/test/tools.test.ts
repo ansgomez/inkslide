@@ -397,6 +397,94 @@ describe('laser', () => {
   });
 });
 
+describe('previews (presenter mode)', () => {
+  /** A sync that logs the previews as text: erase:<stroke ids>|<image ids>, move:<ids>:dx,dy, end. */
+  function recordPreviews(): string[] {
+    const log: string[] = [];
+    app.sync = {
+      laser: () => {},
+      preview: (pageId, p) => {
+        log.push(!p ? `${pageId}:end` : p.kind === 'erase'
+          ? `${pageId}:erase:${p.strokes.map(s => s.id).join(',')}|${p.images.map(i => i.id).join(',')}`
+          : `${pageId}:move:${p.ids.join(',')}:${p.dx},${p.dy}`);
+      },
+    };
+    return log;
+  }
+
+  it('the stroke eraser mirrors the page as erased so far, then ends after its command', () => {
+    doc.pages.set('p1', [hline('a', 0), hline('b', 50), hline('c', 100)]);
+    const log = recordPreviews();
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [50, -30, 0.5]); // erases nothing yet
+    eraser.move!(surface, [50, 10, 0.5]);
+    eraser.move!(surface, [50, 20, 0.5]); // nothing new: no preview
+    eraser.move!(surface, [50, 60, 0.5]);
+    expect(log).toEqual(['p1:erase:b,c|', 'p1:erase:c|']);
+    eraser.up!(surface, null);
+    expect(log.at(-1)).toBe('p1:end');
+    expect(doc.calls).toHaveLength(1);
+  });
+
+  it('the partial eraser mirrors the cut pieces', () => {
+    doc.pages.set('p1', [hline('a', 0)]);
+    const log = recordPreviews();
+    const { partial } = createTools(app, R.r);
+    partial.down!(surface, [50, 0, 0.5]);
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatch(/^p1:erase:[^a,|]+,[^a,|]+\|$/); // two pieces, not a
+    partial.cancel!(surface);
+    expect(log.at(-1)).toBe('p1:end');
+  });
+
+  it('the stroke eraser mirrors erased images', () => {
+    doc.imgs.set('p1', [{ id: 'i1', x: 0, y: 0, w: 20, h: 20, src: 'data:image/png;base64,' }]);
+    const log = recordPreviews();
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [10, 10, 0.5]);
+    eraser.up!(surface, null);
+    expect(log).toEqual(['p1:erase:|', 'p1:end']);
+  });
+
+  it('a refused erase and a cancel end the preview too', () => {
+    doc.pages.set('p1', [hline('a', 0)]);
+    const log = recordPreviews();
+    doc.replaceContent = () => { throw new Error('too many strokes'); };
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [50, 0, 0.5]);
+    eraser.up!(surface, null);
+    expect(log).toEqual(['p1:erase:|', 'p1:end']);
+    eraser.down!(surface, [50, 0, 0.5]);
+    eraser.cancel!(surface);
+    expect(log.slice(2)).toEqual(['p1:erase:|', 'p1:end']);
+    eraser.cancel!(surface); // no gesture: nothing
+    expect(log).toHaveLength(4);
+  });
+
+  it('the selector mirrors the drag with its offset, and its end', () => {
+    doc.pages.set('p1', [hline('a', 0)]);
+    const log = recordPreviews();
+    app.select({ pageId: 'p1', ids: ['a'] });
+    const { selector } = createTools(app, R.r);
+    selector.down!(surface, [50, 5, 0.5]);
+    selector.move!(surface, [60, 8, 0.5]);
+    selector.move!(surface, [70, 15, 0.5]);
+    selector.up!(surface, [70, 15, 0.5]);
+    expect(log).toEqual(['p1:move:a:10,3', 'p1:move:a:20,10', 'p1:end']);
+    expect(doc.calls.map(c => c.method)).toEqual(['moveItems']);
+    // Cancelled, and dropped (the selection replaced mid-drag): the end, no command.
+    selector.down!(surface, [50, 5, 0.5]);
+    selector.move!(surface, [55, 5, 0.5]);
+    selector.cancel!(surface);
+    selector.down!(surface, [50, 5, 0.5]);
+    selector.move!(surface, [55, 5, 0.5]);
+    app.select({ pageId: 'p1', ids: ['a'] });
+    selector.move!(surface, [60, 5, 0.5]);
+    expect(log.slice(3)).toEqual(['p1:move:a:5,0', 'p1:end', 'p1:move:a:5,0', 'p1:end']);
+    expect(doc.calls).toHaveLength(1);
+  });
+});
+
 describe('nextSize', () => {
   it('steps along the scale and stops at its ends', () => {
     expect(nextSize('pen', 4, 1)).toBe(5.5);

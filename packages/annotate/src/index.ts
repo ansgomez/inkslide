@@ -18,7 +18,7 @@ export type { Point, Vec2, XY, Stroke, StrokeTool, BBox, OutlineEngine, RectLike
 export { NotesDoc, History, createStroke, createImage } from './model';
 export type { Deck, DeckInit, Page, SlidePage, BlankPage, PageImage, Paper, Size, Command, NotesJSON } from './model';
 export type { Layer, Laser } from './render';
-export type { Surface, Tool, ToolId, Tools, Prefs, Selection, ToolHost } from './tools';
+export type { Surface, Tool, ToolId, Tools, Prefs, Selection, ToolHost, ToolPreview, ToolSync } from './tools';
 export type { InputHost, InputController, PenButton } from './input';
 export type { ToolbarHost, ToolbarGroup, ToolbarItem, Shortcut, Toolbar } from './toolbar';
 export type { PagesController, PagesHost } from './pages';

@@ -39,6 +39,8 @@ const pt = (x: number): Point => [x, x, 0.5];
 const pen = (points: Point[]): Stroke => ({ id: 'live', tool: 'pen', color: '#be1e3c', size: 4, points });
 const inner = () => ({ updates: 0, removed: false, update() { this.updates++; }, remove() { this.removed = true; } });
 
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAGUlEQVR4nGP8z8DAwMDAyPCfgYGBiQEJAAAqNwIDlBYW1QAAAABJRU5ErkJggg==';
+
 describe('createPresenter', () => {
   it('sends nothing until the audience window is there, then everything', () => {
     const { presenter, doc, file, types, take } = setup();
@@ -231,6 +233,73 @@ describe('createPresenter', () => {
     expect(take().map(m => m.type)).toEqual(['strokes', 'live-end']);
     clock.tick();
     expect(take()).toEqual([]);
+  });
+
+  it('mirrors an erase while it happens: ids, new pieces once, erased images; the result before the end', () => {
+    const { presenter, doc, file, clock, take } = setup();
+    presenter.opened(file, doc);
+    presenter.setActive(true);
+    const mk = (x: number) => createStroke({ tool: 'pen', color: '#000', size: 4, points: [pt(x), pt(x + 1), pt(x + 2)] });
+    const a = mk(1), b = mk(5);
+    const img = createImage({ x: 0, y: 0, w: 10, h: 10, src: PNG });
+    doc.addItems('p1', [a, b], [img]);
+    clock.flush();
+    take();
+    const piece = createStroke({ ...a, id: null, points: [pt(1)] });
+    presenter.preview('p1', { kind: 'erase', strokes: [piece, b], images: [] });
+    expect(take()).toEqual([{
+      type: 'erasing', page: 'p1', order: [piece.id, b.id],
+      strokes: [{ id: piece.id, tool: 'pen', color: '#000', size: 4, points: [pt(1)] }], hidden: [img.id],
+    }]);
+    // The next update waits LIVE_MS and does not send the piece again.
+    presenter.preview('p1', { kind: 'erase', strokes: [piece], images: [] });
+    presenter.preview('p1', { kind: 'erase', strokes: [piece], images: [img] });
+    expect(take()).toEqual([]);
+    clock.tick();
+    expect(take()).toEqual([{ type: 'erasing', page: 'p1', order: [piece.id], strokes: [], hidden: [] }]);
+    // Release: the command, then the end; the pending update is not sent after it.
+    presenter.preview('p1', { kind: 'erase', strokes: [], images: [img] });
+    doc.replaceContent('p1', { strokes: [], images: [img] }, 'erase');
+    presenter.preview('p1', null);
+    clock.flush();
+    expect(take().map(m => m.type)).toEqual(['delta', 'preview-end']);
+    clock.tick();
+    expect(take()).toEqual([]);
+  });
+
+  it('mirrors a move with ids and offset; a cancelled move just ends', () => {
+    const { presenter, doc, file, clock, take } = setup();
+    presenter.opened(file, doc);
+    presenter.setActive(true);
+    take();
+    presenter.preview('p1', { kind: 'move', ids: ['a', 'b'], dx: 3, dy: 4 });
+    presenter.preview('p1', { kind: 'move', ids: ['a', 'b'], dx: 5, dy: 6 });
+    expect(take()).toEqual([{ type: 'moving', page: 'p1', ids: ['a', 'b'], dx: 3, dy: 4 }]);
+    clock.tick();
+    expect(take()).toEqual([{ type: 'moving', page: 'p1', ids: ['a', 'b'], dx: 5, dy: 6 }]);
+    presenter.preview('p1', null);
+    presenter.preview('p1', null); // once only
+    clock.flush();
+    expect(take()).toEqual([{ type: 'preview-end' }]);
+  });
+
+  it('sends the preview again to an audience that reloads mid-gesture, and nothing while closed', () => {
+    const { presenter, doc, file, clock, take } = setup();
+    presenter.opened(file, doc);
+    const piece = createStroke({ tool: 'pen', color: '#000', size: 4, points: [pt(1)] });
+    presenter.preview('p1', { kind: 'erase', strokes: [piece], images: [] });
+    clock.tick();
+    presenter.preview('p1', null);
+    clock.flush();
+    expect(take()).toEqual([]);
+    presenter.setActive(true);
+    presenter.preview('p1', { kind: 'erase', strokes: [piece], images: [] });
+    expect(take().filter(m => m.type === 'erasing')).toMatchObject([{ strokes: [{ id: piece.id }] }]);
+    // The reloaded audience gets everything, then the preview with the piece again.
+    presenter.setActive(true);
+    expect(take().map(m => m.type)).toEqual(['open', 'notes', 'erasing']);
+    presenter.setActive(true);
+    expect(take().filter(m => m.type === 'erasing')).toMatchObject([{ strokes: [{ id: piece.id }] }]);
   });
 
   it('collects laser points and sends them together', () => {

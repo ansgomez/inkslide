@@ -142,6 +142,9 @@ test.describe('service worker', () => {
     // ?pdf= links still get the app shell offline.
     await page.goto('/?pdf=missing.pdf');
     await expect(page.locator('.ink-empty h1')).toHaveText('Inkslide');
+    // So does the audience window of presenter mode.
+    await page.goto('/audience.html#e2e');
+    await expect(page.locator('.ink-waiting')).toHaveText('Waiting for the presenter…');
     await context.setOffline(false);
   });
 

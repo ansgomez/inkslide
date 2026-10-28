@@ -1,9 +1,11 @@
 /* Inkslide web - entry point: page shell, platform adapter, open requests */
 import '@inkslide/annotate/toolbar.css';
 import './style.css';
+import { isTyping } from '@inkslide/annotate/toolbar';
 import { banner } from './banner';
 import { getAdapter, isWebAdapter } from './platform';
-import { createPresenter } from './presenter';
+import { createPresenter, type Presenter } from './presenter';
+import { createWebPresenter, type PresenterSwitch } from './presenter-web';
 import { setupPwa } from './pwa';
 import { desktopRecentSource, mountRecentList } from './recent-list';
 import { createViewer } from './viewer';
@@ -11,17 +13,40 @@ import { createViewer } from './viewer';
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
 
 const adapter = getAdapter();
-// Presenter mode (desktop): the audience window mirrors this one (presenter.ts, audience.ts).
+// Presenter mode: the audience window mirrors this one (presenter.ts, audience.ts). The
+// desktop app opens it from its menu and relays through its bridge; the browser build
+// opens a pop-up and talks to it over a BroadcastChannel (presenter-web.ts). Tauri
+// (phones, tablets) has no presenter mode.
 const bridge = window.inkslide;
-const presenter = bridge && typeof bridge.onPresenter === 'function' ? createPresenter(m => bridge.presenterSend(m)) : null;
-if (presenter) bridge!.onPresenter(on => presenter.setActive(on));
+let presenter: Presenter | null = null;
+let presenterMode: PresenterSwitch | null = null;
+if (bridge && typeof bridge.onPresenter === 'function') {
+  presenter = createPresenter(m => bridge.presenterSend(m));
+  bridge.onPresenter(on => presenter!.setActive(on));
+} else if (!bridge && adapter.platform === 'web') {
+  const web = createWebPresenter(() => viewer.session?.app.refresh(), text => banner(text, 'warn'));
+  if (web) ({ presenter, mode: presenterMode } = web);
+}
 const viewer = createViewer({
   stage: $('.ink-stage'),
   page: $('.ink-page'),
   pdfCanvas: $('canvas.ink-pdf'),
   liveCanvas: $('canvas.ink-live'),
   empty: $('.ink-empty'),
-}, adapter, presenter);
+}, adapter, presenter, presenterMode);
+
+// F5 starts and ends presenter mode in the browser, as in the desktop app (where the
+// menu has it). Only with a PDF open, or the audience window open: else F5 reloads
+// (Ctrl/Cmd+R always does). Not while typing in a field.
+if (presenterMode) {
+  const mode = presenterMode;
+  window.addEventListener('keydown', e => {
+    if (e.key !== 'F5' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.isComposing || isTyping(e.target)) return;
+    if (!viewer.session && !mode.on) return;
+    e.preventDefault();
+    if (!e.repeat) mode.toggle();
+  });
+}
 
 document.body.dataset.platform = adapter.platform;
 $('.ink-open').addEventListener('click', () => void viewer.openFrom());
