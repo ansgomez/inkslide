@@ -42,7 +42,8 @@ desktop app uses Electron.
   drag to the projector. It then goes full screen by itself, but only when the two displays
   use different scales: Electron reports no window position or display on Wayland, and a
   page's `window.screen` follows the display only when the scale changes (checked with KWin
-  and Electron 43). With equal scales the user still presses F11. A Wayland protocol for this
+  and Electron 43), so with equal scales the readings can be stale and it never acts (it
+  could cover the presenter); the user presses F11 there. A Wayland protocol for this
   (or Chromium passing on which output a window is on) would close that gap. Mirror erasing
   and moving while they happen; a browser and PWA version (`BroadcastChannel` and
   `window.open`).

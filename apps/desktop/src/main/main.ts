@@ -41,8 +41,7 @@ import { CurrentPdf, OpenRequests } from './openRequests';
 import { APP_ORIGIN, APP_SCHEME, isSha256, pdfFromArgv, resolveWebEntry, testEnv, webFileFor, type WebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
 import {
-  AUTO_FULL_SCREEN_START, audienceAutoFullScreen, audienceEntry, audienceKey, audiencePlacement, screenDisplay,
-  type ScreenReport,
+  AUDIENCE_POLL_MS, audienceEntry, audienceFollower, audienceKey, audiencePlacement, type ScreenReport,
 } from './presenter';
 import { PrintGate, printPdf } from './print';
 import { RECENT_MAX, recentInfo, RecentFiles } from './recent';
@@ -462,11 +461,11 @@ function start(): void {
 
   /**
    * Wayland: make the audience window full screen once the user has moved it
-   * to a display other than the app window's (audienceAutoFullScreen decides).
+   * to a display other than the app window's (audienceFollower decides).
    * Electron reports no window position or display there, and no event when a
    * window moves; the pages' window.screen is the only hint (it follows the
-   * display at least when the two displays use different scales), so both are
-   * asked every so often, in a separate world the pages cannot touch.
+   * display only when the scale changes, so this works only between displays
+   * of different scales). Read in a separate world the pages cannot touch.
    */
   function followAudience(a: BrowserWindow): void {
     const ask = (w: BrowserWindow | null): Promise<ScreenReport | null> =>
@@ -476,23 +475,16 @@ function start(): void {
           .executeJavaScriptInIsolatedWorld(AUDIENCE_SCREEN_WORLD, [{
             code: '({ availLeft: screen.availLeft, availTop: screen.availTop, availWidth: screen.availWidth, availHeight: screen.availHeight })',
           }])
-          .then((r: unknown) => (r && typeof r === 'object' ? r as ScreenReport : null), () => null);
-    let state = AUTO_FULL_SCREEN_START;
-    let busy = false;
-    const timer = setInterval(() => {
-      if (busy || a.isDestroyed() || !a.isVisible()) return;
-      busy = true;
-      void Promise.all([ask(a), ask(win)]).then(([seenAudience, seenApp]) => {
-        busy = false;
-        if (a.isDestroyed()) return;
-        const displays = screen.getAllDisplays();
-        const step = audienceAutoFullScreen(state, {
-          audience: screenDisplay(displays, seenAudience), app: screenDisplay(displays, seenApp), fullScreen: a.isFullScreen(),
-        });
-        state = step.state;
-        if (step.fullScreen) a.setFullScreen(true);
-      });
-    }, 700);
+          .then((r: unknown) => (r && typeof r === 'object' ? r as ScreenReport : null));
+    const follower = audienceFollower({
+      readAudience: () => ask(a),
+      readApp: () => ask(win),
+      displays: () => screen.getAllDisplays(),
+      alive: () => !a.isDestroyed() && a.isVisible(),
+      isFullScreen: () => a.isFullScreen(),
+      setFullScreen: () => a.setFullScreen(true),
+    });
+    const timer = setInterval(() => void follower.tick(), AUDIENCE_POLL_MS);
     a.on('closed', () => clearInterval(timer));
   }
 
