@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { MAX_TEXT_BYTES } from '../src/main/fsutil';
 import { loadPreferences, parsePreferences, savePreferences } from '../src/main/preferences';
 import { recentInfo, RecentFiles } from '../src/main/recent';
 import { DEFAULT_STATE, fitToDisplays, loadWindowState, parseWindowState, saveWindowState } from '../src/main/windowState';
@@ -96,6 +97,39 @@ describe('recent files records', () => {
       { path: pdf, name: 'x.pdf', size: 8, openedAt: 5, pages: 2, annotatedPages: 1, annotatedBlankPages: 1 },
       { path: bare, name: 'y.pdf', size: 8, openedAt: 3, annotatedPages: 0, annotatedBlankPages: 0 },
     ]);
+  });
+
+  it.skipIf(process.platform === 'win32')('without a hash, reads the sidecar with the notes\' rules for links and sizes', async () => {
+    const dir = tempDir();
+    const userData = join(dir, 'userData');
+    const inked = (deck: object) => JSON.stringify({
+      format: 'marp-notes', version: 2, deck: { source: 'pdf', title: 'x.pdf', slides: 1, size: [100, 100], ...deck },
+      pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: [{ id: 's', tool: 'pen', color: '#000', size: 2, points: [[1, 1, 0.5]] }] }],
+    });
+    const pdfWithSidecar = (name: string, target: string) => {
+      const pdf = join(dir, name);
+      writeFileSync(pdf, '%PDF-1.7');
+      symlinkSync(target, `${pdf}.notes.json`);
+      return { path: pdf, openedAt: 1 };
+    };
+    mkdirSync(join(dir, 'synced'));
+    const own = join(dir, 'synced', 'a.pdf.notes.json');
+    writeFileSync(own, inked({}));
+    const other = join(dir, 'synced', 'b.pdf.notes.json');
+    writeFileSync(other, inked({ sha256: 'b'.repeat(64) }));
+    const secret = join(dir, 'secret.json');
+    writeFileSync(secret, inked({}));
+    const big = join(dir, 'synced', 'd.pdf.notes.json');
+    writeFileSync(big, '');
+    truncateSync(big, MAX_TEXT_BYTES + 1);
+    const infos = await recentInfo([
+      pdfWithSidecar('a.pdf', own), // its own notes kept elsewhere: read
+      pdfWithSidecar('b.pdf', other), // records a hash, which is not checked without hashing the PDF: not read
+      pdfWithSidecar('c.pdf', secret), // another name: never read
+      pdfWithSidecar('d.pdf', big), // too large: not read
+      pdfWithSidecar('e.pdf', '/dev/zero'), // not a file: not read (it never ends)
+    ], userData);
+    expect(infos.map(i => [i.name, i.annotatedPages])).toEqual([['a.pdf', 1], ['b.pdf', 0], ['c.pdf', 0], ['d.pdf', 0], ['e.pdf', 0]]);
   });
 
   it('reads notes in app storage by hash, unless the file changed since', async () => {

@@ -1,11 +1,10 @@
 /* Inkslide desktop - recent files list (JSON in userData) */
 import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, resolve } from 'node:path';
-import { inkedPages, notesPathFor } from '@inkslide/annotate/io';
+import { inkedPages } from '@inkslide/annotate/io';
 import type { RecentFileInfo } from '../shared/bridge';
-import { readTextIfExists } from './fsutil';
 import { readJson, writeJson } from './jsonStore';
-import { readNotesFor } from './notes';
+import { readNotesFor, readSidecarFor } from './notes';
 import { isSha256 } from './paths';
 
 /** Longest recent files list. */
@@ -131,7 +130,7 @@ export class RecentFiles {
  * What the start screen shows of the recent files: the ones that are still
  * files, with their size and the pages that have notes. Without a hash for
  * the file as it is now, only the sidecar is looked at (hashing every PDF
- * would be slow).
+ * would be slow), with the notes' rules for links and sizes (readSidecarFor).
  */
 export async function recentInfo(records: RecentRecord[], userData: string): Promise<RecentFileInfo[]> {
   const infos = await Promise.all(records.map(async (r): Promise<RecentFileInfo | null> => {
@@ -140,7 +139,7 @@ export async function recentInfo(records: RecentRecord[], userData: string): Pro
     const known = sameFile(r, st);
     const text = await (known && r.sha256
       ? readNotesFor({ path: r.path, sha256: r.sha256 }, userData)
-      : readTextIfExists(notesPathFor(r.path))).catch(() => null);
+      : readSidecarFor(r.path, userData)).catch(() => null);
     const inked = text ? inkedPages(text) : { pages: 0, blank: 0 };
     return {
       path: r.path,

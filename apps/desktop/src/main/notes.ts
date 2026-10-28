@@ -67,7 +67,7 @@ function isInside(dir: string, file: string): boolean {
  * of writing through it. A sidecar that is a file is used as it is; one that
  * is missing now and a link later is not followed.
  */
-async function sidecarFollow(t: NotesTarget, userData: string): Promise<FollowLink> {
+async function sidecarFollow(t: NotesTarget, userData: string, hashPdf = true): Promise<FollowLink> {
   if (!t.path) return () => false;
   const sidecar = notesPathFor(t.path);
   const isLink = await lstat(sidecar).then(st => st.isSymbolicLink(), () => false);
@@ -76,12 +76,16 @@ async function sidecarFollow(t: NotesTarget, userData: string): Promise<FollowLi
   const own = basename(sidecar);
   const ok = (basename(real) === own || basename(real) === `${own.slice(0, -NOTES_SUFFIX.length)}${BACKUP_SUFFIX}`)
     && !isInside(await realpath(userData).catch(() => resolve(userData)), real)
-    && await recordsThisPdf(real, t);
+    && await recordsThisPdf(real, t, hashPdf);
   return target => ok && target === real;
 }
 
-/** Whether the notes in `file` are not recorded for another PDF: true if they record no hash, or this PDF's, or cannot be parsed. */
-async function recordsThisPdf(file: string, t: NotesTarget): Promise<boolean> {
+/**
+ * Whether the notes in `file` are not recorded for another PDF: true if they
+ * record no hash, or this PDF's, or cannot be parsed. Without `hashPdf` the
+ * PDF is not hashed to find out: notes that record a hash count as another PDF's.
+ */
+async function recordsThisPdf(file: string, t: NotesTarget, hashPdf: boolean): Promise<boolean> {
   let recorded: unknown;
   try {
     const bytes = await readFileChecked(file, () => false); // `file` is resolved: no link to follow
@@ -90,7 +94,7 @@ async function recordsThisPdf(file: string, t: NotesTarget): Promise<boolean> {
     return true; // unreadable: the notes flow reports it, and keeps a copy of a file with this PDF's notes name
   }
   if (typeof recorded !== 'string') return true;
-  return recorded === await hashIfKnown(t).catch(() => null);
+  return hashPdf && recorded === await hashIfKnown(t).catch(() => null);
 }
 
 /**
@@ -183,6 +187,16 @@ async function appStorageFirst(sidecar: string, stored: string, state: string, f
  */
 export async function readNotesFor(t: NotesTarget, userData: string): Promise<string | null> {
   return (await readSaved(t, userData))?.text ?? null;
+}
+
+/**
+ * The sidecar's text without hashing the PDF (start screen, for a recent
+ * file whose hash is not known): links as for the notes (sidecarFollow),
+ * but one to notes that record a PDF hash is not followed; sizes as
+ * readFileChecked. Null if there is none; throws if it cannot be read.
+ */
+export async function readSidecarFor(pdfPath: string, userData: string): Promise<string | null> {
+  return readTextIfExists(notesPathFor(pdfPath), await sidecarFollow({ path: pdfPath }, userData, false));
 }
 
 /** The saved notes, as readNotesFor reads them, and the file they come from; null if there are none. */
