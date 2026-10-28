@@ -46,7 +46,6 @@ desktop app uses Electron.
   could cover the presenter); the user presses F11 there. A Wayland protocol for this
   (or Chromium passing on which output a window is on) would close that gap. Try the browser
   version with Firefox and Safari too (only Chromium is tested).
-- **Later:** opening Marp HTML decks directly.
 
 ## Why Electron on the desktop
 
