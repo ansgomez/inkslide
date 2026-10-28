@@ -1,6 +1,6 @@
 /* Inkslide web - presenter mode, the presenter's side
  *
- * While the audience window is open (desktop: View → Presenter Mode), the
+ * While the audience window is open (desktop: View → Presenter Mode; browser: F5), the
  * viewer reports what it shows and this module turns it into presenter
  * messages (@inkslide/annotate/presenter) for that window:
  *
@@ -67,7 +67,7 @@ const defaultTimers: PresenterTimers = {
   queueMicrotask: fn => queueMicrotask(fn),
 };
 
-/** Presenter mode sending through `send` (desktop: the bridge's presenterSend). */
+/** Presenter mode sending through `send` (desktop: the bridge's presenterSend; browser: presenter-link.ts). */
 export function createPresenter(send: (message: PresenterMessage) => void, timers: PresenterTimers = defaultTimers): Presenter {
   let active = false;
   let file: PdfFile | null = null;

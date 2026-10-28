@@ -50,6 +50,7 @@ import { isCancelled, openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
 import { flushSave, holdSaves, pageTurned, saveState, scheduleSave, setSaveTarget } from './persist';
 import type { AppAdapter } from './platform';
 import type { ViewerMirror } from './presenter';
+import type { PresenterSwitch } from './presenter-web';
 import { printPageImages } from './print';
 import { captureArea, importImage, snapshotScale } from './snapshot';
 
@@ -163,9 +164,11 @@ export interface Viewer {
 /**
  * The viewer in `els`; also installs its keys, gestures and toolbar groups.
  * `mirror` hears of the opened PDF, the page shown, the stroke being written
- * and the laser (presenter mode, presenter.ts).
+ * and the laser (presenter mode, presenter.ts). `presenterMode` adds the
+ * presenter button to the toolbar (browser build; the desktop app has its menu).
  */
-export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: ViewerMirror | null = null): Viewer {
+export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: ViewerMirror | null = null,
+  presenterMode: PresenterSwitch | null = null): Viewer {
   const { stage, page: pageEl, pdfCanvas, liveCanvas } = els;
   const pdfCtx = pdfCanvas.getContext('2d', { alpha: false })!;
   const bitmaps = createPageBitmaps(CACHE_LIMIT, CACHE_BYTES);
@@ -897,6 +900,11 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         disabled: () => printing },
       { id: 'revert', title: 'Revert to backup: the notes as saved a few minutes ago (asks first)', icon: 'revert',
         onClick: () => void viewer.revertToBackup(), hidden: () => !backupButton || !s?.hasBackup },
+      ...(presenterMode ? [{
+        id: 'present', icon: 'present', onClick: () => presenterMode.toggle(), active: () => presenterMode.on,
+        title: () => (presenterMode.on ? 'End presenter mode (F5): close the audience window'
+          : 'Presenter mode (F5): show the page in a second window, e.g. on a projector'),
+      }] : []),
     ],
   }));
 

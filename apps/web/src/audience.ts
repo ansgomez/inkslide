@@ -1,12 +1,19 @@
 /* Inkslide web - the audience window of presenter mode (entry of audience.html)
  *
  * The desktop app opens this page in a second window (View → Presenter Mode),
- * full screen on the other display when there is one. It shows what the
- * presenter's window shows: the page, the ink (also the stroke being written)
- * and the laser, with no toolbar and no input. It reads no files: the PDF and
- * the notes come as presenter messages (@inkslide/annotate/presenter) through
- * the bridge, are checked again here, and are applied to a NotesDoc of its
- * own, which is never saved.
+ * full screen on the other display when there is one; the browser build opens
+ * it as a pop-up (F5), audience.html#<id> with the presenter tab's link id
+ * (presenter-link.ts). It shows what the presenter's window shows: the page,
+ * the ink (also the stroke being written, erased or moved) and the laser, with
+ * no toolbar. It reads no files: the PDF and the notes come as presenter
+ * messages (@inkslide/annotate/presenter) through the bridge or the browser's
+ * channel, are checked again here, and are applied to a NotesDoc of its own,
+ * which is never saved.
+ *
+ * Input: none in the desktop app (main handles its keys). In the browser a
+ * click goes full screen (a page may only ask for it on a click or a key; a
+ * hint says so), and Escape (out of full screen) or F5 closes the window,
+ * ending presenter mode as in the desktop app.
  *
  *   .ink-stage (whole window)
  *     .ink-page             the page, fitted whole (no zoom, no scroll)
@@ -25,6 +32,7 @@ import { pdfPageNumber } from './counter';
 import { fitTo, renderScale, type FitRect } from './fit';
 import { bitmapKey, createPageBitmaps } from './page-bitmaps';
 import { openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
+import { broadcastPort, channelName, createAudienceLink, idFromHash } from './presenter-link';
 
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
 
@@ -380,13 +388,61 @@ function receive(value: unknown): void {
   });
 }
 
-// No input: nothing here takes a click, a key or a menu.
+// No menu.
 document.addEventListener('contextmenu', e => e.preventDefault());
 
+/** How long the full-screen hint stays after the pointer last moved, ms. */
+const HINT_MS = 4000;
+
+/** Browser: the hint, a click for full screen, and the keys that end presenter mode. */
+function browserInput(): void {
+  const hint = $<HTMLElement>('.ink-fullscreen-hint');
+  let hintTimer: ReturnType<typeof setTimeout> | null = null;
+  // F11 is the browser's own full screen (no fullscreenElement), seen as display-mode.
+  const full = (): boolean => !!document.fullscreenElement || matchMedia('(display-mode: fullscreen)').matches;
+  const showHint = (): void => {
+    const on = !full();
+    hint.hidden = !on;
+    document.body.classList.toggle('has-hint', on);
+    if (hintTimer) clearTimeout(hintTimer);
+    hintTimer = on ? setTimeout(() => { hint.hidden = true; document.body.classList.remove('has-hint'); }, HINT_MS) : null;
+  };
+  document.addEventListener('pointermove', showHint);
+  document.addEventListener('fullscreenchange', showHint);
+  document.addEventListener('click', () => {
+    if (full() || !document.documentElement.requestFullscreen) return;
+    document.documentElement.requestFullscreen().catch(e => console.warn('Full screen refused', e));
+  });
+  window.addEventListener('keydown', e => {
+    if (e.key === 'F5' || (e.key === 'Escape' && !full())) {
+      e.preventDefault();
+      window.close();
+    }
+  });
+  showHint();
+}
+
 const bridge = window.inkslide;
+const linkId = idFromHash(location.hash);
 if (bridge && typeof bridge.onAudience === 'function') {
   setWaiting('Waiting for the presenter…');
   bridge.onAudience(receive);
+} else if (!bridge && linkId && typeof BroadcastChannel === 'function') {
+  setWaiting('Waiting for the presenter…');
+  const link = createAudienceLink(broadcastPort(channelName(linkId)), {
+    message: receive,
+    connected: () => {},
+    gone: () => {
+      queue = queue.then(() => {
+        closeDoc();
+        setWaiting('The presenter’s tab was closed or is reloading. Waiting for it…');
+      });
+    },
+    quit: () => window.close(),
+  });
+  window.addEventListener('pagehide', e => { if (!e.persisted) link.leave(); });
+  window.addEventListener('pageshow', e => { if (e.persisted) link.hello(); });
+  browserInput();
 } else {
-  setWaiting('This is the audience window of the desktop app’s presenter mode (View → Presenter Mode).');
+  setWaiting('This is the audience window of presenter mode: press F5 in Inkslide (desktop app: View → Presenter Mode).');
 }
