@@ -90,6 +90,25 @@ export interface Selection {
   box: BBox | null;
 }
 
+/**
+ * What a gesture shows before it changes the document: the erasers' page
+ * as erased so far, or the selection dragged by (dx, dy).
+ */
+export type ToolPreview =
+  | { kind: 'erase'; strokes: readonly Stroke[]; images: readonly PageImage[] }
+  | { kind: 'move'; ids: readonly string[]; dx: number; dy: number };
+
+/**
+ * Mirror of what the tools show to another window (presenter mode: the web
+ * app's presenter.ts): the laser, and the preview of an erase or a move while
+ * it happens. preview(pageId, null) ends the preview, right after the
+ * gesture's command (if any) changed the document, or when it was cancelled.
+ */
+export interface ToolSync {
+  laser(pageId: string, pt: Point): void;
+  preview?(pageId: string, preview: ToolPreview | null): void;
+}
+
 /** What the tools need from the app. */
 export interface ToolHost {
   doc: NotesDoc;
@@ -98,8 +117,8 @@ export interface ToolHost {
   select(sel: { pageId: string; ids: readonly string[] } | null): void;
   /** Every surface with a layer (Map or array). */
   surfaces: { forEach(fn: (s: Surface) => void): void };
-  /** Mirror of the laser to another window (presenter mode: the web app's presenter.ts). */
-  sync?: { laser(pageId: string, pt: Point): void } | null;
+  /** Mirror of the laser and of previews to another window (presenter mode, see ToolSync). */
+  sync?: ToolSync | null;
   /** Copy the area `rect` (page units, on the page) of page `pageId` as an image: the snapshot tool's release. */
   snapshot?(pageId: string, rect: RectLike): void;
   /** Tell the user why an edit was refused (a document limit, see NotesDoc.inkRoom). */
@@ -274,6 +293,10 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
   }
 
   const radius = (surface: Surface): number => sizeOf(app, id, surface);
+  /** Mirror the page as this gesture shows it, or (null) the end of the gesture. */
+  const mirror = (surface: Surface, on: boolean): void => {
+    if (app.sync && app.sync.preview) app.sync.preview(surface.pageId, on ? { kind: 'erase', strokes: working!, images: images! } : null);
+  };
 
   function eraseAlong(surface: Surface, a: Point, b: Point): void {
     const r = radius(surface);
@@ -298,7 +321,10 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       working = next;
       R.syncLayer(surface.layer, working);
     }
-    if (partial) return;
+    if (partial) {
+      if (changed) mirror(surface, true);
+      return;
+    }
     if (changed && !inkErased) {
       inkErased = true;
       if (erasedImages!.size) { // the images this gesture took come back
@@ -307,6 +333,7 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
         if (R.syncImages) R.syncImages(surface.layer, images);
       }
     }
+    let imagesChanged = false;
     if (!inkErased && images!.some(i => rectHitsSegment(i, a, b, r))) {
       images = images!.filter(i => {
         if (!rectHitsSegment(i, a, b, r)) return true;
@@ -314,7 +341,9 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
         return false;
       });
       if (R.syncImages) R.syncImages(surface.layer, images);
+      imagesChanged = true;
     }
+    if (changed || imagesChanged) mirror(surface, true);
   }
 
   return {
@@ -344,18 +373,22 @@ function eraserTool(app: ToolHost, id: 'eraser' | 'partial', R: ToolRenderer): T
       const gone = erasedImages!;
       const leftImages = pageThere && gone.size ? app.doc.images(surface.pageId).filter(i => !gone.has(i.id)) : undefined;
       working = last = base = origin = images = erasedImages = null;
-      if (!result) return;
-      try {
-        app.doc.replaceContent(surface.pageId, { strokes: result, images: leftImages }, partial ? 'partial-erase' : 'erase');
-      } catch (e) {
-        // Cutting strokes adds pieces and cut ends: at a document limit the erase is refused.
-        R.syncLayer(surface.layer, app.doc.strokes(surface.pageId));
-        if (R.syncImages) R.syncImages(surface.layer, app.doc.images(surface.pageId));
-        if (app.notify) app.notify(`Not erased: ${(e as Error).message}`, 'warn');
+      if (result) {
+        try {
+          app.doc.replaceContent(surface.pageId, { strokes: result, images: leftImages }, partial ? 'partial-erase' : 'erase');
+        } catch (e) {
+          // Cutting strokes adds pieces and cut ends: at a document limit the erase is refused.
+          R.syncLayer(surface.layer, app.doc.strokes(surface.pageId));
+          if (R.syncImages) R.syncImages(surface.layer, app.doc.images(surface.pageId));
+          if (app.notify) app.notify(`Not erased: ${(e as Error).message}`, 'warn');
+        }
       }
+      mirror(surface, false); // after the command: the audience gets the result first
     },
     cancel(surface) {
+      const was = !!working;
       working = last = base = origin = images = erasedImages = null;
+      if (was) mirror(surface, false);
       R.syncLayer(surface.layer, app.doc.strokes(surface.pageId));
       if (R.syncImages) R.syncImages(surface.layer, app.doc.images(surface.pageId));
       R.setEraserCursor(surface.layer, null);
@@ -384,6 +417,11 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
     frame = 0;
   };
 
+  /** Mirror the drag (or, with no ids, its end). */
+  const mirror = (surface: Surface, ids: readonly string[] | null, dx = 0, dy = 0): void => {
+    if (app.sync && app.sync.preview) app.sync.preview(surface.pageId, ids ? { kind: 'move', ids, dx, dy } : null);
+  };
+
   const sel = (): Selection | null => app.selection;
   const insideSelection = (surface: Surface, pt: Point): boolean => {
     const s = sel();
@@ -399,6 +437,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
     R.translateStrokes(surface.layer, moving!.ids, 0, 0);
     mode = null;
     moving = null;
+    mirror(surface, null);
     return true;
   };
 
@@ -423,6 +462,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
         offset = [pt[0] - start![0], pt[1] - start![1]];
         R.translateStrokes(surface.layer, moving!.ids, offset[0], offset[1]);
         R.setSelectionBox(surface.layer, moving!.box, offset[0], offset[1]);
+        mirror(surface, moving!.ids, offset[0], offset[1]);
       } else if (mode === 'select') {
         len += pathLength([path![path!.length - 1], pt]);
         path!.push(pt);
@@ -435,11 +475,11 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
         const s = moving!;
         mode = null;
         moving = null;
-        if (!app.doc.hasPage(surface.pageId)) return;
-        if (!app.doc.moveItems(surface.pageId, s.ids, offset[0], offset[1])) {
+        if (app.doc.hasPage(surface.pageId) && !app.doc.moveItems(surface.pageId, s.ids, offset[0], offset[1])) {
           R.translateStrokes(surface.layer, s.ids, 0, 0);
           R.setSelectionBox(surface.layer, s.box);
         }
+        mirror(surface, null); // after the command: the audience gets the moved items first
         return;
       }
       if (mode !== 'select') return;
@@ -467,6 +507,7 @@ function selectorTool(app: ToolHost, R: ToolRenderer): Tool {
       if (mode === 'move' && !dropped(surface)) {
         R.translateStrokes(surface.layer, moving!.ids, 0, 0);
         R.setSelectionBox(surface.layer, moving!.box);
+        mirror(surface, null);
       }
       stopMarquee();
       R.setMarquee(surface.layer, null);

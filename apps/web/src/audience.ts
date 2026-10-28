@@ -15,7 +15,7 @@
  */
 import '@inkslide/annotate/toolbar.css';
 import './style.css';
-import { NotesDoc, type Paper, type Point } from '@inkslide/annotate';
+import { createStroke, NotesDoc, type Paper, type Point, type Stroke } from '@inkslide/annotate';
 import { deckFromPdf } from '@inkslide/annotate/io';
 import { applyLivePoints, parsePresenterMessage, PRESENTER_LIMITS, type PresenterMessage } from '@inkslide/annotate/presenter';
 import * as render from '@inkslide/annotate/render';
@@ -58,6 +58,12 @@ let wanted = '';
 let fit: FitRect | null = null;
 let shownKey = '';
 let live: Live | null = null;
+/**
+ * An erase or move under way on the presenter's page (erasing / moving
+ * messages), shown over the page's strokes until preview-end. `pieces`: the
+ * cut pieces received so far in this gesture, by id.
+ */
+let preview: { page: string; kind: 'erase' | 'move'; ids: string[]; pieces: Map<string, Stroke> } | null = null;
 const surfaces = new Map<string, AudienceSurface>();
 
 const dpr = (): number => window.devicePixelRatio || 1;
@@ -142,6 +148,60 @@ function endLive(): void {
   live = null;
 }
 
+// ── Previews (erasing and moving while they happen) ────────────
+
+/** The page of the preview shows its strokes and images again, as the document has them. */
+function endPreview(): void {
+  if (!preview) return;
+  const surface = surfaces.get(preview.page);
+  if (surface && doc) {
+    render.syncLayer(surface.layer, doc.strokes(preview.page));
+    render.syncImages(surface.layer, doc.images(preview.page));
+    // Items not changed by the move (it was refused) still carry the offset.
+    if (preview.kind === 'move') render.translateStrokes(surface.layer, preview.ids, 0, 0);
+  }
+  preview = null;
+}
+
+/** A preview of `kind` on `page`: the one under way, or a new one (ending any other). */
+function previewOn(page: string, kind: 'erase' | 'move'): NonNullable<typeof preview> {
+  if (preview && (preview.page !== page || preview.kind !== kind)) endPreview();
+  preview ??= { page, kind, ids: [], pieces: new Map() };
+  return preview;
+}
+
+/** The page as the eraser leaves it so far: strokes by id (the page's or pieces), images not erased. */
+function erasing(m: Extract<PresenterMessage, { type: 'erasing' }>): void {
+  if (!doc) return;
+  const pv = previewOn(m.page, 'erase');
+  for (const s of m.strokes) {
+    try {
+      pv.pieces.set(s.id, createStroke(s));
+    } catch (e) {
+      console.error('Presenter mode: a piece could not be shown', e);
+    }
+  }
+  const surface = surfaces.get(m.page);
+  if (!surface) return;
+  const own = new Map(doc.strokes(m.page).map(s => [s.id, s]));
+  render.syncLayer(surface.layer, m.order.flatMap(id => pv.pieces.get(id) ?? own.get(id) ?? []));
+  const hidden = new Set(m.hidden);
+  render.syncImages(surface.layer, doc.images(m.page).filter(i => !hidden.has(i.id)));
+}
+
+/** Strokes and images being dragged: shown moved by (dx, dy). */
+function moving(m: Extract<PresenterMessage, { type: 'moving' }>): void {
+  const pv = previewOn(m.page, 'move');
+  const surface = surfaces.get(m.page);
+  if (surface) {
+    // Items no longer dragged (none, as a rule) go back.
+    const now = new Set(m.ids);
+    render.translateStrokes(surface.layer, pv.ids.filter(id => !now.has(id)), 0, 0);
+    render.translateStrokes(surface.layer, m.ids, m.dx, m.dy);
+  }
+  pv.ids = m.ids;
+}
+
 function show(pageId: string): void {
   const surface = surfaceFor(pageId);
   if (!surface) {
@@ -149,6 +209,7 @@ function show(pageId: string): void {
     return;
   }
   wanted = '';
+  if (preview && preview.page !== pageId) endPreview();
   const prev = current ? surfaces.get(current) : undefined;
   current = pageId;
   if (prev && prev !== surface) {
@@ -196,6 +257,7 @@ new ResizeObserver(() => {
 
 function closeDoc(): void {
   endLive();
+  preview = null;
   surfaces.forEach(s => s.svg.remove());
   surfaces.clear();
   bitmaps.setDoc(null);
@@ -260,6 +322,15 @@ async function handle(m: PresenterMessage): Promise<void> {
       return;
     case 'live-end':
       endLive();
+      return;
+    case 'erasing':
+      erasing(m);
+      return;
+    case 'moving':
+      moving(m);
+      return;
+    case 'preview-end':
+      endPreview();
       return;
     case 'laser': {
       const surface = m.page === current ? surfaces.get(current) : undefined;

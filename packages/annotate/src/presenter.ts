@@ -21,6 +21,17 @@
  *   live      the stroke being written: points from index `from` on
  *   live-end  the stroke being written is gone (finished or dropped)
  *   laser     laser points on a page
+ *   erasing   an eraser at work (a preview, not yet in the document): the ids of the
+ *             strokes the page shows now, in order, the pieces cut from strokes that
+ *             the audience does not have yet, and the ids of the images erased
+ *   moving    strokes and images being dragged (a preview): their ids and the offset
+ *   preview-end  the preview is over: the page shows its strokes and images again,
+ *             as its last strokes/delta/images message left them
+ *
+ * A preview is sent at most every LIVE_MS like the stroke being written and is
+ * cheap: ids, an offset, and only the cut pieces (once each). When the gesture
+ * ends, the page's real changes go first and `preview-end` right after them,
+ * so the audience never shows the page without the gesture's result.
  */
 import type { Point, StrokeTool, Vec2 } from './geometry';
 import {
@@ -57,7 +68,10 @@ export type PresenterMessage =
   | { type: 'blanks'; blanks: BlankMeta[] }
   | { type: 'live'; page: string; tool: StrokeTool; color: string; size: number; from: number; points: Point[] }
   | { type: 'live-end' }
-  | { type: 'laser'; page: string; points: Vec2[] };
+  | { type: 'laser'; page: string; points: Vec2[] }
+  | { type: 'erasing'; page: string; order: string[]; strokes: StrokeJSON[]; hidden: string[] }
+  | { type: 'moving'; page: string; ids: string[]; dx: number; dy: number }
+  | { type: 'preview-end' };
 
 /** Size limits of the messages. */
 export const PRESENTER_LIMITS = Object.freeze({
@@ -101,6 +115,11 @@ function text(v: unknown, max: number, what: string, empty = false): string {
 function list(v: unknown, max: number, what: string): unknown[] {
   if (!Array.isArray(v) || v.length > max) fail(what);
   return v as unknown[];
+}
+
+/** A list of at most `max` stroke or image ids. */
+function ids(v: unknown, max: number, what: string): string[] {
+  return list(v, max, what).map(id => text(id, PRESENTER_LIMITS.id, `${what} id`));
 }
 
 /** Points as [x, y, pressure] (pressure 0.5 when missing); counts them against `budget`. */
@@ -160,6 +179,7 @@ export function parsePresenterMessage(value: unknown): PresenterMessage {
       if (v.reason !== undefined && v.reason !== 'too-large' && v.reason !== 'failed') fail('close reason');
       return v.reason === undefined ? { type: 'close' } : { type: 'close', reason: v.reason as 'too-large' | 'failed' };
     case 'live-end':
+    case 'preview-end':
       return { type: v.type };
     case 'page':
       return { type: 'page', page: page() };
@@ -207,6 +227,22 @@ export function parsePresenterMessage(value: unknown): PresenterMessage {
           const q = p as number[];
           return [q[0], q[1]];
         }),
+      };
+    case 'erasing': {
+      const budget = { left: PRESENTER_LIMITS.points };
+      return {
+        type: 'erasing', page: page(),
+        order: ids(v.order, PRESENTER_LIMITS.strokes, 'order'),
+        strokes: list(v.strokes, PRESENTER_LIMITS.strokes, 'strokes').map(s => stroke(s, budget)),
+        hidden: ids(v.hidden, PRESENTER_LIMITS.images, 'hidden'),
+      };
+    }
+    case 'moving':
+      if (!finite(v.dx) || !finite(v.dy)) fail('offset');
+      return {
+        type: 'moving', page: page(),
+        ids: ids(v.ids, PRESENTER_LIMITS.strokes + PRESENTER_LIMITS.images, 'ids'),
+        dx: v.dx as number, dy: v.dy as number,
       };
     default:
       return fail('unknown type');

@@ -156,6 +156,70 @@ test('the audience page shows the presenter\'s page, ink, live stroke, laser and
   await context.close();
 });
 
+test('the audience sees erasing and moving while they happen', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const presenter = await context.newPage();
+  const audience = await context.newPage();
+  await openAudience(audience);
+  await openPresenter(presenter);
+  await penStroke(presenter, [0.2, 0.3], [0.6, 0.3]);
+  await penStroke(presenter, [0.2, 0.7], [0.6, 0.7]);
+  await presenting(presenter, true);
+  await relay(presenter, audience);
+  await expect(audienceStrokes(audience)).toHaveCount(2);
+
+  const at = async (fx: number, fy: number) => {
+    const b = await pageBox(presenter);
+    return { x: b.x + b.width * fx, y: b.y + b.height * fy };
+  };
+  const pen = { pointerType: 'pen', id: 9 } as const;
+
+  // The stroke eraser: the stroke it crosses goes on the audience before the pen lifts.
+  await presenter.keyboard.press('e');
+  await firePointers(presenter, [
+    { ...pen, type: 'pointerover', ...(await at(0.4, 0.15)), buttons: 0 },
+    { ...pen, type: 'pointerdown', ...(await at(0.4, 0.15)), buttons: 1 },
+    { ...pen, type: 'pointermove', ...(await at(0.4, 0.45)), buttons: 1 },
+  ]);
+  expect(await relayOnce(presenter, audience, ['erasing'])).toContain('erasing');
+  await expect(audienceStrokes(audience)).toHaveCount(1);
+  await firePointers(presenter, [{ ...pen, type: 'pointerup', ...(await at(0.4, 0.45)), buttons: 0 }]);
+  // The page's first change since the notes: all its strokes, then the end of the preview.
+  expect((await relayOnce(presenter, audience, ['preview-end'])).filter(t => t !== 'erasing')).toEqual(['strokes', 'preview-end']);
+  await expect(audienceStrokes(audience)).toHaveCount(1);
+
+  // The selector: the selected stroke moves along on the audience, then lands where it was dropped.
+  const moved = audience.locator('.ann-pen path.ann-stroke-pen[transform]:not([transform="translate(0 0)"])');
+  const before = (await audienceStrokes(audience).first().boundingBox())!;
+  await presenter.keyboard.press('s');
+  await firePointers(presenter, [
+    { ...pen, type: 'pointerover', ...(await at(0.4, 0.7)), buttons: 0 },
+    { ...pen, type: 'pointerdown', ...(await at(0.4, 0.7)), buttons: 1 },
+    { ...pen, type: 'pointerup', ...(await at(0.4, 0.7)), buttons: 0 },
+  ]);
+  await firePointers(presenter, [
+    { ...pen, type: 'pointerdown', ...(await at(0.4, 0.7)), buttons: 1 },
+    { ...pen, type: 'pointermove', ...(await at(0.4, 0.5)), buttons: 1 },
+  ]);
+  expect(await relayOnce(presenter, audience, ['moving'])).toContain('moving');
+  await expect(moved).toHaveCount(1);
+  await firePointers(presenter, [
+    { ...pen, type: 'pointermove', ...(await at(0.4, 0.55)), buttons: 1 },
+    { ...pen, type: 'pointerup', ...(await at(0.4, 0.55)), buttons: 0 },
+  ]);
+  expect((await relayOnce(presenter, audience, ['preview-end'])).filter(t => t !== 'moving')).toEqual(['delta', 'preview-end']);
+  await expect(moved).toHaveCount(0);
+  const after = (await audienceStrokes(audience).first().boundingBox())!;
+  const page = (await audience.locator('.ink-page').boundingBox())!;
+  expect((before.y - after.y) / page.height).toBeCloseTo(0.15, 1);
+
+  // Undo: the audience follows.
+  await presenter.keyboard.press('Control+z');
+  expect(await relayOnce(presenter, audience, ['delta'])).toEqual(['delta']);
+  await expect.poll(async () => (await audienceStrokes(audience).first().boundingBox())!.y).toBeCloseTo(before.y, 0);
+  await context.close();
+});
+
 test('the audience page without the desktop app says what it is', async ({ page }) => {
   await page.goto('/audience.html');
   await expect(page.locator('.ink-waiting')).toContainText('presenter mode');

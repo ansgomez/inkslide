@@ -72,6 +72,33 @@ describe('parsePresenterMessage', () => {
   });
 });
 
+describe('parsePresenterMessage: previews', () => {
+  it('takes the eraser and move previews and their end', () => {
+    expect(parsePresenterMessage({ type: 'erasing', page: 'p1', order: ['a', 's1'], strokes: [stroke], hidden: ['i1'], x: 1 })).toEqual({
+      type: 'erasing', page: 'p1', order: ['a', 's1'], strokes: [{ ...stroke, points: [[1, 2, 0.4], [3, 4, 0.5]] }], hidden: ['i1'],
+    });
+    expect(parsePresenterMessage({ type: 'moving', page: 'p1', ids: ['a', 'i1'], dx: -3, dy: 2.5, z: 0 }))
+      .toEqual({ type: 'moving', page: 'p1', ids: ['a', 'i1'], dx: -3, dy: 2.5 });
+    expect(parsePresenterMessage({ type: 'preview-end', page: 'p1' })).toEqual({ type: 'preview-end' });
+  });
+
+  it('refuses bad or too large previews', () => {
+    const erasing = { type: 'erasing', page: 'p1', order: [], strokes: [], hidden: [] };
+    const moving = { type: 'moving', page: 'p1', ids: ['a'], dx: 0, dy: 0 };
+    const bad: unknown[] = [
+      { ...erasing, page: '' }, { ...erasing, order: [5] }, { ...erasing, order: [''] }, { ...erasing, order: 'a' },
+      { ...erasing, strokes: [{ ...stroke, tool: 'laser' }] }, { ...erasing, hidden: [null] }, { ...erasing, hidden: undefined },
+      { ...erasing, order: Array.from({ length: PRESENTER_LIMITS.strokes + 1 }, () => 'a') },
+      { ...erasing, hidden: Array.from({ length: PRESENTER_LIMITS.images + 1 }, () => 'a') },
+      { ...moving, dx: NaN }, { ...moving, dy: '1' }, { ...moving, ids: [1] }, { ...moving, ids: ['x'.repeat(PRESENTER_LIMITS.id + 1)] },
+      { ...moving, ids: Array.from({ length: PRESENTER_LIMITS.strokes + PRESENTER_LIMITS.images + 1 }, () => 'a') },
+    ];
+    for (const m of bad) expect(() => parsePresenterMessage(m), JSON.stringify(m).slice(0, 80)).toThrow(/invalid presenter message/);
+    const many = Array.from({ length: 11 }, (_, i) => ({ ...stroke, id: `s${i}`, points: new Array(2_000_000) }));
+    expect(() => parsePresenterMessage({ ...erasing, strokes: many })).toThrow(/points/);
+  });
+});
+
 describe('commonPrefix', () => {
   it('counts the leading points two strokes share, by value', () => {
     const a: Point[] = [[0, 0, 0.5], [1, 1, 0.5], [2, 2, 0.5]];
