@@ -255,6 +255,17 @@ page, 24 MB per document, 4096 px per side): with them a save writes at most abo
 adapter. Notes that exist but cannot be read or parsed are never overwritten without asking
 (see Backup for the second read, the backup offer and the kept copy).
 
+A browser does not wait for an asynchronous write when a tab closes or reloads. So in the
+browser build (`main.ts`), hiding or leaving the page (`visibilitychange`, `pagehide`,
+`beforeunload`) with unsaved notes first calls `viewer.checkpoint()`: the web adapter's
+synchronous `checkpointNotes` writes the notes to their `localStorage` key with their time
+(`inkslide-notes-time:<sha256>`, see the browser adapter under Backup), and the flush follows.
+Notes longer than `CHECKPOINT_MAX_CHARS` (1 M characters; `localStorage` holds about 5 MB) or a
+full store skip it, and then `beforeunload` asks the browser to confirm leaving. The next open
+reads the checkpoint only if it is newer than the OPFS file, by the time each save began: a
+save that began before the checkpoint and ended after it keeps it, one that began after it
+removes it, so it never hides notes saved later (another tab, a later session).
+
 ### Backup
 
 Desktop only, and all in the main process (`apps/desktop/src/main/notes.ts`): the backup is a

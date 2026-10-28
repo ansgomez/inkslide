@@ -287,7 +287,9 @@ When an OPFS write fails, the notes go to `localStorage` instead and the OPFS fi
 If it cannot be removed, both copies exist; the `localStorage` item
 `inkslide-notes-time:<sha256>`, `{"local": <ms>, "opfs": <ms>}`, says when each copy was saved
 (when its save began), and the newer one is read. Without a time for the `localStorage` copy
-(notes saved by an older version) the OPFS file is read.
+(notes saved by an older version) the OPFS file is read. Leaving the page with unsaved notes
+writes them to the same `localStorage` key at once, with their time (a checkpoint of at most
+1 M characters); a later save to OPFS removes it.
 
 Clearing the site data deletes the notes. The same PDF opened from another folder or under
 another name finds its notes, because the key is the hash.

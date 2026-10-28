@@ -7,8 +7,10 @@
  * SHA-256: OPFS when the browser has it, else localStorage. Where both hold
  * a copy (an OPFS write failed, and so did removing the older OPFS file),
  * the newer one is read: a small localStorage item keeps when each copy was
- * saved (NotesTimes). Opened PDFs are remembered for the start screen
- * (../recent.ts). Exports go through the
+ * saved (NotesTimes). Leaving the page with unsaved notes writes them to
+ * localStorage at once (checkpointNotes: an OPFS write may not finish before
+ * the page is gone); the next open reads that copy if it is the newer one.
+ * Opened PDFs are remembered for the start screen (../recent.ts). Exports go through the
  * save dialog of the File System Access API where there is one, else the
  * share sheet on touch devices (iPad: "Save to Files"), else a download.
  *
@@ -52,6 +54,12 @@ export interface WebAdapter extends PlatformAdapter {
   readonly recent: RecentFiles;
   /** Read a recent file (from a click: it may ask for permission). Rejects with a RecentError. */
   openRecent(id: string): Promise<PdfFile>;
+  /**
+   * Keep unsaved notes in localStorage at once, synchronously (the page is
+   * being left). False if they could not be kept: too large
+   * (CHECKPOINT_MAX_CHARS) or storage full or blocked.
+   */
+  checkpointNotes(pdf: PdfFile, text: string, sha256?: string): boolean;
 }
 
 /** A PdfFile read through the File System Access API keeps its handle (recent files). */
@@ -159,6 +167,31 @@ async function writeSaved(key: string, text: string, at = Date.now()): Promise<v
   writeTimes(key, { ...times, local: at });
   // An older OPFS copy would be in the way; if it can not be removed, the times say which is newer.
   if (canWriteOpfs()) await opfsRemove(key);
+}
+
+/**
+ * Longest notes text a checkpoint writes, in UTF-16 code units. localStorage
+ * holds about 5 MB per site, shared with the notes that fall back to it;
+ * larger notes (images) are not checkpointed.
+ */
+export const CHECKPOINT_MAX_CHARS = 1_000_000;
+
+/**
+ * Write `text`, the notes as they are now, to localStorage with the time
+ * `now` (checkpointNotes). The next open reads it unless a save that began
+ * later wrote OPFS; a save that began earlier and ends later leaves it be
+ * (writeSaved), and one that begins later removes it.
+ */
+function checkpointOf(key: string, text: string, now = Date.now()): boolean {
+  if (text.length > CHECKPOINT_MAX_CHARS) return false;
+  const times = readTimes(key);
+  try {
+    localStorage.setItem(key, text);
+    localStorage.setItem(timeKey(key), JSON.stringify({ ...times, local: now }));
+    return true;
+  } catch (_) {
+    return false; // full or blocked; a copy without its time is not read before OPFS
+  }
 }
 
 // ── Backup and kept unreadable notes ───────────────────────────
@@ -457,6 +490,8 @@ export function createWebAdapter(): WebAdapter {
     readNotes: (pdf, sha256) => readSaved(notesKey(pdf, sha256)),
 
     writeNotes: (pdf, text, sha256) => saveWithBackup(notesKey(pdf, sha256), text),
+
+    checkpointNotes: (pdf, text, sha256) => checkpointOf(notesKey(pdf, sha256), text),
 
     readBackup: (pdf, sha256) => readBackupOf(notesKey(pdf, sha256)),
 

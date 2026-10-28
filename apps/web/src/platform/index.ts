@@ -18,6 +18,8 @@ export type AppAdapter = PlatformAdapter & {
   pathForFile?(file: File): string;
   /** A PDF was opened (web: remember it in the recent files). */
   opened?(file: import('@inkslide/annotate').PdfFile, info: { sha256: string; pages: number }): Promise<void>;
+  /** Keep unsaved notes at once, synchronously, as the page is left (web); false if it could not. */
+  checkpointNotes?(pdf: import('@inkslide/annotate').PdfFile, text: string, sha256?: string): boolean;
 };
 
 let adapter: AppAdapter | null = null;

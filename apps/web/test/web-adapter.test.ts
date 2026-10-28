@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PdfFile } from '@inkslide/annotate';
 import { BACKUP_MIN_AGE_MS, OLD_COPIES_MAX_AGE_DAYS } from '@inkslide/annotate/io';
 import type { RecentBackend, RecentRecord } from '../src/recent';
-import { cleanupNotesStore, createWebAdapter, notesKey } from '../src/platform/web';
+import { CHECKPOINT_MAX_CHARS, cleanupNotesStore, createWebAdapter, notesKey } from '../src/platform/web';
 import { canWriteOpfs } from '../src/platform/opfs';
 
 // The recent files in memory (the IndexedDB storage has its own tests).
@@ -43,6 +43,8 @@ function fakeOpfs() {
   const state = {
     failWrites: false, failNames: null as RegExp | null, failReads: null as RegExp | null,
     failClose: false, failRemoves: false,
+    /** close() waits for this. */
+    closeGate: null as Promise<void> | null,
     /** Opening the notes directory fails with this. */
     dirError: null as DOMException | null,
     failWrite: null as ((name: string) => boolean) | null,
@@ -70,6 +72,7 @@ function fakeOpfs() {
       return {
         async write(t: string) { data = t; },
         async close() {
+          if (state.closeGate) await state.closeGate;
           if (state.failClose) throw new DOMException('disk error', 'InvalidStateError');
           files.set(name, data); times.set(name, Date.now()); writes.push(name);
         },
@@ -479,6 +482,77 @@ describe('web adapter notes backup', () => {
     opfs.state.afterList = () => opfs.times.set(backupFile('abc'), Date.now());
     expect(await cleanupNotesStore()).toEqual([unreadableFile('abc')]);
     expect(opfs.files.get(backupFile('abc'))).toBe(notes(1));
+  });
+});
+
+describe('web adapter notes checkpoint (leaving the page)', () => {
+  function setup() {
+    const opfs = fakeOpfs();
+    vi.stubGlobal('navigator', { storage: opfs.storage });
+    vi.stubGlobal('localStorage', fakeLocalStorage());
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(1_000_000);
+    return { opfs, a: createWebAdapter() };
+  }
+
+  it('is read on the next open when the save under way never ended', async () => {
+    const { a } = setup();
+    await a.writeNotes(pdf, 'saved', 'abc');
+    vi.setSystemTime(1_005_000);
+    expect(a.checkpointNotes(pdf, 'unsaved', 'abc')).toBe(true);
+    expect(await createWebAdapter().readNotes(pdf, 'abc')).toBe('unsaved');
+  });
+
+  it('a save that began before it and ended after it does not hide it', async () => {
+    const { opfs, a } = setup();
+    await a.writeNotes(pdf, 'saved', 'abc');
+    vi.setSystemTime(1_005_000);
+    let open!: () => void;
+    opfs.state.closeGate = new Promise(r => { open = r; });
+    const late = a.writeNotes(pdf, 'older', 'abc'); // its text was taken before the checkpoint
+    await new Promise(r => setTimeout(r, 0));
+    vi.setSystemTime(1_006_000);
+    expect(a.checkpointNotes(pdf, 'newest', 'abc')).toBe(true);
+    vi.setSystemTime(1_007_000);
+    opfs.state.closeGate = null;
+    open();
+    await late;
+    expect(await a.readNotes(pdf, 'abc')).toBe('newest');
+    // A save begun after it is newer: it takes over, and the checkpoint goes.
+    vi.setSystemTime(1_008_000);
+    await a.writeNotes(pdf, 'newest + 1', 'abc');
+    expect(await a.readNotes(pdf, 'abc')).toBe('newest + 1');
+    expect(localStorage.getItem(notesKey(pdf, 'abc'))).toBeNull();
+  });
+
+  it('never hides notes that another save wrote to OPFS later', async () => {
+    const { a } = setup();
+    expect(a.checkpointNotes(pdf, 'checkpoint', 'abc')).toBe(true);
+    vi.setSystemTime(1_001_000);
+    // Another tab saves the PDF's notes later (its own copy, not this one's).
+    await createWebAdapter().writeNotes(pdf, 'later', 'abc');
+    expect(await a.readNotes(pdf, 'abc')).toBe('later');
+  });
+
+  it('is skipped for notes too large for localStorage, or when it is full', async () => {
+    const { a } = setup();
+    await a.writeNotes(pdf, 'saved', 'abc');
+    expect(a.checkpointNotes(pdf, 'x'.repeat(CHECKPOINT_MAX_CHARS + 1), 'abc')).toBe(false);
+    expect(localStorage.getItem(notesKey(pdf, 'abc'))).toBeNull();
+    vi.stubGlobal('localStorage', fakeLocalStorage({ full: true }));
+    expect(a.checkpointNotes(pdf, 'unsaved', 'abc')).toBe(false);
+    expect(await a.readNotes(pdf, 'abc')).toBe('saved');
+  });
+
+  it('where there is no OPFS, it is the notes', async () => {
+    const opfs = fakeOpfs();
+    vi.stubGlobal('FileSystemFileHandle', class {}); // no createWritable (Safari before 26)
+    vi.stubGlobal('navigator', { storage: opfs.storage });
+    vi.stubGlobal('localStorage', fakeLocalStorage());
+    const a = createWebAdapter();
+    await a.writeNotes(pdf, 'saved', 'abc');
+    expect(a.checkpointNotes(pdf, 'unsaved', 'abc')).toBe(true);
+    expect(await a.readNotes(pdf, 'abc')).toBe('unsaved');
   });
 });
 

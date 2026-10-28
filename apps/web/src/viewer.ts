@@ -147,6 +147,12 @@ export interface Viewer {
    */
   saveOrAsk(question: string): Promise<boolean>;
   /**
+   * The page is being left: keep unsaved notes at once through the adapter's
+   * synchronous checkpointNotes (web). True if nothing is unsaved or they
+   * were kept; false if they could not be (or the adapter has no checkpoint).
+   */
+  checkpoint(): boolean;
+  /**
    * Revert to Backup (desktop: File menu; browser: File group of the
    * toolbar): save, ask, swap the saved notes and the backup, and load the
    * notes again (no undo step).
@@ -1022,6 +1028,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     },
 
     saveOrAsk: async question => (await saveNow()) || ask(question),
+
+    checkpoint() {
+      if (!s || saveState() === 'saved') return true;
+      try {
+        return !!adapter.checkpointNotes && adapter.checkpointNotes(s.file, serializeNotes(s.doc), s.sha256);
+      } catch (e) {
+        console.error('Keeping the unsaved notes failed', e);
+        return false;
+      }
+    },
   };
 
   // Back in the page: another tab may have added or removed the backup.

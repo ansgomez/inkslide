@@ -208,6 +208,12 @@ now. The save button shows a dot while there are unsaved changes; the dot turns 
 failed; Inkslide then keeps retrying. If the notes cannot be saved when you close the window,
 Inkslide asks before closing.
 
+In the browser, a tab can be closed or reloaded before a save has finished. Leaving the page
+with unsaved changes therefore also puts them in the site's small quick storage at once, and
+the next time you open the PDF Inkslide uses them if they are newer than the saved notes. If
+they cannot be kept there (notes with large snapshots, or that storage is full), the browser
+asks whether to leave the page.
+
 ### Where notes are stored
 
 - **Desktop:** next to the PDF as `<name>.pdf.notes.json` (e.g. `lecture.pdf.notes.json`).
