@@ -30,7 +30,7 @@ import {
 import { NotesDoc, imageType, type NotesJSON, type PageImage, type Paper, type Size } from '@inkslide/annotate/model';
 import { loadNotes } from '@inkslide/annotate/io';
 import { PAPER_STYLE } from '@inkslide/annotate/render';
-import { displayMatrix, displaySize, parseColor, rectOp, svgPathOperators, type Box } from './ops';
+import { displayMatrix, displaySize, parseColor, rectOp, svgPathOperators, type Box, type Matrix } from './ops';
 
 /** Highlighter opacity, as `.ann-stroke-hl` in toolbar.css. */
 export const HIGHLIGHTER_OPACITY = 0.35;
@@ -66,10 +66,9 @@ export interface ExportResult {
 interface Frame {
   box: Box;
   rotation: number;
-  /** Size as a viewer shows it, in display units (points × userUnit). */
+  /** /UserUnit: user space units per display unit (PDF.js scales the viewport by it). */
+  unit: number;
   size: Size;
-  /** The page's /UserUnit (points per user space unit), 1 without one. */
-  userUnit?: number;
 }
 
 /** A box with its corners in either order (allowed by the PDF spec) as x, y, width, height >= 0. */
@@ -77,38 +76,73 @@ const normalizeBox = ({ x, y, width, height }: Box): Box => ({
   x: Math.min(x, x + width), y: Math.min(y, y + height), width: Math.abs(width), height: Math.abs(height),
 });
 
-/** The box a viewer shows: CropBox clipped to the MediaBox (as PDF.js does). */
+/** PDF.js's MediaBox for a page without a usable one: US Letter. */
+const LETTER_BOX: Box = { x: 0, y: 0, width: 612, height: 792 };
+
+const hasArea = (b: Box): boolean => b.width > 0 && b.height > 0 && b.width < Infinity && b.height < Infinity;
+
+/** A page box, or null when it is missing, malformed or without area (pdf-lib throws on some). */
+function readBox(get: () => Box): Box | null {
+  try {
+    const b = normalizeBox(get());
+    return hasArea(b) ? b : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The box a viewer shows: CropBox clipped to the MediaBox (as PDF.js does).
+ * A page without a usable MediaBox gets Letter, as in PDF.js, written onto
+ * the page so other viewers show the same frame.
+ */
 function visibleBox(page: PDFPage): Box {
-  const m = normalizeBox(page.getMediaBox()), c = normalizeBox(page.getCropBox());
+  let m = readBox(() => page.getMediaBox());
+  if (!m) {
+    m = LETTER_BOX;
+    page.setMediaBox(m.x, m.y, m.width, m.height);
+  }
+  const c = readBox(() => page.getCropBox()) || m;
   const x = Math.max(m.x, c.x), y = Math.max(m.y, c.y);
   const x2 = Math.min(m.x + m.width, c.x + c.width), y2 = Math.min(m.y + m.height, c.y + c.height);
   return x2 > x && y2 > y ? { x, y, width: x2 - x, height: y2 - y } : m;
 }
 
-/** A page's /UserUnit as PDF.js reads it: a positive number, else 1. */
-function userUnitOf(page: PDFPage): number {
+/** The page's /UserUnit as PDF.js reads it: a number > 0 in the page dict itself, else 1. */
+function userUnit(page: PDFPage): number {
   const u = page.node.lookup(PDFName.of('UserUnit'));
-  const v = u instanceof PDFNumber ? u.asNumber() : 1;
-  return Number.isFinite(v) && v > 0 ? v : 1;
+  return u instanceof PDFNumber && u.asNumber() > 0 ? u.asNumber() : 1;
 }
 
-/**
- * The shown box, rotation and size of a page. PDF.js (and so the notes) scales
- * a page with a /UserUnit by it, so its display units are userUnit points.
- */
+/** The page's /Rotate (inherited); 0 if it is no number, as in PDF.js (pdf-lib throws then). */
+function rotationOf(page: PDFPage): number {
+  try {
+    return page.getRotation().angle;
+  } catch {
+    return 0;
+  }
+}
+
 function frameOf(page: PDFPage): Frame {
   const box = visibleBox(page);
-  const rotation = page.getRotation().angle;
-  const userUnit = userUnitOf(page);
+  const rotation = rotationOf(page);
+  const unit = userUnit(page);
   const [w, h] = displaySize(box, rotation);
-  return { box, rotation, size: [w * userUnit, h * userUnit], userUnit };
+  return { box, rotation, unit, size: [w * unit, h * unit] };
+}
+
+/** Matrix from display coordinates (display units, so /UserUnit applied) to the page's user space. */
+function frameMatrix({ box, rotation, unit }: Frame): Matrix {
+  const [a, b, c, d, e, f] = displayMatrix(box, rotation);
+  return [a / unit, b / unit, c / unit, d / unit, e, f];
 }
 
 /** Laser strokes are never stored, but drop them quietly if a file has any. */
 function withoutLaser(notes: NotesJSON): NotesJSON {
   return {
     ...notes,
-    pages: (notes.pages || []).map(p => (p && Array.isArray(p.strokes)
+    // Not an array: passed on for the model to warn about.
+    pages: !Array.isArray(notes.pages) ? notes.pages : notes.pages.map(p => (p && Array.isArray(p.strokes)
       ? { ...p, strokes: p.strokes.filter(s => !s || (s.tool as string) !== 'laser') } : p)),
   };
 }
@@ -173,7 +207,7 @@ export async function exportAnnotatedPdfWithReport(
     } else {
       const size = frames[page.after - 1].size;
       const target = pdf.insertPage(index++, [size[0], size[1]]);
-      const frame: Frame = { box: { x: 0, y: 0, width: size[0], height: size[1] }, rotation: 0, size };
+      const frame: Frame = { box: { x: 0, y: 0, width: size[0], height: size[1] }, rotation: 0, unit: 1, size };
       painter.paint(target, frame, page.paper, page.strokes, page.images);
     }
   }
@@ -224,9 +258,7 @@ class Painter {
 
   paint(page: PDFPage, frame: Frame, paper: Paper | null, strokes: readonly Stroke[], images: readonly PageImage[] = []): void {
     page.node.normalize(); // wraps the existing content in q/Q
-    const ops: PDFOperator[] = [pushGraphicsState(), concatTransformationMatrix(...displayMatrix(frame.box, frame.rotation))];
-    const unit = frame.userUnit || 1;
-    if (unit !== 1) ops.push(concatTransformationMatrix(1 / unit, 0, 0, 1 / unit, 0, 0)); // display units to user space units
+    const ops: PDFOperator[] = [pushGraphicsState(), concatTransformationMatrix(...frameMatrix(frame))];
     if (paper) ops.push(...paperOperators(paper, frame.size));
     // Images lie below all ink, as on the screen (render.ts: g.ann-img below g.ann-hl).
     for (const i of images) ops.push(...this.image(page, i));

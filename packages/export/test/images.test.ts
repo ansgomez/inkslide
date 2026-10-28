@@ -79,7 +79,7 @@ describe('images in the export', () => {
     for (const n of [1, 2, 3, 4]) expect(await paintedImages(bytes, n)).toEqual([rect]);
   });
 
-  it('honors /UserUnit as PDF.js does (the notes are in its scaled units), for images and strokes', async () => {
+  it('places images in the /UserUnit frame as PDF.js shows them', async () => {
     const pdf = await PDFDocument.create();
     const page = pdf.addPage([300, 200]);
     page.node.set(PDFName.of('UserUnit'), PDFNumber.of(2));
@@ -95,7 +95,7 @@ describe('images in the export', () => {
     expect(warnings).toEqual([]);
     expect(await paintedImages(bytes, 1)).toEqual([[300, 200, 200, 100]]);
     const text = lastStream((await PDFDocument.load(bytes)).getPage(0));
-    expect(text).toMatch(/1 0 0 -1 0 200 cm\n0\.5 0 0 0\.5 0 0 cm\n/);
+    expect(text).toMatch(/0\.5 0 0 -0\.5 0 200 cm\n/);
   });
 
   it('embeds each distinct image once, PNG and JPEG', async () => {

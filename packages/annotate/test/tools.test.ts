@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTools, DEFAULT_PREFS, SIZES, TOOLS, type Prefs, type Selection, type Surface, type ToolHost, type ToolRenderer } from '../src/tools';
+import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, TOOLS, type Prefs, type Selection, type Surface, type ToolHost, type ToolRenderer } from '../src/tools';
 import type { NotesDoc, PageImage } from '../src/model';
 import { pageUnit, type Layer } from '../src/render';
-import { loadPrefs } from '../src/app';
+import { loadPrefs, nearestPreset } from '../src/app';
 import type { Point, Stroke } from '../src/geometry';
 
 /** A NotesDoc stand-in that records the commands the tools issue. */
@@ -24,10 +24,10 @@ class FakeDoc {
     return {};
   }
   /** Recorded as [strokes, label, images]. */
-  replaceContent(pageId: string, after: { strokes: Stroke[]; images: PageImage[] }, label: string) {
+  replaceContent(pageId: string, after: { strokes: Stroke[]; images?: PageImage[] }, label: string) {
     this.calls.push({ method: 'replaceContent', pageId, args: [after.strokes, label, after.images] });
     this.pages.set(pageId, after.strokes.slice());
-    this.imgs.set(pageId, after.images.slice());
+    if (after.images) this.imgs.set(pageId, after.images.slice());
     return {};
   }
   moveItems(pageId: string, ids: string[], dx: number, dy: number) {
@@ -101,7 +101,7 @@ describe('pen and highlighter', () => {
     expect(R.live.remove).toHaveBeenCalled();
     expect(doc.calls.length).toBe(1);
     const s = doc.calls[0].args[0] as Stroke;
-    expect(s).toMatchObject({ tool: 'pen', color: '#000000', size: SIZES.pen[1] });
+    expect(s).toMatchObject({ tool: 'pen', color: '#000000', size: 4 }); // M
     expect(s.points[0]).toEqual([0, 0, 0.4]);
     // release pressure 0 is replaced by the last real pressure
     expect(s.points[s.points.length - 1]).toEqual([30, 0, 0.8]);
@@ -119,7 +119,7 @@ describe('pen and highlighter', () => {
   });
 
   it('uses the current prefs', () => {
-    app.prefs.pen = { color: '#be1e3c', size: 3 };
+    app.prefs.pen = { color: '#be1e3c', size: 7 }; // XL
     const { pen } = createTools(app, R.r);
     pen.down!(surface, [0, 0, 0.5]);
     pen.up!(surface, null);
@@ -131,7 +131,7 @@ describe('pen and highlighter', () => {
     const { pen } = createTools(app, R.r);
     pen.down!(a4, [0, 0, 0.5]);
     pen.up!(a4, null);
-    expect((doc.calls[0].args[0] as Stroke).size).toBeCloseTo(SIZES.pen[1] * 0.702, 3);
+    expect((doc.calls[0].args[0] as Stroke).size).toBeCloseTo(4 * 0.702, 3);
   });
 
   it('cancel drops the stroke', () => {
@@ -160,7 +160,7 @@ describe('erasers', () => {
 
   it('partial eraser splits a stroke into new strokes', () => {
     doc.pages.set('p1', [hline('a', 0)]);
-    app.prefs.partial.size = 0; // radius 8
+    app.prefs.partial.size = 1; // radius 8
     const { partial } = createTools(app, R.r);
     partial.down!(surface, [50, 0, 0.5]);
     partial.up!(surface, null);
@@ -173,7 +173,7 @@ describe('erasers', () => {
   it('the radius scales with the page', () => {
     doc.pages.set('p1', [hline('a', 0)]);
     const small: Surface = { ...surface, layer: { unit: 0.5 } as Layer };
-    app.prefs.eraser.size = 0; // radius 8, 4 on this page
+    app.prefs.eraser.size = 1; // radius 8, 4 on this page
     const { eraser } = createTools(app, R.r);
     eraser.down!(small, [50, 8, 0.5]);
     eraser.up!(small, null);
@@ -181,6 +181,37 @@ describe('erasers', () => {
     eraser.down!(surface, [50, 8, 0.5]);
     eraser.up!(surface, null);
     expect(doc.calls[1].args[0]).toEqual([]); // a slide page: radius 8 reaches it
+  });
+
+  it('commits only what it erased: page changes made mid-gesture stay', () => {
+    const d = mk('d', [[0, 200, 0.5]]);
+    doc.pages.set('p1', [hline('a', 0), hline('b', 50), hline('c', 100), d]);
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [50, -30, 0.5]);
+    eraser.move!(surface, [50, 60, 0.5]); // crosses a and b
+    // meanwhile (Delete selection, restyle, a new stroke from another window): c deleted, b restyled, e added
+    const [a] = doc.strokes('p1');
+    const b2 = { ...hline('b', 50), color: '#f00' };
+    doc.pages.set('p1', [a, b2, d, hline('e', 300)]);
+    eraser.up!(surface, null);
+    // a erased; b changed meanwhile, so kept as it is now; c stays deleted; d and e kept
+    expect((doc.calls[0].args[0] as Stroke[]).map(s => s.id)).toEqual(['b', 'd', 'e']);
+    expect((doc.calls[0].args[0] as Stroke[])[0].color).toBe('#f00');
+  });
+
+  it('partial eraser: pieces replace their stroke in the page as it is on release', () => {
+    doc.pages.set('p1', [hline('a', 0), hline('b', 50)]);
+    app.prefs.partial.size = 0; // radius 8
+    const { partial } = createTools(app, R.r);
+    partial.down!(surface, [30, 0, 0.5]);
+    partial.move!(surface, [70, 0, 0.5]);
+    doc.pages.set('p1', [hline('z', 9), ...doc.strokes('p1')]); // added meanwhile, below
+    partial.up!(surface, null);
+    const after = doc.calls[0].args[0] as Stroke[];
+    expect(after.map(s => s.id).slice(0, 1)).toEqual(['z']);
+    expect(after.at(-1)!.id).toBe('b');
+    expect(after.length).toBe(4); // z, two pieces of a, b
+    expect(after.slice(1, 3).every(s => s.id !== 'a' && s.points.every(p => p[0] < 30 || p[0] > 70))).toBe(true);
   });
 
   it('cancel restores the page and commits nothing', () => {
@@ -220,6 +251,21 @@ describe('selector', () => {
     selector.up!(surface, [60, 70, 0.5]);
     expect(R.log).toContain('marquee:off');
     expect(app.selection!.ids).toEqual(['a', 'b']);
+  });
+
+  it('redraws the marquee once per frame, lasso or rectangle by the running path length', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => frames.push(fn));
+    const { selector } = createTools(app, R.r);
+    selector.down!(surface, [0, 0, 0.5]);
+    for (let i = 1; i <= 2000; i++) selector.move!(surface, [i % 2 ? 100 : 0, i / 100, 0.5]); // zigzag: a lasso
+    expect(frames).toHaveLength(1);
+    frames.shift()!(0);
+    expect(R.log.filter(l => l.startsWith('marquee:'))).toEqual(['marquee:2001']);
+    selector.move!(surface, [0, 21, 0.5]);
+    selector.cancel!(surface);
+    frames.shift()!(0); // a frame after cancel draws nothing
+    expect(R.log.filter(l => l.startsWith('marquee:'))).toEqual(['marquee:2001', 'marquee:off']);
   });
 
   it('a circle selects with a lasso', () => {
@@ -303,14 +349,49 @@ describe('laser', () => {
   });
 });
 
+describe('nextSize', () => {
+  it('steps along the scale and stops at its ends', () => {
+    expect(nextSize('pen', 4, 1)).toBe(5.5);
+    expect(nextSize('pen', 4, -1)).toBe(3);
+    expect(nextSize('pen', 16, 1)).toBe(16);
+    expect(nextSize('pen', 1, -1)).toBe(1);
+  });
+
+  it('works on page-scaled sizes and goes from between two steps to the next one', () => {
+    expect(nextSize('highlighter', 20 * 0.75, 1, 0.75)).toBeCloseTo(26 * 0.75);
+    expect(nextSize('pen', 5, 1)).toBe(5.5);
+    expect(nextSize('pen', 5, -1)).toBe(4);
+    expect(nextSize('pen', 40, -1)).toBe(16);
+  });
+});
+
 describe('loadPrefs', () => {
   const stored = (v: unknown) => ({ getItem: () => JSON.stringify(v) });
 
   it('merges stored prefs over the defaults', () => {
-    const { prefs, tool } = loadPrefs(stored({ tool: 'highlighter', prefs: { pen: { color: '#be1e3c', size: 3 } } }));
+    const { prefs, tool } = loadPrefs(stored({ tool: 'highlighter', prefs: { pen: { color: '#be1e3c', size: 2, step: 6 } } }));
     expect(tool).toBe('highlighter');
-    expect(prefs.pen).toEqual({ color: '#be1e3c', size: 3 });
+    expect(prefs.pen).toEqual({ color: '#be1e3c', size: 6 });
     expect(prefs.eraser).toEqual(DEFAULT_PREFS.eraser);
+  });
+
+  it('prefs of earlier versions (a preset 0..3, no step) load at their preset', () => {
+    const { prefs } = loadPrefs(stored({ prefs: { pen: { size: 0 }, highlighter: { size: 3 }, eraser: { size: 2 } } }));
+    expect(SIZES.pen[prefs.pen.size]).toBe(2);
+    expect(SIZES.highlighter[prefs.highlighter.size]).toBe(48);
+    expect(SIZES.eraser[prefs.eraser.size]).toBe(32);
+  });
+
+  it('the scale keeps the four sizes of earlier versions at the preset steps', () => {
+    const old = { pen: [2, 4, 7, 12], highlighter: [12, 20, 32, 48], eraser: [8, 16, 32, 64], partial: [8, 16, 32, 64] };
+    for (const [tool, sizes] of Object.entries(old)) {
+      expect(SIZE_PRESETS.map(i => SIZES[tool as keyof typeof SIZES][i])).toEqual(sizes);
+      expect(SIZES[tool as keyof typeof SIZES].length).toBe(SIZES.pen.length);
+    }
+  });
+
+  it('nearestPreset maps a step to S, M, L or XL', () => {
+    expect([0, 1, 2, 3, 4, 5, 6, 7, 8].map(nearestPreset)).toEqual([0, 0, 0, 1, 1, 2, 2, 3, 3]);
   });
 
   it('ignores sizes and colors that are not valid (shared key, other writers)', () => {
@@ -345,12 +426,22 @@ describe('images', () => {
     expect((doc.calls[0].args[2] as PageImage[]).map(i => i.id)).toEqual(['far']);
   });
 
+  it('removes only the images it erased from the page as it is on release', () => {
+    doc.imgs.set('p1', [pic('i')]);
+    const { eraser } = createTools(app, R.r);
+    eraser.down!(surface, [250, 225, 0.5]);
+    doc.imgs.set('p1', [pic('i'), pic('new', 600, 600)]); // pasted meanwhile (another window)
+    eraser.up!(surface, null);
+    expect((doc.calls[0].args[2] as PageImage[]).map(i => i.id)).toEqual(['new']);
+  });
+
   it('the partial eraser leaves images alone', () => {
     doc.imgs.set('p1', [pic('i')]);
     const { partial } = createTools(app, R.r);
     partial.down!(surface, [250, 225, 0.5]);
     partial.up!(surface, null);
-    expect(doc.calls.every(c => (c.args[2] as PageImage[]).length === 1)).toBe(true);
+    expect(doc.calls.every(c => c.args[2] === undefined)).toBe(true); // images not touched
+    expect(doc.images('p1')).toHaveLength(1);
   });
 
   it('cancelling the eraser shows the images again', () => {

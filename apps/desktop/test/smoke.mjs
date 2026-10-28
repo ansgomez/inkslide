@@ -7,7 +7,9 @@
 // launch forwarding).
 // Run after `node scripts/build.mjs`; a window may flash briefly.
 // INKSLIDE_SMOKE_EXE=/path/to/Inkslide.AppImage (or another packaged
-// executable) runs the checks against that build instead of the dev one.
+// executable) runs the checks against that build instead of the dev one; it
+// must be a test build (`dist.mjs --test-build`, packages named *-TEST*), as release
+// builds ignore INKSLIDE_PAGE, INKSLIDE_SMOKE and the other test variables.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
@@ -140,7 +142,7 @@ try {
     check('nothing but the PDF and its notes in its folder (legacy backup removed)',
       readdirSync(dirname(pdf)).sort().join(',') === 'deck.pdf,deck.pdf.notes.json', readdirSync(dirname(pdf)).join(','));
     check('recent files list has the PDF',
-      existsSync(join(userData, 'recent-files.json')) && readFileSync(join(userData, 'recent-files.json'), 'utf8').includes('deck.pdf'));
+      existsSync(join(userData, 'recent-files.v2.json')) && readFileSync(join(userData, 'recent-files.v2.json'), 'utf8').includes('deck.pdf'));
   }
 
   // 2. Read-only folder: notes fall back to app storage.

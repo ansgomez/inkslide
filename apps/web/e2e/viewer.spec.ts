@@ -132,8 +132,12 @@ test('inserts, re-papers and deletes blank pages', async ({ page }) => {
   await expectCounter(page, '1 / 3 · blank 1/1');
   await expect(page.locator('.ink-page')).toHaveClass(/is-blank/);
   await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'plain');
-  await page.locator('.ann-bar [data-id="paper-grid"]').click();
+  // The paper button cycles plain → lined → grid.
+  await page.locator('.ann-bar [data-id="page-paper"]').click();
+  await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'lined');
+  await page.locator('.ann-bar [data-id="page-paper"]').click();
   await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'grid');
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageGrid');
   await penStroke(page, [0.3, 0.3], [0.6, 0.5]);
   await expect(penStrokes(page)).toHaveCount(1);
   await page.keyboard.press('b'); // second blank page, after this one
@@ -154,6 +158,70 @@ test('inserts, re-papers and deletes blank pages', async ({ page }) => {
   await expectCounter(page, '2 / 3');
 });
 
+test('the paper for new blank pages is remembered', async ({ page }) => {
+  await openPdf(page);
+  await page.locator('.ann-bar [data-id="page-paper"]').click(); // on a PDF page: only new blank pages
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageLined');
+  await page.reload();
+  await openPdf(page);
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageLined');
+  await page.keyboard.press('b');
+  await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'lined');
+  // Undoing a blank page's paper change also takes back the paper for new blank pages.
+  await page.locator('.ann-bar [data-id="page-paper"]').click();
+  await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'grid');
+  await page.keyboard.press('Control+z');
+  await expect(page.locator('.ink-page svg.ann-page')).toHaveAttribute('data-paper', 'lined');
+  await page.keyboard.press('ArrowLeft'); // the PDF page: the button shows the paper for new pages
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageLined');
+  await page.keyboard.press('Control+Shift+z'); // redo: grid again, for this page and new ones
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageGrid');
+  await page.reload();
+  await openPdf(page);
+  await expect(page.locator('.ann-bar [data-id="page-paper"]')).toHaveAttribute('data-icon', 'pageGrid');
+});
+
+test('− and + next to the counter zoom around the middle; Ctrl+= and Ctrl+− too', async ({ page }) => {
+  await openPdf(page);
+  const out = page.locator('.ann-bar [data-id="zoom-out"]'), zin = page.locator('.ann-bar [data-id="zoom-in"]');
+  const transform = () => page.locator('.ink-page').evaluate(el => (el as HTMLElement).style.transform);
+  await expect(out).toBeDisabled();
+  await expect(out).toHaveAttribute('title', /now fit page/);
+  await zin.click();
+  expect(await transform()).toContain('scale(1.25)');
+  await expect(out).toBeEnabled();
+  await expect(zin).toHaveAttribute('title', /now 125% of fit page/);
+  await page.keyboard.press('Control+Equal');
+  expect(await transform()).toContain('scale(1.5)');
+  await page.keyboard.press('Control+Minus');
+  await page.keyboard.press('Control+Minus');
+  expect(await transform()).toBe(''); // back at the fit, centred again
+  await expect(out).toBeDisabled();
+  for (let i = 0; i < 6; i++) await zin.click();
+  await expect(zin).toBeDisabled();
+  await page.keyboard.press('w'); // fit width starts unzoomed
+  await expect(page.locator('.ann-bar [data-id="fit-width"]')).toHaveClass(/is-active/);
+  expect(await transform()).toBe('');
+  await expect(zin).toBeEnabled();
+  // A page turn starts at the fit; zooming to the same step as before still updates the bar.
+  await zin.click();
+  await page.keyboard.press('ArrowRight');
+  await expect(out).toBeDisabled();
+  await zin.click();
+  expect(await transform()).toContain('scale(1.25)');
+  await expect(out).toBeEnabled();
+  await expect(out).toHaveAttribute('title', /now 125% of fit width/);
+  // With a toolbar button focused the keys still zoom the page (capture phase).
+  await zin.focus();
+  await page.keyboard.press('Control+Equal');
+  expect(await transform()).toContain('scale(1.5)');
+  // Not the page behind the open overview.
+  await page.locator('.ann-bar [data-id="page-label"]').click();
+  await expect(page.locator('#ann-ov')).toBeVisible();
+  await page.keyboard.press('Control+Equal');
+  expect(await transform()).toContain('scale(1.5)');
+});
+
 test('a file that is not a PDF shows an error; no PDF.js worker stays behind', async ({ page }) => {
   await useFileInput(page);
   for (let i = 0; i < 2; i++) {
@@ -166,6 +234,24 @@ test('a file that is not a PDF shows an error; no PDF.js worker stays behind', a
   await openPdf(page);
   await openPdf(page); // the first one's worker goes with it
   await expect.poll(() => page.workers().length).toBe(1);
+});
+
+test('a dropped file that can not be read shows an error (no unhandled rejection)', async ({ page }) => {
+  await page.evaluate(() => {
+    const w = window as unknown as { unhandled: string[] };
+    w.unhandled = [];
+    window.addEventListener('unhandledrejection', e => w.unhandled.push(String(e.reason)));
+    // A dropped file moved or changed since: reading it fails.
+    const file = new File([], 'gone.pdf', { type: 'application/pdf' });
+    file.arrayBuffer = () => Promise.reject(new DOMException('the file was changed', 'NotReadableError'));
+    const e = new DragEvent('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'dataTransfer', { value: { types: ['Files'], files: [file] } });
+    window.dispatchEvent(e);
+  });
+  await expect(page.locator('.ann-banner-error')).toContainText('Could not open gone.pdf: the file was changed');
+  // unhandledrejection is dispatched in a task after the microtasks that settled the promise:
+  // read the list one task after the banner.
+  expect(await page.evaluate(() => new Promise(r => setTimeout(() => r((window as unknown as { unhandled: string[] }).unhandled))))).toEqual([]);
 });
 
 test('a PDF asked for while another opens is opened next', async ({ page }) => {
@@ -284,8 +370,10 @@ test('overview grid and G + number jump', async ({ page }) => {
   await expect(page.locator('#ann-ov')).toBeVisible();
   await expect(page.locator('#ann-ov .ann-ov-item')).toHaveCount(3);
   await expect(page.locator('#ann-ov .ann-ov-item.is-current')).toHaveAttribute('data-n', '3');
-  // Thumbnails are PDF.js renders.
-  await expect.poll(() => page.locator('#ann-ov .ann-ov-item[data-n="1"] canvas').evaluate(c => (c as HTMLCanvasElement).width)).toBeGreaterThan(100);
+  // Thumbnails are PDF.js renders, kept as images (the render canvas is freed).
+  const thumb = page.locator('#ann-ov .ann-ov-item[data-n="1"] img.ink-ov-pdf');
+  await expect.poll(() => thumb.evaluate(i => (i as HTMLImageElement).naturalWidth)).toBeGreaterThan(100);
+  await expect(page.locator('#ann-ov .ann-ov-item[data-n="1"] canvas')).toHaveCount(0);
   await page.locator('#ann-ov .ann-ov-item[data-n="2"]').click();
   await expect(page.locator('#ann-ov')).toBeHidden();
   await expectCounter(page, '2 / 3');

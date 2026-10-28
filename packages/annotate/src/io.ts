@@ -9,8 +9,11 @@
  *   v2 (PDF): deck { source: "pdf", title, slides, size, pageSizes, sha256 },
  *      pages p<n> / blank. Sidecar "<name>.pdf.notes.json".
  *   v3: v1 or v2 with page images (snapshots); written only when there are any.
- * Backup (same format, desktop only): app storage "<sha256>.notes.backup.json",
- * the saved notes as they were before a save (apps/desktop/src/main/notes.ts).
+ * Backup (same format): the saved notes as they were before a save, in app
+ * storage: desktop "<sha256>.notes.backup.json" (apps/desktop/src/main/notes.ts),
+ * browser OPFS "notes/inkslide-notes_<sha256>.notes.backup.json"
+ * (apps/web/src/platform/web.ts). A notes file that could not be read is kept
+ * the same way as "….notes.unreadable.json" before it is replaced.
  * v1 files load into a PDF document; their strokes are scaled from the slide
  * size to the PDF page size when both have the same aspect ratio (Marp
  * exports 1280×720 px slides as 960×540 pt pages).
@@ -23,8 +26,17 @@ export const NOTES_SUFFIX = '.notes.json';
 /** Sidecar path of a PDF: "<name>.pdf.notes.json". */
 export const notesPathFor = (pdfPath: string): string => `${pdfPath}${NOTES_SUFFIX}`;
 
-/** Appended to the PDF's SHA-256 for the desktop's notes backup in app storage. */
+/** Appended to the PDF's SHA-256 (browser: its notes key) for the notes backup in app storage. */
 export const BACKUP_SUFFIX = '.notes.backup.json';
+
+/** The backup is refreshed by a save only when it is at least this old. */
+export const BACKUP_MIN_AGE_MS = 2 * 60_000;
+
+/** Appended like BACKUP_SUFFIX for the kept copy of a notes file that could not be read. */
+export const UNREADABLE_SUFFIX = '.notes.unreadable.json';
+
+/** Backups and kept unreadable copies older than this are deleted at startup. */
+export const OLD_COPIES_MAX_AGE_DAYS = 90;
 
 /** File-name friendly form of a title ("Signals – Übung 1" -> "signals-ubung-1"). */
 export function slug(title: string | null | undefined): string {
@@ -81,41 +93,79 @@ export function parseNotes(text: string): NotesJSON {
   return data;
 }
 
+/** PDF pages and blank pages with at least one stroke in a notes file (recent files list); none if it cannot be read. */
+export function inkedPages(text: string): { pages: number; blank: number } {
+  const counts = { pages: 0, blank: 0 };
+  try {
+    const { pages } = parseNotes(text);
+    for (const p of Array.isArray(pages) ? pages : []) {
+      if (!p || !Array.isArray(p.strokes) || !p.strokes.length) continue;
+      if (p.kind === 'blank') counts.blank++;
+      else counts.pages++;
+    }
+  } catch (_) {
+    // not a notes file: nothing to count
+  }
+  return counts;
+}
+
 const ASPECT_TOLERANCE = 0.01;
 
 /**
- * Scale a v1 (Marp slide units) file onto the pages of a PDF deck. Returns a
- * new object and the scale of page 1, or the data unchanged (scale null) when
- * nothing needs scaling or the aspect ratios differ (then the model warns).
+ * Scale a v1 (Marp slide units) file onto the pages of a PDF deck, deciding
+ * per page: a page is scaled when its aspect ratio matches the slides'.
+ * Returns a new object, the scale (page 1's, else that of the first page
+ * scaled; null if nothing is scaled) and a warning naming the pages left
+ * unscaled when page 1 or another page fits. The deck size counts as matching
+ * whenever page 1 fits; otherwise the model's size warning stays. The data is
+ * returned unchanged when no page fits. Only numbers are scaled; anything
+ * else is passed on for the model to reject.
  */
-export function scaleV1ToPdf(data: NotesJSON, doc: NotesDoc): { data: NotesJSON; scale: number | null } {
+export function scaleV1ToPdf(data: NotesJSON, doc: NotesDoc): { data: NotesJSON; scale: number | null; warnings: string[] } {
   const from = data.deck && data.deck.size;
-  if (data.version !== 1 || doc.deck.source !== 'pdf' || !from || !(from[0] > 0) || !(from[1] > 0)) {
-    return { data, scale: null };
+  const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  if (data.version !== 1 || doc.deck.source !== 'pdf' || !Array.isArray(from) || !positive(from[0]) || !positive(from[1])) {
+    return { data, scale: null, warnings: [] };
   }
   const scaleFor = (n: number): number | null => {
     const to = doc.deck.pageSizes && doc.deck.pageSizes[n - 1] || doc.deck.size;
     const sx = to[0] / from[0], sy = to[1] / from[1];
     return Math.abs(sx - sy) / sx <= ASPECT_TOLERANCE ? sx : null;
   };
+  const times = (v: unknown, s: number): unknown => (typeof v === 'number' ? v * s : v);
   const first = scaleFor(1);
-  if (first === null || first === 1) return { data, scale: null };
-  const pages = (data.pages || []).map((page: PageJSON): PageJSON => {
-    const n = Number(page && (page.kind === 'blank' ? page.after : page.slide));
-    // Pages beyond the PDF are kept and saved as v2 too: scale them by the deck size.
-    const s = Number.isInteger(n) && n >= 1 ? scaleFor(n) : null;
-    if (!page || s === null || s === 1 || !Array.isArray(page.strokes)) return page;
+  let scale: number | null = null, matched = false;
+  const unscaled: string[] = [];
+  // Not an array: passed on for the model to warn about.
+  const pages = !Array.isArray(data.pages) ? data.pages : data.pages.map((page: PageJSON): PageJSON => {
+    if (!page || !Array.isArray(page.strokes) || !page.strokes.length) return page;
+    const n = Number(page.kind === 'blank' ? page.after : page.slide);
+    if (!Number.isInteger(n) || n < 1) return page; // the model skips it
+    // Pages beyond the PDF are kept and saved as v2 too: scaleFor scales them by the deck size.
+    const s = scaleFor(n);
+    if (s === null) {
+      unscaled.push(page.kind === 'blank' ? `blank page ${page.id}` : `slide ${n}`);
+      return page;
+    }
+    matched = true;
+    if (s === 1) return page;
+    if (scale === null) scale = s;
     return {
       ...page,
       strokes: page.strokes.map(st => (st && Array.isArray(st.points) ? {
         ...st,
-        size: Number(st.size) * s,
-        points: st.points.map(p => (Array.isArray(p) ? [p[0] * s, p[1] * s, p[2]] : p)),
+        size: times(st.size, s),
+        points: st.points.map(p => (Array.isArray(p) ? [times(p[0], s), times(p[1], s), p[2]] : p)),
       } : st)),
     } as PageJSON;
   });
-  const deck = { ...data.deck, size: [doc.deck.size[0], doc.deck.size[1]] as Size };
-  return { data: { ...data, deck, pages }, scale: first };
+  // Nothing fits the PDF at all: the size warning says so.
+  const warnings = (first !== null || matched) && unscaled.length
+    ? [`Notes not scaled to the PDF (page aspect ratio differs): ${unscaled.join(', ')}`] : [];
+  if (first === null && scale === null) return { data, scale: null, warnings };
+  // Page 1 fits: its size no longer differs once notes are scaled to it.
+  const deck = first === null ? data.deck : { ...data.deck, size: [doc.deck.size[0], doc.deck.size[1]] as Size };
+  return { data: { ...data, deck, pages }, scale: first !== null && first !== 1 ? first : scale, warnings };
 }
 
 /** Result of loadNotes. */
@@ -130,9 +180,23 @@ export interface LoadResult {
 
 /** Replace the document's content with a parsed notes file (v1 or v2). */
 export function loadNotes(doc: NotesDoc, data: NotesJSON): LoadResult {
-  const { data: fitted, scale } = scaleV1ToPdf(data, doc);
+  const { data: fitted, scale, warnings: scaling } = scaleV1ToPdf(data, doc);
   const { warnings, notices } = doc.load(fitted);
-  return { warnings, notices, scaled: scale };
+  return { warnings: [...warnings, ...scaling], notices, scaled: scale };
+}
+
+/**
+ * Whether `text` is a notes file that loads and has something in it (strokes,
+ * images or blank pages): only such notes are copied to the backup or reverted to.
+ */
+export function isUsableNotes(text: string): boolean {
+  const some = (list: unknown): boolean => Array.isArray(list) && list.length > 0;
+  try {
+    const { pages } = parseNotes(text);
+    return Array.isArray(pages) && pages.some(p => !!p && (p.kind === 'blank' || some(p.strokes) || some(p.images)));
+  } catch (_) {
+    return false;
+  }
 }
 
 /** parseNotes + loadNotes. */
@@ -175,8 +239,8 @@ export interface PlatformAdapter {
   /** Files the OS asks the app to open while it runs (second instance, file association). */
   onOpenRequest?(handler: (path: string) => void): () => void;
   /**
-   * The notes backup (desktop only): the saved notes as they were before a
-   * save, at most once every 2 minutes, made by writeNotes. Its text and time;
+   * The notes backup (desktop, browser): the saved notes as they were before
+   * a save, at most once every 2 minutes, made by writeNotes. Its text and time;
    * null if there is none or backups are off.
    */
   readBackup?(pdf: PdfFile, sha256?: string): Promise<NotesBackup | null>;

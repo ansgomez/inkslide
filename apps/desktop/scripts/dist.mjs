@@ -2,15 +2,25 @@
 // then run electron-builder
 // with this script's arguments (e.g. `--linux AppImage`, `--win zip`).
 // Expects apps/web/dist (the package scripts build it first).
+// --test-build: a test package (it still honors the test environment variables,
+// for test/smoke.mjs with INKSLIDE_SMOKE_EXE), named *-TEST*; never a release.
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { linuxTargets, missingForRpm, RPM_INSTALL } from './preflight.mjs';
+import { linuxTargets, missingForRpm, RPM_INSTALL, testArtifactOverrides, testBuildOptions } from './preflight.mjs';
 
 const appDir = join(dirname(fileURLToPath(import.meta.url)), '..');
-const args = process.argv.slice(2);
+const options = testBuildOptions(process.argv.slice(2), process.env);
+if (options.error) {
+  console.error(options.error);
+  process.exit(1);
+}
+const { testBuild } = options;
+const args = testBuild
+  ? [...options.args, ...testArtifactOverrides(readFileSync(join(appDir, 'electron-builder.yml'), 'utf8'))]
+  : options.args;
 
 const onPath = name => (process.env.PATH || '').split(delimiter).some(d => d && existsSync(join(d, name)));
 /** `ldconfig -p` (often outside a user's PATH), or null if it cannot run. */
@@ -34,8 +44,10 @@ if (!existsSync(join(appDir, '..', 'web', 'dist', 'index.html'))) {
   process.exit(1);
 }
 
+// build.mjs bakes INKSLIDE_TEST_BUILD in: set for a test build only.
+const env = { ...process.env, INKSLIDE_TEST_BUILD: testBuild ? '1' : '' };
 const run = (cmd, argv) => {
-  const r = spawnSync(cmd, argv, { cwd: appDir, stdio: 'inherit' });
+  const r = spawnSync(cmd, argv, { cwd: appDir, stdio: 'inherit', env });
   if (r.status !== 0) process.exit(r.status ?? 1);
 };
 // Committed icons that differ from a fresh render (a changed source, or another

@@ -34,4 +34,13 @@ describe('lockNavigation', () => {
     navigate!({ preventDefault: () => { prevented = true; } });
     expect(prevented).toBe(true);
   });
+  it('without openLink (audience and print windows) only refuses links', () => {
+    let open: ((d: { url: string }) => { action: string }) | undefined;
+    const wc = {
+      setWindowOpenHandler: (h: typeof open) => { open = h; },
+      on: () => {},
+    } as unknown as WebContents;
+    lockNavigation(wc);
+    expect(open!({ url: 'https://example.org/' }).action).toBe('deny');
+  });
 });

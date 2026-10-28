@@ -155,8 +155,24 @@ body.ann-on[data-ann-dock="right"] .ann-edge-end { margin-top: auto; }
   width: var(--dot);
   height: var(--dot);
   border-radius: 50%;
-  background: currentColor;
+  background: var(--dot-color, currentColor);
+  /* A thin ring keeps a black dot visible on the dark bar. */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45);
 }
+/* No single size (a tool without one, or selected strokes of different sizes): an empty ring. */
+.ann-size.is-none span { background: none; box-shadow: inset 0 0 0 1.5px currentColor; opacity: 0.5; }
+
+/* Size preview between − and +: the look of a button, but nothing to press. */
+.ann-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+}
+/* Docked left or right: the preview gets its own row, − and + share the next one. */
+body.ann-on[data-ann-dock="left"] .ann-preview,
+body.ann-on[data-ann-dock="right"] .ann-preview { order: -1; width: 100%; }
 
 .ann-label {
   min-width: 84px;

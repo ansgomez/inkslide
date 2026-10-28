@@ -46,13 +46,12 @@ const licenseFiles = dir => readdirSync(dir)
 /**
  * Extra license text a package's own files do not carry, read from the
  * package itself or a sibling: pako's zlib port is under the Zlib license
- * (stated in its source headers, not in LICENSE); the Tauri plugins ship only
+ * (stated in its source headers, not in LICENSE); the Tauri dialog plugin ships only
  * an SPDX file, so the MIT text of @tauri-apps/api (same project) is used.
  */
 const EXTRA = {
   pako: dir => [['lib/zlib/deflate.js (Zlib license of the zlib port)', leadingComment(join(dir, 'lib/zlib/deflate.js'))]],
   '@tauri-apps/plugin-dialog': tauriMit,
-  '@tauri-apps/plugin-fs': tauriMit,
 };
 /** The first block of `//` comment lines of a source file, without the slashes. */
 function leadingComment(file) {
@@ -189,7 +188,50 @@ function crates(target) {
 const normLicense = l => (l || '(none: see license_file)').replace(/\s*\/\s*/g, ' OR ');
 /** Licenses that are fine in an MIT app as long as their notices are kept. */
 const PERMISSIVE = /^(MIT|Apache-2\.0|Apache-2\.0 WITH LLVM-exception|BSD-[23]-Clause|ISC|Zlib|Unicode-3\.0|Unicode-DFS-2016|0BSD|BSL-1\.0|CC0-1\.0|Unlicense|MIT-0|CDLA-Permissive-2\.0)$/;
-const permissive = expr => expr.replace(/[()]/g, '').split(/ OR /).some(alt => alt.split(/ AND /).every(x => PERMISSIVE.test(x.trim())));
+
+/**
+ * Whether an SPDX license expression allows using the crate under permissive
+ * licenses only: some OR alternative must be permissive, and every AND
+ * conjunct must be (AND binds tighter than OR; parentheses group). A
+ * malformed expression counts as not permissive.
+ */
+function permissive(expr) {
+  const tokens = expr.match(/\(|\)|[^\s()]+/g) || [];
+  let i = 0;
+  const peek = () => (tokens[i] || '').toUpperCase();
+  const fail = () => { throw new Error(`bad SPDX expression: ${expr}`); };
+  const atom = () => {
+    if (tokens[i] === '(') {
+      i++;
+      const v = or();
+      if (tokens[i++] !== ')') fail();
+      return v;
+    }
+    const id = tokens[i++];
+    if (!id || id === ')' || ['AND', 'OR', 'WITH'].includes(id.toUpperCase())) fail();
+    if (peek() !== 'WITH') return PERMISSIVE.test(id);
+    i++;
+    const exception = tokens[i++];
+    if (!exception || /^[()]$/.test(exception)) fail();
+    return PERMISSIVE.test(`${id} WITH ${exception}`);
+  };
+  const and = () => {
+    let v = atom();
+    while (peek() === 'AND') { i++; v = atom() && v; }
+    return v;
+  };
+  const or = () => {
+    let v = and();
+    while (peek() === 'OR') { i++; v = and() || v; }
+    return v;
+  };
+  try {
+    const v = or();
+    return i === tokens.length && v;
+  } catch {
+    return false;
+  }
+}
 
 const TARGETS = { Android: 'aarch64-linux-android', iOS: 'aarch64-apple-ios' };
 

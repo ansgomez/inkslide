@@ -1,8 +1,8 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadPreferences, parsePreferences, savePreferences } from '../src/main/preferences';
-import { RecentFiles } from '../src/main/recent';
+import { recentInfo, RecentFiles } from '../src/main/recent';
 import { DEFAULT_STATE, fitToDisplays, loadWindowState, parseWindowState, saveWindowState } from '../src/main/windowState';
 import { tempDir } from './helpers';
 
@@ -30,6 +30,90 @@ describe('RecentFiles', () => {
     expect(r.paths()).toEqual([pdf, join(dir, 'gone.pdf')]);
     writeFileSync(file, '{ not json');
     expect(new RecentFiles(file).paths()).toEqual([]);
+  });
+});
+
+describe('recent files records', () => {
+  const sha = 'a'.repeat(64);
+  const v2 = (dir: string) => join(dir, 'recent-files.v2.json');
+
+  it('reads the bare paths of older builds once, and leaves their file alone', () => {
+    const dir = tempDir();
+    const legacy = join(dir, 'recent-files.json');
+    writeFileSync(legacy, JSON.stringify(['/a.pdf', 'rel.pdf']));
+    const r = new RecentFiles(v2(dir), 10, legacy);
+    expect(r.records()).toEqual([{ path: '/a.pdf', openedAt: 0 }]);
+    r.add('/b.pdf', undefined, 9);
+    expect(JSON.parse(readFileSync(legacy, 'utf8'))).toEqual(['/a.pdf', 'rel.pdf']);
+    writeFileSync(legacy, JSON.stringify(['/z.pdf']));
+    expect(new RecentFiles(v2(dir), 10, legacy).paths()).toEqual(['/b.pdf', '/a.pdf']);
+  });
+
+  it('keeps valid fields only, and stamps opens', () => {
+    const file = v2(tempDir());
+    writeFileSync(file, JSON.stringify([
+      { path: '/b.pdf', openedAt: 7, size: 1, mtimeMs: 2, sha256: sha, pages: 3 },
+      { path: '/c.pdf', sha256: '../x', pages: 1e300, size: -1, mtimeMs: 2 },
+    ]));
+    const r = new RecentFiles(file);
+    expect(r.records()).toEqual([
+      { path: '/b.pdf', openedAt: 7, size: 1, mtimeMs: 2, sha256: sha, pages: 3 },
+      { path: '/c.pdf', openedAt: 0 },
+    ]);
+    r.describe('/c.pdf', { sha256: sha, pages: 12 });
+    r.describe('/c.pdf', { pages: 1e300 });
+    r.describe('/gone.pdf', { sha256: sha, pages: 1 });
+    expect(new RecentFiles(file).records()[1]).toEqual({ path: '/c.pdf', openedAt: 0, sha256: sha, pages: 12 });
+  });
+
+  it('forgets the hash and page count of a file that changed', () => {
+    const r = new RecentFiles(v2(tempDir()));
+    r.add('/a.pdf', { size: 1, mtimeMs: 2 }, 10);
+    r.describe('/a.pdf', { sha256: sha, pages: 4 });
+    r.add('/a.pdf', { size: 1, mtimeMs: 2 }, 20);
+    expect(r.records()[0]).toEqual({ path: '/a.pdf', openedAt: 20, size: 1, mtimeMs: 2, sha256: sha, pages: 4 });
+    r.add('/a.pdf', { size: 5, mtimeMs: 2 }, 30);
+    expect(r.records()[0]).toEqual({ path: '/a.pdf', openedAt: 30, size: 5, mtimeMs: 2 });
+  });
+
+  it('lists the files that exist, with their pages with notes', async () => {
+    const dir = tempDir();
+    const pdf = join(dir, 'x.pdf');
+    writeFileSync(pdf, '%PDF-1.7');
+    writeFileSync(`${pdf}.notes.json`, JSON.stringify({
+      format: 'marp-notes', version: 2, deck: { source: 'pdf', title: 'x.pdf', slides: 2, size: [100, 100] },
+      pages: [
+        { id: 'p1', kind: 'slide', slide: 1, strokes: [{ id: 's', tool: 'pen', color: '#000', size: 2, points: [[1, 1, 0.5]] }] },
+        { id: 'b1', kind: 'blank', after: 1, strokes: [{ id: 't', tool: 'pen', color: '#000', size: 2, points: [[1, 1, 0.5]] }] },
+      ],
+    }));
+    const bare = join(dir, 'y.pdf');
+    writeFileSync(bare, '%PDF-1.7');
+    const infos = await recentInfo([
+      { path: pdf, openedAt: 5, pages: 2 }, { path: join(dir, 'gone.pdf'), openedAt: 4 }, { path: bare, openedAt: 3 },
+    ], join(dir, 'userData'));
+    expect(infos).toEqual([
+      { path: pdf, name: 'x.pdf', size: 8, openedAt: 5, pages: 2, annotatedPages: 1, annotatedBlankPages: 1 },
+      { path: bare, name: 'y.pdf', size: 8, openedAt: 3, annotatedPages: 0, annotatedBlankPages: 0 },
+    ]);
+  });
+
+  it('reads notes in app storage by hash, unless the file changed since', async () => {
+    const dir = tempDir();
+    const userData = join(dir, 'userData');
+    const pdf = join(dir, 'x.pdf');
+    writeFileSync(pdf, '%PDF-1.7');
+    const st = statSync(pdf);
+    mkdirSync(join(userData, 'notes'), { recursive: true });
+    writeFileSync(join(userData, 'notes', `${sha}.notes.json`), JSON.stringify({
+      format: 'marp-notes', version: 2, deck: { source: 'pdf', title: 'x.pdf', slides: 1, size: [100, 100] },
+      pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: [{ id: 's', tool: 'pen', color: '#000', size: 2, points: [[1, 1, 0.5]] }] }],
+    }));
+    const rec = { path: pdf, openedAt: 1, size: st.size, mtimeMs: st.mtimeMs, sha256: sha, pages: 1 };
+    expect((await recentInfo([rec], userData))[0]).toMatchObject({ pages: 1, annotatedPages: 1 });
+    const changed = await recentInfo([{ ...rec, size: st.size + 1 }], userData);
+    expect(changed[0]).toMatchObject({ annotatedPages: 0 });
+    expect(changed[0].pages).toBeUndefined();
   });
 });
 

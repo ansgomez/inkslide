@@ -7,7 +7,9 @@
  * write OPFS from the page, so there the copy is an ArrayBuffer in the
  * IndexedDB store "copies" (not a Blob: WebKit can not store Blobs in a
  * private window), as it is when an OPFS write fails. Reads and removals
- * look in both places; an empty OPFS file counts as missing.
+ * look in both places; an empty OPFS file counts as missing. Writes resolve
+ * once their transaction committed (a write over the quota can still fail
+ * then) and pass a QuotaExceededError on, so ../recent.ts can make room.
  *
  * In Safari, keeping copies asks for persistent storage once (navigator.
  * storage.persist(), no prompt there): Safari otherwise may clear a site's
@@ -28,6 +30,11 @@ const done = <T>(req: IDBRequest<T>): Promise<T> => new Promise((resolve, reject
   req.onerror = () => reject(req.error);
 });
 
+/**
+ * The open connection, opened again once it closed: WebKit drops the
+ * connections of a backgrounded PWA, and another window that upgrades the
+ * database (a newer build) asks this one to close.
+ */
 let dbPromise: Promise<IDBDatabase> | null = null;
 function db(): Promise<IDBDatabase> {
   if (!dbPromise) {
@@ -36,14 +43,45 @@ function db(): Promise<IDBDatabase> {
       req.result.createObjectStore(RECENT, { keyPath: 'id' });
       req.result.createObjectStore(COPIES);
     };
-    dbPromise = done(req);
-    dbPromise.catch(() => { dbPromise = null; });
+    // Another window keeps an older version open; it closes on its versionchange.
+    req.onblocked = () => console.warn('The recent files database waits for another window to close it');
+    const p: Promise<IDBDatabase> = done(req).then(conn => {
+      const forget = (): void => { if (dbPromise === p) dbPromise = null; };
+      conn.onclose = forget;
+      conn.onversionchange = () => { conn.close(); forget(); };
+      return conn;
+    });
+    dbPromise = p;
+    p.catch(() => { if (dbPromise === p) dbPromise = null; });
   }
   return dbPromise;
 }
 
+async function transaction(name: string, mode: IDBTransactionMode): Promise<IDBTransaction> {
+  const conn = await db();
+  try {
+    return conn.transaction(name, mode);
+  } catch (e) {
+    // Closed without a close event (WebKit): open it again, once.
+    if ((e as Error | null)?.name !== 'InvalidStateError') throw e;
+    if (dbPromise && (await dbPromise) === conn) dbPromise = null;
+    return (await db()).transaction(name, mode);
+  }
+}
+
 async function store(name: string, mode: IDBTransactionMode): Promise<IDBObjectStore> {
-  return (await db()).transaction(name, mode).objectStore(name);
+  return (await transaction(name, mode)).objectStore(name);
+}
+
+/** Change store `name`; resolves once the transaction committed, rejects if it aborted (e.g. QuotaExceededError). */
+async function write(name: string, change: (store: IDBObjectStore) => void): Promise<void> {
+  const tx = await transaction(name, 'readwrite');
+  const committed = new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onabort = tx.onerror = () => reject(tx.error ?? new DOMException('the transaction was aborted', 'AbortError'));
+  });
+  change(tx.objectStore(name));
+  await committed;
 }
 
 const fileName = (id: string): string => safeFileName(id, '.pdf');
@@ -63,22 +101,22 @@ export function createRecentStorage(): RecentBackend {
       return done((await store(RECENT, 'readonly')).getAll() as IDBRequest<RecentRecord[]>);
     },
     async put(rec) {
-      await done((await store(RECENT, 'readwrite')).put(rec));
+      await write(RECENT, s => s.put(rec));
     },
     async remove(id) {
-      await done((await store(RECENT, 'readwrite')).delete(id));
+      await write(RECENT, s => s.delete(id));
     },
 
     async writeCopy(id, bytes) {
       askPersist();
       const data = bytes as Uint8Array<ArrayBuffer>;
       const dir = canWriteOpfs() ? await opfsDir(OPFS_DIR) : null;
-      if (dir && (await writeOpfsFile(dir, fileName(id), data))) return;
+      if (dir && (await writeOpfsFile(dir, fileName(id), data, true))) return; // over the quota: rejects
       // No OPFS, or its write failed (quota, a locked file): IndexedDB. Then the
       // OPFS file goes: a failed write can leave it empty (readCopy skips those),
       // and a valid older one has the same bytes (the id is their hash).
       const whole = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength;
-      await done((await store(COPIES, 'readwrite')).put(whole ? data.buffer : data.slice().buffer, id));
+      await write(COPIES, s => s.put(whole ? data.buffer : data.slice().buffer, id));
       if (dir) await dir.removeEntry(fileName(id)).catch(() => {});
     },
     async readCopy(id) {
@@ -95,7 +133,7 @@ export function createRecentStorage(): RecentBackend {
     async removeCopy(id) {
       const dir = await opfsDir(OPFS_DIR);
       if (dir) await dir.removeEntry(fileName(id)).catch(() => {});
-      await done((await store(COPIES, 'readwrite')).delete(id));
+      await write(COPIES, s => s.delete(id));
     },
   };
 }

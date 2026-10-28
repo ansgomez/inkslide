@@ -99,7 +99,7 @@ html, body {
 .ink-open:hover { filter: brightness(1.1); }
 .ink-open:focus-visible { outline: 2px solid #8ab4ff; outline-offset: 2px; }
 
-/* Recent files (recent-list.ts, browser build). */
+/* Recent files on the start screen (recent-list.ts). */
 .ink-recent {
   width: min(480px, 100%);
   margin-top: 28px;
@@ -199,6 +199,12 @@ body.ink-dropping::after {
   box-shadow: 0 0 0 2px var(--ann-bar-bg);
 }
 .ann-btn[data-id="save"].is-error::after { background: #e5484d; }
+
+/* ── Zoom − and + around the page counter ──────────────────────── */
+
+/* Docked left or right the counter fills a row: put it first, − and + share the next row. */
+body.ann-on[data-ann-dock="left"] .ann-group-pages .ann-label,
+body.ann-on[data-ann-dock="right"] .ann-group-pages .ann-label { order: -1; }
 
 /* ── Page overview (overview.ts) ──────────────────────────────── */
 
@@ -315,6 +321,7 @@ body.ink-dropping::after {
 /* Thumbnail: the PDF render with the notes SVG on top. */
 .ann-ov-tile { position: relative; background: #fff; }
 .ann-ov-tile > canvas,
+.ann-ov-tile > img,
 .ann-ov-tile > svg {
   position: absolute;
   inset: 0;
@@ -348,4 +355,24 @@ body.ink-dropping::after {
   }
   .ink-print-page:last-child { break-after: auto; }
   .ink-print-page > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+}
+
+/* ── Audience window of presenter mode (audience.html) ────────── */
+
+/* The page fills the window on black, as on a projector; nothing takes input. */
+body.ink-audience { background: #000; cursor: none; }
+body.ink-audience .ink-stage { inset: 0; }
+body.ink-audience .ink-page { box-shadow: none; }
+body.ink-audience * { pointer-events: none; }
+.ink-waiting {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  font-size: 18px;
+  opacity: 0.6;
 }

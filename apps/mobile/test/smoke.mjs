@@ -1,10 +1,12 @@
 // Smoke test of the Tauri shell on the desktop (Linux, WebKitGTK): builds
 // src-tauri with the web build plus a test script as its frontend, runs it
-// with a temporary XDG_DATA_HOME and checks that the Tauri adapter reads and
-// writes notes in the app data directory through the real plugins, scope and
-// CSP. Dialogs, export, share and print need a person (and the mobile ones a
-// device), so they are not covered. Run after `pnpm --filter @inkslide/web build:tauri`;
-// a window may flash briefly. The first run compiles for a few minutes.
+// with a temporary XDG_DATA_HOME and checks, through the real plugins, the
+// app's commands, the capabilities and the CSP, that read_picked reads a
+// picked file (handed over with --features smoke, as the picker needs a
+// person) and refuses others, and that the Tauri adapter reads and writes
+// notes in the app data directory. Dialogs, export, share and print need a
+// person (and the mobile ones a device), so they are not covered. Run after
+// `pnpm --filter @inkslide/web build:tauri`; a window may flash briefly. The first run compiles for a few minutes.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -39,13 +41,14 @@ const SEEDED = {
   ] }],
 };
 
-// In the web view: open PDF1 (its seeded notes must load: readNotes), then
-// PDF2, import notes with a blank page and save them (writeNotes).
-const PAGE_SCRIPT = `
-// A failure is written to notes/smoke-error.txt (AppData = BaseDirectory 14),
-// also when a step hangs (e.g. on a dialog).
-const report = msg => window.__TAURI_INTERNALS__.invoke('plugin:fs|write_text_file', new TextEncoder().encode(msg),
-  { headers: { path: encodeURIComponent('notes/smoke-error.txt'), options: JSON.stringify({ baseDir: 14 }) } });
+// In the web view: read PDF1 through read_picked (the app was started with it
+// as the picked file: built with --features smoke, INKSLIDE_SMOKE_PICK) and
+// check that another path is refused, open PDF1 (its seeded notes must load:
+// readNotes), then PDF2, import notes with a blank page and save them (writeNotes).
+const pageScript = picked => `
+// A failure is written to notes/smoke-error.notes.json (through write_notes:
+// the page has no fs write permission), also when a step hangs (e.g. on a dialog).
+const report = msg => window.__TAURI_INTERNALS__.invoke('write_notes', { key: 'smoke-error', text: msg });
 let step = 'start';
 const watchdog = setTimeout(() => void report('hangs at: ' + step + '\\n' + document.body.innerText.slice(0, 500)), 30000);
 const wait = async (ok, what) => {
@@ -53,14 +56,21 @@ const wait = async (ok, what) => {
   throw new Error('timed out waiting for ' + what);
 };
 const bytes = s => new TextEncoder().encode(s);
+const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
 // WebKitGTK: IPC calls made before the load event can hang (and every later one with them).
 if (document.readyState !== 'complete') await new Promise(r => window.addEventListener('load', r, { once: true }));
 try {
   await wait(() => window.inkslideViewer, 'the viewer');
   const v = window.inkslideViewer;
   if (document.body.dataset.platform !== 'tauri') throw new Error('not the Tauri adapter');
+  step = 'read_picked';
+  const raw = await invoke('read_picked', { id: ${JSON.stringify(picked)} });
+  const pdf1 = raw instanceof ArrayBuffer ? new Uint8Array(raw) : Uint8Array.from(raw);
+  if (new TextDecoder().decode(pdf1) !== ${JSON.stringify(PDF1)}) throw new Error('read_picked returned other bytes');
+  const refused = await invoke('read_picked', { id: ${JSON.stringify(`${picked}.other`)} }).then(() => false, () => true);
+  if (!refused) throw new Error('read_picked read a file that was not picked');
   step = 'open PDF1';
-  await v.open({ path: null, name: 'deck.pdf', bytes: bytes(${JSON.stringify(PDF1)}) });
+  await v.open({ path: null, name: 'deck.pdf', bytes: pdf1 });
   await wait(() => v.session, 'PDF1');
   if (!v.session.doc.hasNotes()) throw new Error('the seeded notes were not read');
   const first = v.session;
@@ -79,17 +89,17 @@ try {
 }
 `;
 
-function buildFixture() {
+function buildFixture(picked) {
   if (!existsSync(join(webDist, 'index.html'))) throw new Error('no web build: run `pnpm --filter @inkslide/web build:tauri` first');
   rmSync(fixture, { recursive: true, force: true });
   cpSync(webDist, fixture, { recursive: true });
-  writeFileSync(join(fixture, 'smoke.js'), PAGE_SCRIPT);
+  writeFileSync(join(fixture, 'smoke.js'), pageScript(picked));
   const index = join(fixture, 'index.html');
   writeFileSync(index, readFileSync(index, 'utf8').replace('</body>', '<script type="module" src="./smoke.js"></script></body>'));
 }
 
 function cargoBuild() {
-  const r = spawnSync('cargo', ['build', '--features', 'tauri/custom-protocol'], {
+  const r = spawnSync('cargo', ['build', '--features', 'tauri/custom-protocol,smoke'], {
     cwd: tauriDir,
     stdio: 'inherit',
     env: {
@@ -128,20 +138,24 @@ if (process.platform !== 'linux') {
 }
 const data = mkdtempSync(join(tmpdir(), 'inkslide-tauri-smoke-'));
 try {
-  buildFixture();
+  const picked = join(data, 'picked', 'deck.pdf');
+  mkdirSync(dirname(picked), { recursive: true });
+  writeFileSync(picked, PDF1);
+  writeFileSync(`${picked}.other`, PDF2);
+  buildFixture(picked);
   cargoBuild();
   const notesDir = join(data, IDENTIFIER, 'notes');
   mkdirSync(notesDir, { recursive: true });
   writeFileSync(join(notesDir, `${sha(PDF1)}.notes.json`), JSON.stringify(SEEDED));
   const written = join(notesDir, `${sha(PDF2)}.notes.json`);
-  const error = join(notesDir, 'smoke-error.txt');
-  await runUntil({ XDG_DATA_HOME: data }, () => existsSync(written) || existsSync(error));
+  const error = join(notesDir, 'smoke-error.notes.json');
+  await runUntil({ XDG_DATA_HOME: data, INKSLIDE_SMOKE_PICK: picked }, () => existsSync(written) || existsSync(error));
   if (existsSync(error)) throw new Error(`in the page: ${readFileSync(error, 'utf8')}`);
   const notes = JSON.parse(readFileSync(written, 'utf8'));
   if (notes.deck.sha256 !== sha(PDF2) || !notes.pages.some(p => p.id === 'b-smoke-1')) throw new Error(`unexpected notes: ${JSON.stringify(notes)}`);
   const left = readdirSync(notesDir).filter(f => f.endsWith('.tmp'));
   if (left.length) throw new Error(`temp files left: ${left.join(', ')}`);
-  console.log('smoke: ok (notes read from and written to the app data directory)');
+  console.log('smoke: ok (picked file read, other file refused; notes read from and written to the app data directory)');
 } finally {
   rmSync(data, { recursive: true, force: true });
 }

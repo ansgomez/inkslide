@@ -8,7 +8,9 @@
  *       canvas.ink-live     live stroke (live-ink.ts), pointer-events: none
  *
  * Fit modes (W, toolbar): "page" shows the whole page; "width" fills the
- * stage width and scrolls a taller page vertically. The scroll position is
+ * stage width and scrolls a taller page vertically. The − and + next to the
+ * page counter (Ctrl/Cmd+= and Ctrl/Cmd+−) zoom by ZOOM_STEPS around the
+ * middle of the view. The scroll position is
  * the view's ty at zoom 1, so pinch zoom, pan and scroll are one transform
  * (clampPan keeps the page over the visible part, see fit.ts). Render scale,
  * bitmap cache and prefetch follow the fit of the current mode.
@@ -16,7 +18,7 @@
  * One document session per opened PDF: a NotesDoc (deckFromPdf), an
  * Annotator (tools, input, toolbar, keys), surfaces created on demand per
  * page and kept, the overview, and the save target. Rendered pages are kept
- * as ImageBitmaps (LRU, at most 6): the page shown plus the pages before and
+ * as ImageBitmaps (LRU, at most 6 and 160 MB): the page shown plus the pages before and
  * after it, pre-rendered at their fit size, so a page turn only draws a
  * bitmap.
  *
@@ -29,34 +31,43 @@ import {
   type Surface,
 } from '@inkslide/annotate';
 import { deckFromPdf, loadNotesText, sha256Hex } from '@inkslide/annotate/io';
-import { pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
+import { PAPERS, pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
 import * as render from '@inkslide/annotate/render';
-import { ICONS, isTyping, registerGroup, type ToolbarHost } from '@inkslide/annotate/toolbar';
+import type { ToolRenderer } from '@inkslide/annotate/tools';
+import { ICONS, isTyping, registerGroup, type ToolbarHost, type ToolbarItem } from '@inkslide/annotate/toolbar';
 import { banner } from './banner';
 import { pageCounter, pdfPageNumber, sourceStep } from './counter';
 import { storedItem, storeItem } from './dom';
 import { buildAnnotatedPdf } from './export';
 import {
-  clampPan, fitTo, pageScroll, panLimits, renderScale, visibleBox, type Box, type FitMode, type FitRect,
+  clampPan, fitTo, pageScroll, panLimits, renderScale, visibleBox, zoomAround, zoomStep, type Box, type FitMode, type FitRect,
 } from './fit';
 import { attachGestures } from './gestures';
 import { createLiveInk } from './live-ink';
 import { createOverview, type Overview } from './overview';
 import { bitmapKey, createPageBitmaps } from './page-bitmaps';
-import { openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
+import { isCancelled, openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
 import { flushSave, pageTurned, saveState, scheduleSave, setSaveTarget } from './persist';
 import type { AppAdapter } from './platform';
+import type { ViewerMirror } from './presenter';
 import { printPageImages } from './print';
 import { captureArea, importImage, snapshotScale } from './snapshot';
 
 /** Gap around the fitted page, CSS px. */
 const PAGE_MARGIN = 6;
 const CACHE_LIMIT = 6;
+/** Bytes of rendered pages kept (a page at the render cap is 64 MB). */
+const CACHE_BYTES = 160 * 2 ** 20;
 const FIT_KEY = 'inkslide-fit-mode';
+/** Paper for new blank pages (the paper button), remembered like the fit mode. */
+const PAPER_KEY = 'inkslide-blank-paper';
 /** Keys of navKey that scroll or turn the page. */
 const PAGE_KEYS = new Set(['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'PageDown', 'PageUp', ' ', 'Home', 'End']);
 
 ICONS.open = '<path d="M3 7V5a1 1 0 011-1h5l2 2h8a1 1 0 011 1v2"/><path d="M3 9h18l-2 10H5z"/>';
+ICONS.zoomOut = '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M7.5 10.5h6"/>';
+ICONS.zoomIn = '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M7.5 10.5h6M10.5 7.5v6"/>';
+ICONS.revert = '<path d="M3.5 12a8.5 8.5 0 102.5-6"/><path d="M3 3.5V9h5.5"/><path d="M12 7.5V12l3 2"/>';
 ICONS.fitWidth = '<path d="M7 3h10v18H7z"/><path d="M3 12h6M21 12h-6M5 10l-2 2 2 2M19 10l2 2-2 2"/>';
 
 /** Wait before reading saved notes that could not be read or loaded once more (a sync client may hold them). */
@@ -89,6 +100,8 @@ interface Session {
   defaultPaper: Paper;
   /** The page controller (also app.pages). */
   pages: ViewerPages;
+  /** The PDF has a notes backup (shows the Revert to Backup button). */
+  hasBackup: boolean;
   unbind: () => void;
 }
 
@@ -132,17 +145,22 @@ export interface Viewer {
    */
   saveOrAsk(question: string): Promise<boolean>;
   /**
-   * File → Revert to Backup… (desktop): save, ask, swap the saved notes and
-   * the backup, and load the notes again (no undo step).
+   * Revert to Backup (desktop: File menu; browser: File group of the
+   * toolbar): save, ask, swap the saved notes and the backup, and load the
+   * notes again (no undo step).
    */
   revertToBackup(): Promise<void>;
 }
 
-/** The viewer in `els`; also installs its keys, gestures and toolbar groups. */
-export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
+/**
+ * The viewer in `els`; also installs its keys, gestures and toolbar groups.
+ * `mirror` hears of the opened PDF, the page shown, the stroke being written
+ * and the laser (presenter mode, presenter.ts).
+ */
+export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: ViewerMirror | null = null): Viewer {
   const { stage, page: pageEl, pdfCanvas, liveCanvas } = els;
   const pdfCtx = pdfCanvas.getContext('2d', { alpha: false })!;
-  const bitmaps = createPageBitmaps(CACHE_LIMIT);
+  const bitmaps = createPageBitmaps(CACHE_LIMIT, CACHE_BYTES);
   const liveInk = createLiveInk(liveCanvas, pageEl);
   let s: Session | null = null;
   let fit: FitRect | null = null;
@@ -155,6 +173,12 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
   let printing = false;
   /** Bitmap key on the PDF canvas (to skip redundant draws). */
   let shownKey = '';
+
+  /**
+   * Revert to Backup is a toolbar button where the adapter has backups but no
+   * menu for it (browser, PWA); the desktop has File → Revert to Backup….
+   */
+  const backupButton = adapter.platform !== 'electron' && !!adapter.revertToBackup;
 
   const dpr = (): number => window.devicePixelRatio || 1;
   const ask = (message: string): Promise<boolean> =>
@@ -189,7 +213,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     }
   }
 
-  /** The backup (desktop) loaded into a new document; null if there is none or it does not load. */
+  /** Find out whether the session's PDF has a backup now; the toolbar shows Revert to Backup if so. */
+  async function checkBackup(ses: Session): Promise<void> {
+    if (!backupButton) return;
+    const has = !!(await readBackup(ses.file, ses.sha256));
+    if (s !== ses || has === ses.hasBackup) return;
+    ses.hasBackup = has;
+    ses.app.refresh();
+  }
+
+  /** The backup loaded into a new document; null if there is none or it does not load. */
   async function loadBackup(file: PdfFile, sha256: string, newDoc: () => NotesDoc):
     Promise<{ doc: NotesDoc; warnings: string[]; when: string } | null> {
     const backup = await readBackup(file, sha256);
@@ -204,7 +237,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
   }
 
   /**
-   * Keep the unreadable notes file before it is replaced (desktop). Resolves
+   * Keep the unreadable notes file before it is replaced (desktop, browser). Resolves
    * with where the copy is ('' without one), or null if the copy failed and
    * the user does not want to go on (then nothing is opened).
    */
@@ -278,7 +311,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     const id = s.current;
     bitmaps.get(n, scale, PRIORITY.current).then(bmp => {
       if (s && s.current === id && bitmaps.cached(n, scale) === bmp) drawBitmap(bmp, key);
-    }, e => console.error(`Rendering page ${n} failed`, e));
+    }, e => { if (!isCancelled(e)) console.error(`Rendering page ${n} failed`, e); });
   }
 
   /** Pre-render the PDF pages before and after the shown one at their fit size. */
@@ -286,12 +319,14 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     if (!s) return;
     const own = s.doc.ownerSlide(s.current);
     if (own == null) return;
+    const pages: [number, number][] = [];
     for (const n of [own + 1, own - 1]) {
       if (n < 1 || n > s.doc.deck.slides) continue;
       const id = `p${n}`;
       const f = fitFor(id);
-      bitmaps.get(n, renderScale(sizeOf(id), f.scale, dpr()), PRIORITY.neighbor).catch(() => { /* closed */ });
+      pages.push([n, renderScale(sizeOf(id), f.scale, dpr())]);
     }
+    bitmaps.prefetch(pages);
   }
 
   // ── Layout and zoom ──────────────────────────────────────────
@@ -321,6 +356,9 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     resizeLiveInk(fit);
   }
 
+  /** Zoom the toolbar last showed (the − and + buttons' states and titles). */
+  let barZoom = 1;
+
   function setView(zoom: number, tx: number, ty: number, done: boolean): void {
     if (!fit) return;
     const [cx, cy] = clampPan(tx, ty, fit, zoom, vis);
@@ -329,7 +367,33 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     if (done) {
       resizeLiveInk(fit);
       paint();
+      if (s && barZoom !== view.zoom) { // a pinch may have reached a zoom limit
+        barZoom = view.zoom;
+        s.app.refresh();
+      }
     }
+  }
+
+  /** Back to the fit, unzoomed (page turn, W); the caller refreshes the toolbar. */
+  function resetView(): void {
+    view = { zoom: 1, tx: 0, ty: 0 };
+    barZoom = 1;
+  }
+
+  /** − / + next to the page counter: the next zoom step, around the middle of the view. */
+  function zoomBy(dir: -1 | 1): void {
+    // The page must not move under a stroke, nor behind the open overview.
+    if (!s || !fit || s.app.input.busy || s.overview.isOpen()) return;
+    const zoom = zoomStep(view.zoom, dir);
+    if (zoom === null) return;
+    const [tx, ty] = zoomAround(view, zoom, vis.width / 2, vis.height / 2);
+    setView(zoom, tx, ty, true);
+  }
+
+  /** The zoom for the − and + tooltips: "fit page", "150% of fit width". */
+  function zoomText(): string {
+    const fitName = fitMode === 'width' ? 'fit width' : 'fit page';
+    return view.zoom <= 1.001 ? fitName : `${Math.round(view.zoom * 100)}% of ${fitName}`;
   }
 
   /** PgDn / PgUp in fit-width mode: scroll about a screen; false at the page's end (turn instead). */
@@ -356,6 +420,12 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     else stepBackToBottom();
   }
 
+  /** The remembered paper for new blank pages; plain if none (or storage is blocked). */
+  const storedPaper = (): Paper => {
+    const p = storedItem(PAPER_KEY);
+    return PAPERS.some(x => x.id === p) ? p as Paper : 'plain';
+  };
+
   const toggleFitMode = (): void => setFitMode(fitMode === 'width' ? 'page' : 'width');
 
   function setFitMode(mode: FitMode): void {
@@ -363,7 +433,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     fitMode = mode;
     storeItem(FIT_KEY, mode);
     if (!s) return;
-    view = { zoom: 1, tx: 0, ty: 0 };
+    resetView();
     layout();
     paint();
     prefetch();
@@ -428,13 +498,14 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     if (!surface) return;
     const turned = prev !== surface;
     s.current = pageId;
-    if (turned) view = { zoom: 1, tx: 0, ty: 0 };
+    if (turned) resetView();
     layout();
     if (prev && turned) prev.svg.remove();
     if (!surface.svg.isConnected) pageEl.insertBefore(surface.svg, liveCanvas);
     pageEl.classList.toggle('is-blank', !!surface.blank);
     pageEl.dataset.pageId = pageId;
     paint();
+    mirror?.shown(pageId);
     if (turned) {
       s.app.pageChanged(prev);
       pageTurned(); // save on page turn
@@ -488,8 +559,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
         return page && page.kind === 'blank' ? page.paper : ses.defaultPaper;
       },
       setPaper(paper) {
-        ses.defaultPaper = paper;
-        if (onBlank()) doc.setPaper(ses.current, paper);
+        const before = ses.defaultPaper;
+        const remember = (p: Paper): void => { ses.defaultPaper = p; storeItem(PAPER_KEY, p); };
+        remember(paper);
+        const cmd = onBlank() ? doc.setPaper(ses.current, paper) : null;
+        if (cmd) {
+          // Undo and redo of the blank page's paper take the paper for new blank pages along.
+          const { do: redo, undo } = cmd;
+          cmd.undo = () => { remember(before); undo(); };
+          cmd.do = () => { remember(paper); redo(); };
+        }
         ses.app.refresh();
       },
       deleteCurrent() {
@@ -579,7 +658,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     old.unbind();
     old.overview.destroy();
     old.app.input.destroy();
-    if (old.app.toolbar) old.app.toolbar.el.remove();
+    if (old.app.toolbar) old.app.toolbar.destroy();
     old.app.surfaces.forEach(surf => surf.svg.remove());
     bitmaps.setDoc(null);
     shownKey = '';
@@ -620,7 +699,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
       const newDoc = (): NotesDoc => new NotesDoc(deckFromPdf({ title, pageSizes, sha256 }));
       // Saved notes that cannot be read or loaded (broken file, newer version, a
       // sync client holding it) are read once more after a second. Then the
-      // backup is offered (desktop), else the user decides whether to open
+      // backup is offered (desktop, browser), else the user decides whether to open
       // anyway; either way the unreadable file is kept before it is replaced.
       let saved = await loadSaved(file, sha256, newDoc);
       if (saved.problem) {
@@ -641,12 +720,22 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
         }
       }
       if (queued) return; // a newer request replaces this one
-      // Strokes made on the open PDF while this one loaded.
-      if (!(await saveOpen())) return;
       const kept = saved.problem ? await keepUnreadable(file, sha256) : '';
       if (kept === null || queued) return;
       const keptMsg = kept ? `The notes file that could not be read was kept as ${kept}.` : '';
+      // The open PDF again: its notes written below (or by autosave meanwhile) came after the read.
+      const reread = !!s && s.sha256 === sha256 && s.file.path === file.path && !saved.problem;
+      // Strokes made on the open PDF while this one loaded, or during a write:
+      // write until nothing is unsaved, then close with no await in between.
+      do {
+        if (!(await saveOpen())) return;
+      } while (!loseUnsaved && saveState() !== 'saved');
+      if (queued) return; // a newer request replaces this one
       closeSession();
+      if (reread) {
+        const again = await loadSaved(file, sha256, newDoc);
+        if (!again.problem) doc = again.doc; // else the notes read before, the most there is
+      }
       startSession(file, sha256, pdf, doc);
       if (fromBackup) banner([`Opened the backup from ${fromBackup.when}.`, keptMsg, ...fromBackup.warnings].filter(Boolean).join('\n'), 'warn');
       else if (kept) banner(keptMsg, 'warn');
@@ -661,15 +750,24 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     }
   }
 
+  /** The live ink renderer; with a mirror, the stroke being written is also mirrored. */
+  const renderer: ToolRenderer = mirror
+    ? {
+      ...liveInk.renderer,
+      liveStroke: (layer, tool) => mirror.liveStroke(layer.svg.dataset.pageId || '', tool, liveInk.renderer.liveStroke(layer, tool)),
+    }
+    : liveInk.renderer;
+
   function startSession(file: PdfFile, sha256: string, pdf: PdfDoc, doc: NotesDoc): void {
     const app = createAnnotator({
-      doc, activeSurface: () => currentSurface(), renderer: liveInk.renderer,
+      doc, activeSurface: () => currentSurface(), renderer,
       captureArea: (pageId, rect) => snapshotArea(ses, pageId, rect),
       importImage,
       notify: (text, kind) => { banner(text, kind); },
     });
+    app.sync = mirror;
     const ses: Session = {
-      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: 'plain',
+      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: storedPaper(), hasBackup: false,
       overview: null as unknown as Overview, pages: null as unknown as ViewerPages, unbind: () => {},
     };
     s = ses;
@@ -702,12 +800,18 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     };
     setSaveTarget({ doc, adapter, pdf: file, sha256 }, {
       onError: e => banner(`Saving the notes failed (retrying): ${(e as Error).message || e}`, 'error'),
-      onState: () => app.refresh(),
+      onState: state => {
+        // A save may have made the first backup (until then, look after each one).
+        if (state === 'saved' && !ses.hasBackup) void checkBackup(ses);
+        app.refresh();
+      },
     });
+    void checkBackup(ses);
     els.empty.hidden = true;
     stage.hidden = false;
     document.body.classList.add('has-doc');
     app.toggle(true); // a PDF opens ready to write on; A switches to plain viewing
+    mirror?.opened(file, doc);
     show('p1');
   }
 
@@ -715,6 +819,17 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
 
   registerGroup('pages', (app: PagesHost) => {
     const group = pagesGroup(app);
+    // Zoom out and in on both sides of the page counter; the zoom is in their tooltips (the
+    // counter has no room for it when the bar is docked left or right).
+    const label = group.items.findIndex(item => item.id === 'page-label');
+    const zoomItem = (dir: -1 | 1): ToolbarItem => ({
+      id: dir < 0 ? 'zoom-out' : 'zoom-in', icon: dir < 0 ? 'zoomOut' : 'zoomIn',
+      title: () => `${dir < 0 ? 'Zoom out (Ctrl/Cmd+−)' : 'Zoom in (Ctrl/Cmd+=)'} · now ${zoomText()}`,
+      onClick: () => zoomBy(dir),
+      disabled: () => !s || zoomStep(view.zoom, dir) === null,
+    });
+    group.items.splice(label + 1, 0, zoomItem(1));
+    group.items.splice(label, 0, zoomItem(-1));
     group.items.push({
       id: 'fit-width', icon: 'fitWidth',
       title: () => (fitMode === 'width' ? 'Fit width (W) · on: show the whole page again' : 'Fit width (W): fill the width, scroll the page'),
@@ -741,6 +856,8 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
       { id: 'pdf', title: 'Export PDF with notes', icon: 'pdf', onClick: () => void viewer.exportPdf() },
       { id: 'print', title: 'Print with notes (Ctrl/Cmd+P)', icon: 'print', onClick: () => void viewer.print(),
         disabled: () => printing },
+      { id: 'revert', title: 'Revert to backup: the notes as saved a few minutes ago (asks first)', icon: 'revert',
+        onClick: () => void viewer.revertToBackup(), hidden: () => !backupButton || !s?.hasBackup },
     ],
   }));
 
@@ -765,10 +882,18 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
     },
 
     async openFile(file) {
-      const path = adapter.pathForFile ? adapter.pathForFile(file) : '';
-      if (path) return viewer.openFrom(path);
-      await open(adapter.fromFile ? await adapter.fromFile(file)
-        : { path: null, name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+      let pdf: PdfFile;
+      try {
+        const path = adapter.pathForFile ? adapter.pathForFile(file) : '';
+        if (path) return await viewer.openFrom(path);
+        // Reading can fail (the file was moved or changed since it was picked or dropped).
+        pdf = adapter.fromFile ? await adapter.fromFile(file)
+          : { path: null, name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+      } catch (e) {
+        banner(`Could not open ${file.name}: ${(e as Error).message || e}`, 'error');
+        return;
+      }
+      await open(pdf);
     },
 
     show,
@@ -840,7 +965,14 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
         if (!(await saveNow())) return void banner('The notes could not be saved, so they were not reverted.', 'error');
         const backup = await readBackup(ses.file, ses.sha256);
         if (s !== ses) return;
-        if (!backup) return void banner('There is no backup of these notes.', 'warn');
+        if (!backup) {
+          // Gone since the button showed (e.g. the PDF left the recent files): hide it.
+          if (ses.hasBackup) {
+            ses.hasBackup = false;
+            ses.app.refresh();
+          }
+          return void banner('There is no backup of these notes.', 'warn');
+        }
         const when = new Date(backup.time).toLocaleString();
         if (!(await ask(`Replace the current notes with the backup from ${when}?`)) || s !== ses) return;
         if (!(await saveNow())) return void banner('The notes could not be saved, so they were not reverted.', 'error');
@@ -853,11 +985,17 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
           warnings.length ? 'warn' : 'info');
       } catch (e) {
         banner(`Could not revert to the backup: ${(e as Error).message || e}`, 'error');
+        void checkBackup(ses);
       }
     },
 
     saveOrAsk: async question => (await saveNow()) || ask(question),
   };
+
+  // Back in the page: another tab may have added or removed the backup.
+  document.addEventListener('visibilitychange', () => {
+    if (s && document.visibilityState === 'visible') void checkBackup(s);
+  });
 
   // Keys that work with or without a document.
   window.addEventListener('keydown', e => {
@@ -874,6 +1012,14 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter): Viewer {
       void viewer.print();
     }
   });
+  // Ctrl/Cmd+= (or +, also with Shift) and Ctrl/Cmd+−: the page, not the browser's zoom of the
+  // whole app. Capture phase: a focused toolbar button stops keys from bubbling up to window.
+  window.addEventListener('keydown', e => {
+    if (!s || typeof e.key !== 'string' || e.isComposing || isTyping(e.target)) return;
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || !/^(=|\+|-)$/.test(e.key)) return;
+    e.preventDefault();
+    zoomBy(e.key === '-' ? -1 : 1);
+  }, true);
 
   return viewer;
 }

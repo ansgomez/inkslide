@@ -22,6 +22,13 @@ tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.8"
 tauri-plugin-fs = "2.7"
 tauri-plugin-sharekit = "0.3.1"
+# File bytes from Android, where the IPC has no raw bodies (already in the tree through Tauri).
+base64 = "0.23"
+serde_json = "1"
+
+[features]
+# Only for apps/mobile/test/smoke.mjs: INKSLIDE_SMOKE_PICK hands one file to read_picked as if picked.
+smoke = []
 
 [profile.dev]
 opt-level = 1

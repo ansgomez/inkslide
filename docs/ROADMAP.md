@@ -11,8 +11,9 @@ desktop app uses Electron.
 | Viewer: fit to window or width, page turns, overview | Done |
 | Ink: pen, highlighter, erasers, selector, laser, undo/redo | Done |
 | Pages: blank pages with plain, lined or grid paper | Done |
-| Notes: sidecar file, autosave, backup on the desktop | Done |
+| Notes: sidecar file, autosave, backup on the desktop and in the browser | Done |
 | Export to an annotated PDF, print | Done |
+| Presenter mode: page, ink and laser mirrored in a second window (desktop) | Done, not yet tried with a projector |
 | Desktop on Linux (AppImage) | Done |
 | Web app and PWA (installable, offline) | Done |
 | Desktop on Windows and macOS | Configured, not yet built or tested there |
@@ -32,17 +33,23 @@ desktop app uses Electron.
   print through a real printer dialog on Linux, Windows and macOS.
 - **Stroke look:** choose between perfect-freehand and the classic Marp Notes outline and tune
   `FREEHAND_OPTIONS`.
-- **Backups beyond the desktop:** the browser, PWA and Tauri apps keep no notes backup; revisit
-  for Tauri after the device tests.
-- **Later:** a presenter mode that mirrors page, ink and laser on a second window; opening Marp
-  HTML decks directly.
+- **Backup in the Tauri apps:** the browser and PWA keep a notes backup like the desktop
+  (OPFS); the iPad and Android apps still keep none. Revisit after the device tests (the
+  backup could sit next to the notes in the app data directory, with a toolbar button as in
+  the browser).
+- **Presenter mode:** try it with a real projector on Linux, Windows and macOS. On Wayland the
+  audience window opens as a window for the user to move and make full screen (F11), since
+  the compositor places windows itself; going full screen on its own once it is shown on
+  another display than the app window's would save that step. Mirror erasing and
+  moving while they happen; a browser and PWA version (`BroadcastChannel` and `window.open`).
+- **Later:** opening Marp HTML decks directly.
 
 ## Why Electron on the desktop
 
 Before building the app, the same pen test page ran in several web views on a Linux tablet
 with a pen (Fedora 44, Wayland):
 
-| | Tauri 2 (WebKitGTK 4.1) | GNOME Web (WebKitGTK 6) | Chromium browser (Wayland) | Tauri 3 + CEF (X11) | Electron 39 (Wayland) |
+| | Tauri 2 (WebKitGTK 4.1) | GNOME Web (WebKitGTK 6) | Chromium browser (Wayland) | Tauri 3 + CEF (X11) | Electron (Wayland; measured with Electron 39) |
 |---|---|---|---|---|---|
 | Pen reported as pen | no (mouse) | no | yes | yes | yes |
 | Pressure levels | 1 (fixed 0.5) | 1 | 661 | 674 | 433 |

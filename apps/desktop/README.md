@@ -20,21 +20,24 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 
 | File | Role |
 |---|---|
-| `src/main/main.ts` | App and window lifecycle, single instance, IPC handlers, save-before-close, smoke mode. |
+| `src/main/main.ts` | App and window lifecycle, single instance, IPC handlers, save-before-close, smoke mode; `crashReporter` keeps minidumps of native crashes in `userData/Crashpad/` (never uploaded). |
 | `src/main/notes.ts` | Where notes are read and written: sidecar `<pdf>.notes.json`, or `userData/notes/<sha256>.notes.json` when the sidecar cannot be written; reads the newer ([NOTES-FORMAT.md](../../docs/NOTES-FORMAT.md#desktop-electron)). The backup, `userData/notes/<sha256>.notes.backup.json`: copied from the saved notes before a save, swapped back by Revert to Backup; the kept copy of an unreadable notes file (`<sha256>.notes.unreadable.json`); cleanup of backups and copies older than 90 days at startup. |
-| `src/main/fsutil.ts` | Atomic writes (temp file, fsync, rename, fsync the folder), writability checks. |
+| `src/main/fsutil.ts` | Atomic writes (temp file, fsync, rename, fsync the folder; on Windows the rename is retried briefly while another program holds the file), writability checks. |
 | `src/main/access.ts` | `PathGrants`: the renderer may only read PDFs the user chose. |
+| `src/main/crashRecovery.ts` | After the page's renderer dies: reload it (the PDF reopens), or ask when it dies again within 5 minutes or before it saved. |
 | `src/main/openRequests.ts` | PDFs to open before the page has loaded: the first through `initialPath()`, the others sent once it has. |
-| `src/main/paths.ts` | Front end location (dev, packaged, override), the PDF in a command line, the app-storage notes path. |
-| `src/main/recent.ts`, `windowState.ts`, `preferences.ts`, `jsonStore.ts` | Recent files, window state and preferences (backups on or off) in `userData`. |
+| `src/main/paths.ts` | Front end location (dev, packaged, override) and the `app://inkslide/` URLs it is served under, the test-only environment variables, the PDF in a command line, the app-storage notes path. |
+| `src/main/recent.ts`, `windowState.ts`, `preferences.ts`, `jsonStore.ts` | Recent files (with the hash and page count, for the start screen list), window state and preferences (backups on or off) in `userData`. |
 | `src/main/print.ts` | Printing: the exported PDF in a hidden window, Chromium's PDF viewer, the system print dialog. |
-| `src/main/harden.ts` | Window lockdown shared by both windows: webPreferences, no navigation, permissions (fullscreen only). |
-| `src/main/menu.ts` | File and View menus (Revert to Backup…, Keep a Backup of the Notes; Reload only in development builds). |
+| `src/main/harden.ts` | Window lockdown shared by all windows: webPreferences, no navigation, permissions (fullscreen only). |
+| `src/main/menu.ts` | File and View menus (Revert to Backup…, Keep a Backup of the Notes; Presenter Mode, F5; Reload only in development builds). |
+| `src/main/presenter.ts` | Presenter mode: where the audience window opens (full screen on another display), its page (`audience.html`), its keys (Esc ends, F11 full screen). Main relays the app window's presenter messages to it, checked by `parsePresenterMessage`. |
 | `src/preload/preload.ts` | Sandboxed preload: exposes `window.inkslide`. |
 | `src/shared/bridge.ts` | `InkslideBridge` type and IPC channel names; imported by the front end as `@inkslide/desktop/bridge`. |
 
 The bridge implements `PlatformAdapter` from `@inkslide/annotate` plus `initialPath`,
-`pathForFile`, `onMenuCommand` and `onCloseRequest`. Every handler checks that the call comes
+`pathForFile`, `onMenuCommand`, `onCloseRequest` and, for presenter mode, `onPresenter`,
+`presenterSend` and `onAudience`. Every handler checks that the call comes
 from the app's window and that PDF paths were granted (open dialog, command line, OS open
 request, recent files, a dropped `.pdf` file). See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
@@ -43,11 +46,20 @@ Environment variables (mostly for tests): `INKSLIDE_DEV_URL` (load a dev server;
 `INKSLIDE_SMOKE` (smoke test mode), `INKSLIDE_PRINT_TO_PDF` (smoke test mode: Print writes
 this PDF instead of showing the dialog), `INKSLIDE_DESKTOP_NAME` (development builds: desktop
 file id and window app id), `INKSLIDE_SMOKE_EXE` (smoke test only: run it against a packaged
-executable such as the AppImage).
+executable such as the AppImage). Packaged builds ignore `INKSLIDE_PAGE`, `INKSLIDE_USER_DATA`,
+`INKSLIDE_SMOKE` and `INKSLIDE_PRINT_TO_PDF` unless they are test builds: `dist` with
+`--test-build`, whose packages are named `*-TEST*` (for the smoke test against a package; never
+for a release). `dist` refuses to run with `INKSLIDE_TEST_BUILD` set in the environment but
+without `--test-build`.
 
 ## Packaging
 
-`electron-builder.yml` holds the configuration; `dist` builds the web front end,
+`electron-builder.yml` holds the configuration, including the Electron fuses flipped in the
+packaged binary: no `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` or `--inspect`, no extra privileges
+for `file://` pages, the app code only from `app.asar`, checked against its hash on macOS and
+Windows; the macOS app is then signed ad hoc again (`resetAdHocDarwinSignature`), since the
+flip breaks Electron's signature. Check them with `npx @electron/fuses read --app <executable>`,
+and the macOS signature with `codesign --verify --deep --strict Inkslide.app`. `dist` builds the web front end,
 then `scripts/dist.mjs` checks that the icons are current, bundles main/preload and runs
 electron-builder with its arguments. Output goes to `apps/desktop/dist/`.
 
@@ -83,7 +95,9 @@ electron-builder with its arguments. Output goes to `apps/desktop/dist/`.
 - AppImage: `chmod +x Inkslide-*.AppImage` and run it. A PDF passed on the
   command line, or a second launch while it runs, opens in the running window.
   To get a menu entry, use an integrator such as Gear Lever. To run the smoke
-  test against it: `INKSLIDE_SMOKE_EXE=dist/Inkslide-<version>-x86_64.AppImage node test/smoke.mjs`.
+  test against it, build a test package first (release packages ignore the test variables):
+  `pnpm --filter @inkslide/desktop dist:linux --test-build`, then
+  `INKSLIDE_SMOKE_EXE=dist/Inkslide-<version>-x86_64-TEST.AppImage node test/smoke.mjs`.
 - RPM: `sudo dnf install ./Inkslide-<version>-x86_64.rpm`; it installs
   `/usr/share/applications/inkslide.desktop` and the hicolor icons.
 

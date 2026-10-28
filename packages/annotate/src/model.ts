@@ -186,21 +186,21 @@ function notify<A extends unknown[]>(listeners: readonly ((...args: A) => void)[
 }
 
 /**
- * A checked stroke: known tool, positive finite size, at least one point, finite points within
- * ±MAX_COORD (pressure defaults to 0.5, clamped to 0..1). Throws on bad input; a missing id gets newId().
+ * A checked stroke: known tool, positive finite number size, at least one point, finite points within
+ * ±MAX_COORD (pressure defaults to 0.5, clamped to 0..1). Throws on bad input; a missing or non-string id gets newId().
  */
 export function createStroke({ id, tool, color, size, points }: StrokeInput): Stroke {
   if (!TOOLS.includes(tool as StrokeTool)) throw new Error(`Unknown stroke tool: ${tool}`);
   if (!Array.isArray(points)) throw new Error('Stroke points must be an array');
-  if (!((size as number) > 0)) throw new Error('Stroke size must be positive');
-  if (!(Number(size) <= MAX_COORD)) throw new Error('Stroke size out of range');
+  if (typeof size !== 'number' || !(size > 0)) throw new Error('Stroke size must be a positive number');
+  if (!(size <= MAX_COORD)) throw new Error('Stroke size out of range');
   if (!points.length) throw new Error('Stroke has no points');
   const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
   return {
-    id: id || newId(),
+    id: typeof id === 'string' && id ? id : newId(),
     tool: tool as StrokeTool,
     color: String(color),
-    size: Number(size),
+    size,
     points: points.map((p: unknown): Point => {
       const q = p as number[] | null;
       const pressure = q && q[2] == null ? 0.5 : q && q[2];
@@ -309,8 +309,11 @@ export class History {
     this.redoStack.length = 0;
     this.emit();
   }
-  /** Called after every execute, undo, redo and clear. */
-  onChange(fn: (h: History) => void): void { this.listeners.push(fn); }
+  /** Called after every execute, undo, redo and clear. Returns a function that removes the listener. */
+  onChange(fn: (h: History) => void): () => void {
+    this.listeners.push(fn);
+    return () => { this.listeners = this.listeners.filter(f => f !== fn); };
+  }
   emit(): void { notify(this.listeners, this); }
 }
 
@@ -515,8 +518,11 @@ export class NotesDoc {
 
   // Changes
 
-  /** Called on every change of strokes or pages and on markSaved (see ChangeKind). */
-  onChange(fn: ChangeListener): void { this.listeners.push(fn); }
+  /** Called on every change of strokes or pages and on markSaved (see ChangeKind). Returns a function that removes the listener. */
+  onChange(fn: ChangeListener): () => void {
+    this.listeners.push(fn);
+    return () => { this.listeners = this.listeners.filter(f => f !== fn); };
+  }
   emit(pageId: string | null, kind: ChangeKind = 'strokes'): void { notify(this.listeners, pageId, kind); }
 
   /** Apply fn to a page's stroke list; a page that is gone (deleted by a peer) is skipped. */
@@ -667,11 +673,46 @@ export class NotesDoc {
     });
   }
 
-  /** Returns false if the page is unknown here (e.g. its blank page has not arrived yet). */
+  /**
+   * Returns false if the page is unknown here (e.g. its blank page has not arrived yet).
+   * A stroke the page already has (the same object, or the same id and content) is
+   * kept as it is, so the SVG keeps its node (render.syncLayer).
+   */
   applyRemoteStrokes(pageId: string, strokes: readonly StrokeInput[]): boolean {
     const page = this.pages.get(pageId) || this.pageOnDemand(pageId);
     if (!page) return false;
-    page.strokes = strokes.map(createStroke);
+    const had = new Map(page.strokes.map(s => [s.id, s]));
+    page.strokes = strokes.map(input => {
+      const old = input.id ? had.get(input.id) : undefined;
+      if (old && (old === input || sameStroke(old, input))) return old;
+      return createStroke(input);
+    });
+    this.remoteDirty = true;
+    this.emit(pageId);
+    return true;
+  }
+
+  /**
+   * A peer's images of a page (presenter mode), bottom to top; false if the page is unknown here.
+   * Invalid images and those beyond MAX_PAGE_IMAGES are left out; an image the page already has
+   * (same id and content) is kept as it is, so the SVG keeps its node (render.syncImages).
+   */
+  applyRemoteImages(pageId: string, images: readonly ImageInput[]): boolean {
+    const page = this.pages.get(pageId) || this.pageOnDemand(pageId);
+    if (!page) return false;
+    const had = new Map(page.images.map(i => [i.id, i]));
+    const list: PageImage[] = [];
+    for (const input of images) {
+      if (list.length >= MAX_PAGE_IMAGES) break;
+      const old = input && typeof input.id === 'string' ? had.get(input.id) : undefined;
+      if (old && old.x === input.x && old.y === input.y && old.w === input.w && old.h === input.h && old.src === input.src) {
+        list.push(old);
+        continue;
+      }
+      try { list.push(createImage(input)); } catch (_) { /* skipped */ }
+    }
+    if (!list.length && !page.images.length) return true;
+    page.images = list;
     this.remoteDirty = true;
     this.emit(pageId);
     return true;
@@ -722,18 +763,8 @@ export class NotesDoc {
     for (const [id, page] of this.pages) {
       if (!filled.has(id) && page.strokes.length) this.applyRemoteStrokes(id, []);
     }
-    // Images come with the full state only; invalid ones are left out.
     const remoteImages = new Map(pages.map(p => [p.id, Array.isArray(p.images) ? p.images : []]));
-    for (const [id, page] of this.pages) {
-      const list: PageImage[] = [];
-      for (const raw of remoteImages.get(id) || []) {
-        try { list.push(createImage(raw)); } catch (_) { /* skipped */ }
-      }
-      if (list.length || page.images.length) {
-        page.images = list;
-        this.emit(id);
-      }
-    }
+    for (const id of this.pages.keys()) this.applyRemoteImages(id, remoteImages.get(id) || []);
     // Local commands refer to content that was just replaced.
     this.history.clear();
     this.savedTop = null;
@@ -803,7 +834,9 @@ export class NotesDoc {
     const seenPages = new Set<string>();
     const kept: PageJSON[] = [];
     const notices: string[] = [];
-    for (const raw of file.pages || []) {
+    let rawPages = file.pages || [];
+    if (!Array.isArray(rawPages)) { warnings.push('Skipped the pages: not a list'); rawPages = []; }
+    for (const raw of rawPages) {
       const page = parsePage(raw, this.deck, warnings, strokeIds, kept, notices, budget);
       if (!page) continue;
       if (seenPages.has(page.id)) { warnings.push(`Skipped duplicate page ${page.id}`); continue; }
@@ -895,6 +928,16 @@ function checkPaper(paper: string): void {
   if (!PAPERS.includes(paper as Paper)) throw new Error(`Unknown paper: ${paper}`);
 }
 
+/** Whether unchecked stroke data has the same tool, color, size and points as `s` (missing pressure is 0.5). */
+export function sameStroke(s: Stroke, input: StrokeInput): boolean {
+  if (input.tool !== s.tool || input.color !== s.color || input.size !== s.size || !Array.isArray(input.points)) return false;
+  const pts = input.points as unknown[];
+  return pts.length === s.points.length && pts.every((p, i) => {
+    const q = p as number[] | null, o = s.points[i];
+    return !!q && q[0] === o[0] && q[1] === o[1] && (q[2] ?? 0.5) === o[2];
+  });
+}
+
 /** A stroke as stored: x and y rounded to 2 decimals, pressure to 3. */
 export function serializeStroke(s: Stroke): StrokeJSON {
   return {
@@ -912,7 +955,7 @@ export function serializeImage(i: PageImage): ImageJSON {
 export function checkFormat(data: unknown): asserts data is NotesJSON {
   const d = data as Partial<NotesJSON> | null;
   if (!d || d.format !== FORMAT) throw new Error(`Not a ${FORMAT} file (format mismatch)`);
-  if (typeof d.version !== 'number' || d.version > VERSION) {
+  if (!Number.isInteger(d.version) || (d.version as number) < 1 || (d.version as number) > VERSION) {
     throw new Error(`Unsupported notes version: ${d.version}`);
   }
 }
@@ -926,14 +969,14 @@ export function deckWarnings(fileDeck: Partial<DeckJSON> | undefined | null, dec
   // A renamed but identical PDF is the same document.
   if (!sameFile && fileDeck.title !== deck.title) w.push(`Notes were made for "${fileDeck.title}", not "${deck.title}"`);
   if (fileDeck.slides !== deck.slides) w.push(`Notes deck has ${fileDeck.slides} slides, this deck has ${deck.slides}`);
-  const fs = fileDeck.size || [], ds = deck.size;
+  const fs = Array.isArray(fileDeck.size) ? fileDeck.size : [], ds = deck.size;
   const what = deck.source === 'pdf' ? 'Page' : 'Slide';
   if (fs[0] !== ds[0] || fs[1] !== ds[1]) w.push(`${what} size differs (${fs.join('x')} vs ${ds.join('x')})`);
-  if (fileDeck.pageSizes && deck.pageSizes) {
+  if (Array.isArray(fileDeck.pageSizes) && deck.pageSizes) {
     const n = Math.min(fileDeck.pageSizes.length, deck.pageSizes.length);
     let differ = 0;
     for (let i = 1; i < n; i++) { // page 1 is checked above
-      const a = fileDeck.pageSizes[i] || [], b = deck.pageSizes[i];
+      const a = Array.isArray(fileDeck.pageSizes[i]) ? fileDeck.pageSizes[i] : [], b = deck.pageSizes[i];
       if (a[0] !== b[0] || a[1] !== b[1]) differ++;
     }
     if (differ) w.push(`${differ} more page size${differ === 1 ? '' : 's'} differ`);
@@ -985,7 +1028,9 @@ function parsePage(
     return null;
   }
   const strokes: Stroke[] = [];
-  for (const s of raw.strokes || []) {
+  let rawStrokes = raw.strokes || [];
+  if (!Array.isArray(rawStrokes)) { warnings.push(`Skipped the strokes of page ${raw.id}: not a list`); rawStrokes = []; }
+  for (const s of rawStrokes) {
     try {
       const stroke = createStroke(strokeIds.has(s && s.id) ? { ...s, id: null } : s);
       strokeIds.add(stroke.id);
@@ -997,7 +1042,9 @@ function parsePage(
   page.strokes = strokes;
   // Images: checked like strokes, within the limits per page and per file.
   const images: PageImage[] = [];
-  for (const i of Array.isArray(raw.images) ? raw.images : []) {
+  let rawImages: unknown = raw.images || [];
+  if (!Array.isArray(rawImages)) { warnings.push(`Skipped the images of page ${raw.id}: not a list`); rawImages = []; }
+  for (const i of rawImages as ImageJSON[]) {
     try {
       const image = createImage(strokeIds.has(i && i.id) ? { ...i, id: null } : i);
       if (images.length >= MAX_PAGE_IMAGES) throw new Error(`more than ${MAX_PAGE_IMAGES} images on the page`);

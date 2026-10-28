@@ -41,3 +41,37 @@ export function missingForRpm({ has, libs }) {
   }
   return missing;
 }
+
+/**
+ * A test build (packaged, but still honoring INKSLIDE_PAGE, INKSLIDE_SMOKE and
+ * the other test variables; src/main/paths.ts testEnv) only with the explicit
+ * `--test-build` flag. INKSLIDE_TEST_BUILD=1 left in the shell would make a
+ * normal-looking package take them, so without the flag it is an error.
+ * Returns the electron-builder arguments (the flag removed), whether this is
+ * a test build, and an error message or null.
+ */
+export function testBuildOptions(args, env) {
+  const testBuild = args.includes('--test-build');
+  const rest = args.filter(a => a !== '--test-build');
+  const error = !testBuild && env.INKSLIDE_TEST_BUILD
+    ? 'INKSLIDE_TEST_BUILD is set: unset it for a normal package, or pass --test-build for a test build'
+    : null;
+  return { args: rest, testBuild, error };
+}
+
+/**
+ * electron-builder overrides that give a test build's packages a "-TEST"
+ * suffix: every artifactName of electron-builder.yml (`yml`, its text), with
+ * -TEST before the extension.
+ */
+export function testArtifactOverrides(yml) {
+  const out = [];
+  let section = '';
+  for (const line of yml.split('\n')) {
+    const top = /^(\w+):/.exec(line);
+    if (top) section = top[1];
+    const name = /^ {2}artifactName: (.+)$/.exec(line);
+    if (name && section) out.push(`-c.${section}.artifactName=${name[1].trim().replace(/\.\$\{ext\}$/, '-TEST.${ext}')}`);
+  }
+  return out;
+}

@@ -1,7 +1,7 @@
 /* Inkslide desktop - where the front end lives, PDF arguments (no Electron) */
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BACKUP_SUFFIX, NOTES_SUFFIX } from '@inkslide/annotate/io';
+import { BACKUP_SUFFIX, NOTES_SUFFIX, UNREADABLE_SUFFIX } from '@inkslide/annotate/io';
 
 /** What the window loads: a URL (dev server) or an HTML file. */
 export type WebEntry = { kind: 'url'; url: string } | { kind: 'file'; file: string };
@@ -43,6 +43,70 @@ export function resolveWebEntry(o: WebEntryOptions): WebEntry {
     ? join(o.resourcesPath, 'web', 'index.html')
     : join(o.appPath, '..', 'web', 'dist', 'index.html');
   return { kind: 'file', file: resolve(file) };
+}
+
+/** The test-only environment variables main.ts honors (see testEnv). */
+export interface TestEnv {
+  /** INKSLIDE_PAGE: load this HTML file instead of the front end. */
+  page?: string;
+  /** INKSLIDE_USER_DATA: use this userData folder. */
+  userData?: string;
+  /** INKSLIDE_SMOKE: smoke test mode, '' when off. */
+  smoke: string;
+  /** INKSLIDE_PRINT_TO_PDF: smoke test mode, Print writes this file. */
+  printToPdf?: string;
+}
+
+/**
+ * The test-only environment variables, when `allowed`: in development, and
+ * in a packaged test build (scripts/dist.mjs --test-build, for the
+ * smoke test against a package). A release build ignores them all: they
+ * would load another page with the preload bridge, or move userData.
+ */
+export function testEnv(env: Record<string, string | undefined>, allowed: boolean): TestEnv {
+  if (!allowed) return { smoke: '' };
+  return {
+    page: env.INKSLIDE_PAGE || undefined,
+    userData: env.INKSLIDE_USER_DATA || undefined,
+    smoke: env.INKSLIDE_SMOKE || '',
+    printToPdf: env.INKSLIDE_PRINT_TO_PDF || undefined,
+  };
+}
+
+/**
+ * The front end is served from app://inkslide/ (main.ts), not file://: a
+ * file:// page counts every local file as its own origin ('self' in its CSP,
+ * fetch), so a compromised renderer (a PDF.js exploit) could read ~/.ssh.
+ */
+export const APP_SCHEME = 'app';
+export const APP_ORIGIN = `${APP_SCHEME}://inkslide`;
+
+/**
+ * The file in `root` (the front end's folder) that the app:// URL `url`
+ * names; a folder gives its index.html. null for another scheme or host,
+ * a bad escape, or a path that leaves `root` (also through %2F, %5C or ..).
+ */
+export function webFileFor(root: string, url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch (_) {
+    return null;
+  }
+  // Node's URL gives a custom scheme no origin ('null'): compare scheme and host.
+  if (`${u.protocol}//${u.host.toLowerCase()}` !== APP_ORIGIN) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(u.pathname);
+  } catch (_) {
+    return null;
+  }
+  if (path.includes('\0')) return null;
+  if (path === '' || path.endsWith('/')) path += 'index.html';
+  const file = resolve(root, `.${path.startsWith('/') ? '' : '/'}${path}`);
+  const rel = relative(resolve(root), file);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  return file;
 }
 
 const isPdfName = (s: string): boolean => /\.pdf$/i.test(s);
@@ -110,8 +174,8 @@ export const sidecarStatePath = (userData: string, sha256: string): string => st
 /** App-storage notes backup of a PDF: userData/notes/<sha256>.notes.backup.json. */
 export const fallbackBackupPath = (userData: string, sha256: string): string => storagePath(userData, sha256, BACKUP_SUFFIX);
 
-/** Appended to the PDF's SHA-256 for the kept copy of a notes file that could not be read. */
-export const UNREADABLE_SUFFIX = '.notes.unreadable.json';
+/** Appended to the PDF's SHA-256 for the kept copy of a notes file that could not be read (shared with the browser). */
+export { UNREADABLE_SUFFIX };
 
 /** The kept copy of an unreadable notes file: userData/notes/<sha256>.notes.unreadable.json. */
 export const unreadableNotesPath = (userData: string, sha256: string): string => storagePath(userData, sha256, UNREADABLE_SUFFIX);

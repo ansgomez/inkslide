@@ -50,9 +50,9 @@ does). Readers must not depend on the layout.
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | `"marp-notes"` | Required. Any other value is rejected ("Not a marp-notes file"). |
-| `version` | number | `1`, `2` or `3`. Files with a version above 3, or without a numeric version, are rejected ("Unsupported notes version"), so a newer Inkslide never has its files silently misread. |
+| `version` | number | `1`, `2` or `3`. Files with a version above 3, any other number (0, negative, fractional) or no numeric version are rejected ("Unsupported notes version"), so a newer Inkslide never has its files silently misread. |
 | `deck` | object | What the notes were made for (see below). |
-| `pages` | array | Pages that have notes (see below). |
+| `pages` | array | Pages that have notes (see below). A `pages` that is not an array is skipped with a warning; the file loads without pages. |
 
 ## `deck`
 
@@ -61,12 +61,13 @@ does). Readers must not depend on the layout.
 | `source` | – | `"pdf"` | Missing means a Marp deck. |
 | `title` | yes | yes | Marp: the deck title. PDF: the PDF's `Title` metadata, else the file name without `.pdf`. |
 | `slides` | yes | yes | Number of source pages (slides or PDF pages). Blank pages are not counted. |
-| `size` | yes | yes | `[width, height]` of page 1 in page units (Marp: viewBox px, usually 1280×720; PDF: points). |
+| `size` | yes | yes | `[width, height]` of page 1 in page units (Marp: viewBox px, usually 1280×720; PDF: points, see below). |
 | `pageSizes` | – | optional | `[width, height]` per PDF page, page 1 first. A page without an entry has `size`. |
 | `sha256` | – | optional | Lower-case hex SHA-256 of the PDF bytes. |
 
 Page sizes are the sizes a viewer shows: PDF.js `page.getViewport({ scale: 1 })`, so the
-CropBox (clipped to the MediaBox) with `/Rotate` applied.
+CropBox (clipped to the MediaBox) with `/Rotate` applied and multiplied by the page's
+`/UserUnit` (1 when missing; a page with `/UserUnit 2` shows at twice its box size).
 
 The deck is only used for checks. On load, Inkslide compares it with the open document and
 shows warnings, but loads the notes anyway:
@@ -75,8 +76,9 @@ shows warnings, but loads the notes anyway:
 - the `sha256` differs ("made for a different version of this PDF");
 - the `title` differs, unless both `sha256` are equal (a renamed copy of the same PDF);
 - `slides` differs;
-- page 1's `size` differs;
-- other entries of `pageSizes` differ (counted in one warning).
+- page 1's `size` differs (a `size` that is not an array counts as missing);
+- other entries of `pageSizes` differ (counted in one warning; a `pageSizes` that is not an
+  array is ignored).
 
 ## `pages`
 
@@ -89,8 +91,8 @@ Each entry is a slide page (a page of the source document) or a blank page.
 | `slide` | yes | – | 1-based number of the source page. |
 | `after` | – | yes | Number of the source page the blank page follows. |
 | `paper` | – | yes | `"plain"`, `"lined"` or `"grid"`. Unknown values load as `"plain"`. |
-| `strokes` | yes | yes | Strokes, bottom to top. |
-| `images` | optional | optional | Version 3: images, bottom to top (see [Images](#images)). Left out when the page has none. |
+| `strokes` | yes | yes | Strokes, bottom to top. A `strokes` that is not an array is skipped with a warning; the page loads without strokes. |
+| `images` | optional | optional | Version 3: images, bottom to top (see [Images](#images)). Left out when the page has none. An `images` that is not an array is skipped with a warning. |
 
 Writing:
 
@@ -129,7 +131,7 @@ on the next save.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | string | Unique within the file. A missing or duplicate id gets a new one on load. |
+| `id` | string | Unique within the file. A missing, non-string or duplicate id gets a new one on load. |
 | `tool` | `"pen"` or `"highlighter"` | The laser is never stored. Other tools make the stroke invalid. |
 | `color` | string | CSS color, e.g. `#be1e3c`. |
 | `size` | number, 0 < size ≤ 10⁶ | Pen: ink width at pressure 0.5. Highlighter: line width. In page units. |
@@ -137,9 +139,9 @@ on the next save.
 
 Coordinates are rounded to 2 decimals, pressure to 3, when saved. Points are already smoothed
 (they are not the raw pointer positions). A pen stroke's width at pressure `p` is
-`size × (1 − 1.2 × (0.5 − p))`, at least 0.5 units. A stroke with a bad tool, a size out of
-range, no points, non-finite numbers or coordinates beyond ±10⁶ is skipped with a warning; the
-rest of the page loads. (Such numbers would overflow when rounded for saving, or end up as
+`size × (1 − 1.2 × (0.5 − p))`, at least 0.5 units. A stroke with a bad tool, a size that is
+not a number or out of range, no points, non-finite or non-numeric coordinates, or coordinates
+beyond ±10⁶ is skipped with a warning; the rest of the page loads. (Such numbers would overflow when rounded for saving, or end up as
 `Infinity` in an exported PDF.) The same check applies to every new or changed stroke, so the
 app never writes one.
 
@@ -185,13 +187,15 @@ In the browser, notes that do not fit in OPFS fall back to `localStorage`, which
 
 ### Tool sizes
 
-The four sizes S, M, L, XL of each tool are defined for a 1280×720 slide:
+The nine sizes of each tool (the − and + of the size control) are defined for a 1280×720
+slide. The 2nd, 4th, 6th and 8th are the presets S, M, L, XL (keys 1–4), the four sizes of
+earlier versions:
 
-| Tool | S | M | L | XL |
-|---|---|---|---|---|
-| Pen (width) | 2 | 4 | 7 | 12 |
-| Highlighter (width) | 12 | 20 | 32 | 48 |
-| Eraser, partial eraser (radius) | 8 | 16 | 32 | 64 |
+| Tool | | S | | M | | L | | XL | |
+|---|---|---|---|---|---|---|---|---|---|
+| Pen (width) | 1 | 2 | 3 | 4 | 5.5 | 7 | 9.5 | 12 | 16 |
+| Highlighter (width) | 8 | 12 | 16 | 20 | 26 | 32 | 40 | 48 | 64 |
+| Eraser, partial eraser (radius) | 4 | 8 | 12 | 16 | 24 | 32 | 48 | 64 | 96 |
 
 On other pages they are scaled by the page diagonal, `unit = hypot(w, h) / hypot(1280, 720)`:
 0.75 on a 960×540 pt PDF page, about 0.70 on A4. A stroke stores the scaled `size` in page
@@ -204,11 +208,19 @@ PDF exported from that deck. Its strokes are in slide px; the PDF is in points. 
 `scaleV1ToPdf` scales them:
 
 - per page, `s = pageWidth / deck.size[0]`, but only if the aspect ratio matches within 1 %
-  (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays;
-- a page whose aspect ratio differs is left unscaled;
+  (`|sx − sy| / sx ≤ 0.01`); then `x`, `y` and `size` are multiplied by `s`, pressure stays.
+  Only numbers are scaled: other values are left as they are, so the stroke is skipped as
+  invalid on load;
+- a page with strokes whose aspect ratio differs is left unscaled; when page 1 or another
+  page fits, one warning names the pages left unscaled ("Notes not scaled to the PDF …");
 - pages beyond the PDF (kept, see above) are scaled with the size of page 1, since they are
   saved as v2 too;
-- if page 1 does not match (or `s` is 1), nothing is scaled and the size warning stays.
+- the deck's `size` counts as matching whenever PDF page 1 fits, whether or not any page has
+  strokes (no size warning then); if page 1 does not fit, the size warning stays even when
+  other pages are scaled;
+- the scale reported (and shown in the banner) is page 1's if it fits and is not 1, else that
+  of the first page scaled, else none;
+- if no page fits, nothing is scaled and only the size warning is shown.
 
 Marp exports 1280×720 px slides as 960×540 pt pages, so the usual scale is 0.75. The app says
 so in a banner. Once saved, the notes are a v2 file.
@@ -229,8 +241,18 @@ so in a banner. Once saved, the notes are a v2 file.
   without a path) the newer file by modification time wins, the sidecar on a tie. If only one
   exists, that one is read.
 - **Writing** is crash-safe: a temp file in the same folder, `fsync`, rename over the old file,
-  then `fsync` of the folder. A crash leaves the old or the new file, never half of one. A
-  sidecar that is a symlink is written through, and the replaced file keeps its permissions.
+  then `fsync` of the folder. A crash leaves the old or the new file, never half of one. On
+  Windows a rename that fails because another program (antivirus, OneDrive) holds the file is
+  tried again for up to about 0.7 s before the notes go to app storage. A
+  sidecar that is a symlink is followed only to this PDF's own notes kept elsewhere (e.g. in a
+  synced folder): the target must have the sidecar's name (`<name>.pdf.notes.json`, or
+  `<name>.pdf.notes.backup.json`), must not be in `<userData>`, and, if it records a PDF hash
+  (`deck.sha256`), it must be this PDF's (so also a link to notes made for an earlier version of
+  the PDF is not followed; the linked file is left as it is). Any other link (as an archive could hold:
+  `deck.pdf.notes.json -> ../../.bashrc`, or a link to another PDF's notes) is never read or
+  copied (the notes count as unreadable), and a save replaces the link itself. A followed link
+  is resolved once and its target read through a handle opened without following links, checked
+  to be the same file. The replaced file keeps its permissions.
 - **Backup:** always in app storage, `<userData>/notes/<sha256>.notes.backup.json`, keyed by
   the PDF's SHA-256 like the app-storage notes; the same format as the notes file, written the
   same crash-safe way. Before a save replaces the notes, the saved notes (as read above) are
@@ -238,7 +260,7 @@ so in a banner. Once saved, the notes are a v2 file.
   or older than 2 minutes by its modification time. File → Revert to Backup… swaps the notes
   and the backup. For a notes file that cannot be read or parsed (also on a second try a
   second later), the app offers to open the backup instead (see
-  [USER-GUIDE.md](USER-GUIDE.md#backup-desktop)). Off with File → Keep a Backup of the Notes
+  [USER-GUIDE.md](USER-GUIDE.md#backup)). Off with File → Keep a Backup of the Notes
   (`<userData>/preferences.json`, `{"backups": false}`), which deletes every backup in
   `<userData>/notes`. A `<pdf path>.notes.backup.json` next to a PDF (written by development
   builds before 2026-10-27) is deleted when the PDF is opened.
@@ -258,16 +280,33 @@ There are no file paths. Notes are kept in the site's storage, keyed by the PDF'
 - else `localStorage`, key `inkslide-notes:<sha256>`.
 
 Clearing the site data deletes the notes. The same PDF opened from another folder or under
-another name finds its notes, because the key is the hash. No backup is kept: a copy in the
-same site storage would be lost together with the notes.
+another name finds its notes, because the key is the hash.
+
+- **Backup:** OPFS file `notes/inkslide-notes_<sha256>.notes.backup.json`, same format and
+  same rules as the desktop's (copied before a save if usable and the backup is missing or
+  older than 2 minutes, by the file's `lastModified`; Revert to Backup swaps). Only where the
+  page can write OPFS: there is no `localStorage` backup, because that store is small (about
+  5 MB) and shared with the notes that fall back to it, and a full store fails their save. A
+  failed backup write never fails the save; it is written after the notes, so near the quota
+  it never takes the room the notes need. The backup is deleted when the PDF leaves the
+  recent files (`apps/web/src/recent.ts`); the notes stay. It lives in the same site storage
+  as the notes, so it protects against unwanted changes, not against clearing the site data.
+- **Unreadable copy:** notes that exist but cannot be read or parsed are copied as they are to
+  `notes/inkslide-notes_<sha256>.notes.unreadable.json` before they are replaced (only where
+  OPFS can be written; otherwise the app asks first). An OPFS file that exists but cannot be
+  read is an error, never "no notes", unless `localStorage` holds a copy (the notes are written
+  there when OPFS fails), which is then read.
+- **Cleanup:** the backup goes with the PDF's recent-files entry (the unreadable copy stays: it
+  may be the only copy of real notes); at startup, backups and unreadable copies last changed
+  more than 90 days ago are deleted (notes files never are).
 
 ### iPad and Android (Tauri)
 
 No sidecars: picked files are copies (iPadOS) or content URIs (Android), next to which the app
 can rarely write. Notes are kept in the app data directory, `notes/<sha256>.notes.json`, keyed
-by the PDF's SHA-256 like the desktop's app storage. A save writes a
-temp file (`<sha256>.notes.json.<random>.tmp`), then renames it over the old file (no `fsync`: the fs plugin has
-none). Uninstalling the app deletes the notes; Import brings notes from elsewhere. No backup
+by the PDF's SHA-256 like the desktop's app storage. A save (the app's `write_notes` command)
+writes a temp file (`<sha256>.notes.json.<random>.tmp`), flushes it to disk, then renames it
+over the old file. Uninstalling the app deletes the notes; Import brings notes from elsewhere. No backup
 is kept yet (the Tauri adapter has no `readBackup`; it could live next to the notes in the app
 data directory once it can be tested on devices).
 
@@ -284,5 +323,5 @@ data directory once it can be tested on devices).
   version.
 - Content that a reader cannot place (pages beyond the document) is kept, not dropped.
 - Saved notes that cannot be read or parsed are never overwritten silently: the app reads them
-  again, then asks (open the backup instead, or open anyway); the desktop keeps a copy of the
-  unreadable file before replacing it.
+  again, then asks (open the backup instead, or open anyway); the desktop and the browser keep
+  a copy of the unreadable file before replacing it.

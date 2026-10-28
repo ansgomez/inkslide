@@ -150,11 +150,22 @@ test.describe('service worker', () => {
     await controlled(page);
     const original = readFileSync(SW_JS, 'utf8');
     const oldVersion = /"version":"([0-9a-f]+)"/.exec(original)![1];
-    const cacheNames = () => page.evaluate(() => caches.keys());
+    /** Build caches, sorted (not the active-build record, inkslide:meta). */
+    const cacheNames = () => page.evaluate(async () => (await caches.keys()).filter(n => n.startsWith('inkslide-')).sort());
     expect(await cacheNames()).toEqual([`inkslide-${oldVersion}`]);
-    try {
-      writeFileSync(SW_JS, original.replace(oldVersion, 'e2e0000000000000'));
+    const update = async (version: string) => {
+      writeFileSync(SW_JS, original.replace(oldVersion, version));
       await page.evaluate(async () => (await navigator.serviceWorker.getRegistration())!.update());
+      await expect.poll(cacheNames, { timeout: 15_000 }).toContain(`inkslide-${version}`);
+      await expect.poll(() => page.evaluate(async () => {
+        const r = (await navigator.serviceWorker.getRegistration())!;
+        return `${!!r.installing} ${!!r.waiting} ${r.waiting?.state}`;
+      }), { timeout: 15_000 }).toBe('false true installed'); // installing, waiting, its state
+    };
+    try {
+      // An update that was never applied: replaced by the next one while waiting. Its cache is not kept.
+      await update('e2e1111111111111');
+      await update('e2e0000000000000');
       const action = page.locator('.ann-banner .ink-banner-action');
       await expect(action).toHaveText('Reload to update');
       const other = await page.context().newPage(); // a second window on the old version
@@ -165,7 +176,20 @@ test.describe('service worker', () => {
       await reloaded;
       await expect(other.locator('.ann-banner-warn')).toContainText('updated in another window');
       await controlled(page);
-      await expect.poll(cacheNames).toEqual(['inkslide-e2e0000000000000']);
+      // The build that was active is kept (the other window may still load its files lazily), the skipped one goes.
+      await expect.poll(cacheNames).toEqual([`inkslide-${oldVersion}`, 'inkslide-e2e0000000000000'].sort());
+      const lazy = await page.evaluate(async () => {
+        const cache = await caches.open('inkslide-e2e0000000000000');
+        const name = (await cache.keys()).map(r => r.url).find(u => /pdf\.worker/.test(u))!;
+        await cache.delete(name); // now only the build before has it
+        return name;
+      });
+      await page.context().setOffline(true);
+      try {
+        expect(await other.evaluate(async u => (await fetch(u)).status, lazy)).toBe(200);
+      } finally {
+        await page.context().setOffline(false);
+      }
     } finally {
       writeFileSync(SW_JS, original);
     }
@@ -177,11 +201,14 @@ test.describe('service worker', () => {
       (window as unknown as { inkslide: unknown }).inkslide = {
         platform: 'electron', onMenuCommand() {}, onCloseRequest() {}, openPdf: async () => null,
         readNotes: async () => null, writeNotes: async () => {}, exportPdf: async () => false,
+        initialPath: async () => null, recentFiles: async () => [], onRecentChanged() {},
       };
     });
     await page.goto('/');
     await page.waitForTimeout(500);
     expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
-    await expect(page.locator('.ink-recent')).toHaveCount(0);
+    // The desktop lists its own recent files (main process), not the browser's: none here.
+    await expect(page.locator('.ink-recent')).toHaveCount(1);
+    await expect(page.locator('.ink-recent')).toBeHidden();
   });
 });

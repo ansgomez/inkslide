@@ -248,4 +248,14 @@ describe('createAutosave', () => {
     expect(a.state).toBe('saved');
     expect(doc.isDirty()).toBe(true);
   });
+
+  it('dispose removes its change listener from the doc', () => {
+    const doc = new NotesDoc({ source: 'pdf', title: 't.pdf', slides: 1, pageSizes: [[600, 400]] });
+    const listeners = () => (doc as unknown as { listeners: unknown[] }).listeners.length;
+    const before = listeners();
+    const a = createAutosave({ doc, serialize: () => '', write: async () => {} });
+    expect(listeners()).toBe(before + 1);
+    a.dispose();
+    expect(listeners()).toBe(before);
+  });
 });

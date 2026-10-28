@@ -2,11 +2,13 @@
  * backup, keeping the unreadable file, and File → Revert to Backup…. The
  * Electron bridge is a stand-in
  * (window.inkslide) that keeps its files in memory; the backup itself is
- * made by the main process (tested in apps/desktop). */
+ * made by the main process (tested in apps/desktop).
+ * Browser: the web adapter's backup in OPFS and the toolbar's Revert to
+ * Backup button (the last tests). */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { FIXTURE, penStroke, penStrokes } from './helpers';
+import { FIXTURE, openPdf, penStroke, penStrokes } from './helpers';
 
 const sha = createHash('sha256').update(readFileSync(FIXTURE)).digest('hex');
 
@@ -31,18 +33,31 @@ interface Files {
   firstReads?: (string | null)[];
   /** keepUnreadableNotes rejects. */
   keepFails?: boolean;
+  /** writeNotes waits for release() (one per write). */
+  gateWrites?: boolean;
+  /** readNotes waits for release() too (one per read). */
+  gateReads?: boolean;
 }
 
 interface Stub extends Files {
   calls: string[];
   questions: string[];
+  /** Text of each write, with the PDF's path. */
+  written: { path: string; text: string }[];
+  /** Writes waiting for release() (gateWrites). */
+  pending: number;
+  release(): void;
   menu(command: string): void;
 }
 
 /** Install the stand-in bridge and open the fixture through initialPath(). */
 async function openWith(page: Page, files: Files): Promise<void> {
   await page.addInitScript(([bytes, init]) => {
-    const st: Stub = { ...init, calls: [], questions: [], menu: () => {} };
+    const gates: (() => void)[] = [];
+    const st: Stub = {
+      ...init, calls: [], questions: [], written: [], pending: 0, menu: () => {},
+      release: () => { st.pending--; gates.shift()!(); },
+    };
     (window as unknown as { stub: Stub }).stub = st;
     let initial: string | null = '/docs/deck.pdf';
     (window as unknown as { inkslide: unknown }).inkslide = {
@@ -51,6 +66,10 @@ async function openWith(page: Page, files: Files): Promise<void> {
       openPdf: async (path: string) => ({ path, name: 'deck.pdf', bytes: new Uint8Array(bytes) }),
       readNotes: async () => {
         st.calls.push('readNotes');
+        if (st.gateReads) {
+          st.pending++;
+          await new Promise<void>(r => gates.push(r));
+        }
         const text = st.firstReads?.length ? st.firstReads.shift()! : st.notes;
         if (text === 'unreadable') throw new Error('EBUSY: file is in use');
         return text;
@@ -60,7 +79,15 @@ async function openWith(page: Page, files: Files): Promise<void> {
         if (st.keepFails) throw new Error('ENOSPC');
         return '/ud/notes/abc.notes.unreadable.json';
       },
-      writeNotes: async (_pdf: unknown, text: string) => { st.calls.push('writeNotes'); st.notes = text; },
+      writeNotes: async (pdf: { path: string }, text: string) => {
+        st.calls.push('writeNotes');
+        if (st.gateWrites) {
+          st.pending++;
+          await new Promise<void>(r => gates.push(r));
+        }
+        st.written.push({ path: pdf.path, text });
+        if (pdf.path === '/docs/deck.pdf') st.notes = text;
+      },
       readBackup: async () => (st.backup === null ? null : { text: st.backup, time: Date.UTC(2026, 9, 26, 9, 30) }),
       revertToBackup: async () => {
         st.calls.push('revertToBackup');
@@ -82,8 +109,8 @@ async function openWith(page: Page, files: Files): Promise<void> {
 }
 
 const stub = (page: Page): Promise<Stub> => page.evaluate(() => {
-  const { calls, questions, notes, backup } = (window as unknown as { stub: Stub }).stub;
-  return { calls, questions, notes, backup } as Stub;
+  const { calls, questions, notes, backup, written, pending } = (window as unknown as { stub: Stub }).stub;
+  return { calls, questions, notes, backup, written, pending } as Stub;
 });
 const menu = (page: Page, command: string) =>
   page.evaluate(c => (window as unknown as { stub: Stub }).stub.menu(c), command);
@@ -198,4 +225,145 @@ test('Revert to Backup without a backup says so', async ({ page }) => {
   await menu(page, 'revert-backup');
   await expect(page.locator('.ann-banner-warn')).toContainText('There is no backup of these notes.');
   expect((await stub(page)).questions).toEqual([]);
+});
+
+test('opening another PDF writes strokes made during the last save before the PDF closes', async ({ page }) => {
+  await openWith(page, { notes: notes(0), backup: null, answers: [], gateWrites: true });
+  await expect(page.locator('.ink-stage')).toBeVisible();
+  const release = () => page.evaluate(() => (window as unknown as { stub: Stub }).stub.release());
+  const waitPending = () => expect.poll(async () => (await stub(page)).pending).toBe(1);
+  await penStroke(page, [0.1, 0.2], [0.3, 0.4]);
+  void page.evaluate(() => (window as unknown as { inkslideViewer: { openFrom(p: string): Promise<void> } })
+    .inkslideViewer.openFrom('/docs/other.pdf'));
+  // First write (1 stroke): a stroke during it.
+  await waitPending();
+  await penStroke(page, [0.4, 0.2], [0.6, 0.4]);
+  await release();
+  // Second write (2 strokes, before the PDF closes): another stroke during it.
+  await waitPending();
+  await penStroke(page, [0.7, 0.2], [0.9, 0.4]);
+  await release();
+  // The third stroke is written too before the other PDF opens.
+  await waitPending();
+  await release();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { inkslideViewer: { session: { file: { path: string } } } }).inkslideViewer.session.file.path))
+    .toBe('/docs/other.pdf');
+  const s = await stub(page);
+  expect(s.written.filter(w => w.path === '/docs/deck.pdf').map(w => strokesIn(w.text))).toEqual([1, 2, 3]);
+});
+
+test('opening the open PDF again keeps strokes made while it loaded', async ({ page }) => {
+  await openWith(page, { notes: notes(0), backup: null, answers: [], gateWrites: true });
+  await expect(page.locator('.ink-stage')).toBeVisible();
+  const release = () => page.evaluate(() => (window as unknown as { stub: Stub }).stub.release());
+  const waitPending = () => expect.poll(async () => (await stub(page)).pending).toBe(1);
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.gateReads = true; });
+  await penStroke(page, [0.1, 0.2], [0.3, 0.4]);
+  void page.evaluate(() => (window as unknown as { inkslideViewer: { openFrom(p: string): Promise<void> } })
+    .inkslideViewer.openFrom('/docs/deck.pdf'));
+  await waitPending(); // the write of the first stroke
+  await release();
+  await waitPending(); // the read of the notes (1 stroke)
+  await penStroke(page, [0.4, 0.2], [0.6, 0.4]); // after the read
+  await release();
+  await waitPending(); // the write of the second stroke, before the PDF closes
+  await release();
+  await waitPending(); // the notes read again
+  await release();
+  await expect(penStrokes(page)).toHaveCount(2);
+  expect(strokesIn((await stub(page)).notes)).toBe(2);
+});
+
+test('browser: a save after a save makes a backup, and the toolbar\'s Revert to Backup swaps it in and back', async ({ page }) => {
+  page.on('dialog', d => void d.accept());
+  await page.goto('/');
+  await openPdf(page);
+  const revert = page.locator('.ann-bar [data-id="revert"]');
+  const saved = page.locator('.ann-bar [data-id="save"]:not(.is-unsaved)');
+  await expect(revert).toBeHidden();
+  // The first save has no saved notes before it: no backup yet.
+  await penStroke(page, [0.2, 0.2], [0.3, 0.5]);
+  await page.keyboard.press('Control+s');
+  await expect(saved).toHaveCount(1);
+  await expect(revert).toBeHidden();
+  // The second copies the 1-stroke notes to the backup.
+  await penStroke(page, [0.5, 0.2], [0.6, 0.5]);
+  await page.keyboard.press('Control+s');
+  await expect(saved).toHaveCount(1);
+  await expect(revert).toBeVisible();
+
+  await revert.click();
+  await expect(penStrokes(page)).toHaveCount(1);
+  await expect(page.locator('.ann-banner-info')).toContainText('Reverted to the backup');
+  await revert.click();
+  await expect(penStrokes(page)).toHaveCount(2);
+
+  // Reopened, the notes are the 2 strokes and the button is there at once.
+  await page.reload();
+  await openPdf(page);
+  await expect(penStrokes(page)).toHaveCount(2);
+  await expect(revert).toBeVisible();
+});
+
+/** A file in the browser's OPFS notes directory, from the page: written or removed first if asked; its text ('' if missing). */
+const opfsFile = (page: Page, name: string, op: { write?: string; remove?: boolean } = {}): Promise<string> =>
+  page.evaluate(async ([name, op]) => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('notes', { create: true });
+    if (op.remove) await dir.removeEntry(name);
+    if (op.write !== undefined) {
+      const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await w.write(op.write);
+      await w.close();
+    }
+    return dir.getFileHandle(name).then(h => h.getFile()).then(f => f.text(), () => '');
+  }, [name, op] as const);
+
+test('browser: the Revert to Backup button goes when the backup does (on a click, or back in the tab)', async ({ page }) => {
+  page.on('dialog', d => void d.accept());
+  await page.goto('/');
+  await openPdf(page);
+  const revert = page.locator('.ann-bar [data-id="revert"]');
+  const saved = page.locator('.ann-bar [data-id="save"]:not(.is-unsaved)');
+  const strokeAndSave = async (x: number): Promise<void> => {
+    await penStroke(page, [x, 0.2], [x + 0.1, 0.5]);
+    await page.keyboard.press('Control+s');
+    await expect(saved).toHaveCount(1);
+  };
+  const backup = `inkslide-notes_${sha}.notes.backup.json`;
+  await strokeAndSave(0.2);
+  await strokeAndSave(0.4);
+  await expect(revert).toBeVisible();
+
+  // Deleted behind the page's back (as when the PDF leaves the recent files): a click says so and hides it.
+  await opfsFile(page, backup, { remove: true });
+  await revert.click();
+  await expect(page.locator('.ann-banner-warn')).toContainText('There is no backup of these notes.');
+  await expect(revert).toBeHidden();
+
+  // Made again by the next save; deleted again, coming back to the tab hides it.
+  await strokeAndSave(0.6);
+  await expect(revert).toBeVisible();
+  await opfsFile(page, backup, { remove: true });
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(revert).toBeHidden();
+});
+
+test('browser: notes that cannot be read are kept as they are before "open anyway" replaces them', async ({ page }) => {
+  const questions: string[] = [];
+  page.on('dialog', d => { questions.push(d.message()); void d.accept(); });
+  await page.goto('/');
+  const unreadable = '{"format":"marp-notes","version":99}';
+  const copy = `inkslide-notes_${sha}.notes.unreadable.json`;
+  await opfsFile(page, `inkslide-notes_${sha}.json`, { write: unreadable });
+  await openPdf(page);
+  expect(questions).toHaveLength(1);
+  expect(questions[0]).toContain('Open the PDF anyway?');
+  await expect(page.locator('.ann-banner-warn')).toContainText(`kept as notes/${copy}`);
+  expect(await opfsFile(page, copy)).toBe(unreadable);
+  // Writing now replaces the notes; the copy stays.
+  await penStroke(page, [0.2, 0.2], [0.3, 0.5]);
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('.ann-bar [data-id="save"]:not(.is-unsaved)')).toHaveCount(1);
+  expect(await opfsFile(page, copy)).toBe(unreadable);
 });

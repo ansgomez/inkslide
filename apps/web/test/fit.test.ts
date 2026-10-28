@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  clampPan, fitTo, MAX_RENDER_PIXELS, pageScroll, renderScale, scaleKey, visibleBox,
+  clampPan, fitTo, MAX_RENDER_PIXELS, pageScroll, renderScale, scaleKey, visibleBox, ZOOM_STEPS, zoomAround, zoomStep,
 } from '../src/fit';
+import { MAX_ZOOM } from '../src/gestures';
 
 describe("fitTo('page')", () => {
   it('fits a 16:9 page into a wider box by height and centres it', () => {
@@ -116,5 +117,37 @@ describe('pageScroll', () => {
     expect(pageScroll(-500, -500, 200, 1)).toBeNull();
     expect(pageScroll(0, -500, 200, -1)).toBeNull();
     expect(pageScroll(0, 0, 200, 1)).toBeNull(); // nothing to scroll
+  });
+});
+
+describe('zoom steps (− and + next to the counter)', () => {
+  it('go from the fit to the largest pinch zoom', () => {
+    expect(ZOOM_STEPS[0]).toBe(1);
+    expect(ZOOM_STEPS[ZOOM_STEPS.length - 1]).toBe(MAX_ZOOM);
+    expect([...ZOOM_STEPS].sort((a, b) => a - b)).toEqual(ZOOM_STEPS);
+  });
+
+  it('zoomStep steps in and out and stops at the ends', () => {
+    expect(zoomStep(1, 1)).toBe(1.25);
+    expect(zoomStep(1.25, -1)).toBe(1);
+    expect(zoomStep(1, -1)).toBeNull();
+    expect(zoomStep(MAX_ZOOM, 1)).toBeNull();
+    expect(zoomStep(4, 1)).toBe(6);
+  });
+
+  it('zoomStep goes from a pinched zoom between two steps to the nearer one in that direction', () => {
+    expect(zoomStep(1.7, 1)).toBe(2);
+    expect(zoomStep(1.7, -1)).toBe(1.5);
+    expect(zoomStep(1.0004, -1)).toBeNull(); // practically the fit
+    expect(zoomStep(5.9999, 1)).toBeNull();
+  });
+
+  it('zoomAround keeps the page point under the given spot', () => {
+    const view = { zoom: 1.5, tx: -100, ty: -40 };
+    const [cx, cy] = [400, 300];
+    const before = [(cx - view.tx) / view.zoom, (cy - view.ty) / view.zoom];
+    const [tx, ty] = zoomAround(view, 3, cx, cy);
+    expect([(cx - tx) / 3, (cy - ty) / 3]).toEqual(before.map(v => expect.closeTo(v, 9)));
+    expect(zoomAround({ zoom: 1, tx: 0, ty: 0 }, 2, 400, 300)).toEqual([-400, -300]);
   });
 });

@@ -17,7 +17,7 @@ import { rectBBox, strokeBBox, unionBBox, type RectLike, type Stroke } from './g
 import { createImage, type NotesDoc, type PageImage } from './model';
 import { attachInput, type InputController } from './input';
 import * as render from './render';
-import { createTools, DEFAULT_PREFS, SIZES, sizeIndex, toolSize, TOOLS, type Prefs, type Selection, type SizedTool, type Surface, type Tool, type ToolId, type ToolRenderer, type Tools } from './tools';
+import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, sizeIndex, toolSize, TOOLS, type Prefs, type Selection, type SizedTool, type Surface, type Tool, type ToolId, type ToolRenderer, type Tools } from './tools';
 import { bindKeys, createToolbar, defaultKeymap, type Shortcut, type Toolbar } from './toolbar';
 import type { PagesController } from './pages';
 
@@ -27,7 +27,11 @@ import type { PagesController } from './pages';
  */
 export const PREFS_KEY = 'marp-notes-prefs-v1';
 
-/** Prefs as stored: per-tool color and size, and the current tool. */
+/**
+ * Prefs as stored: per-tool color and size, and the current tool. A tool's size is stored twice:
+ * `step` is the step of the size scale (SIZES), `size` the nearest preset S, M, L, XL (0..3), the
+ * value earlier versions and the Marp decks read. Prefs without a `step` load their preset.
+ */
 export interface StoredPrefs {
   prefs: Prefs;
   tool: ToolId;
@@ -45,7 +49,9 @@ export function loadPrefs(storage: Pick<Storage, 'getItem'> | null = safeStorage
         const into = prefs[k as keyof Prefs] as { color?: string; size?: number };
         const from = saved.prefs[k] || {};
         if ('color' in into && typeof from.color === 'string') into.color = from.color;
-        if ('size' in into && Number.isInteger(from.size) && SIZES[k as SizedTool][from.size] !== undefined) into.size = from.size;
+        if (!('size' in into)) continue;
+        if (Number.isInteger(from.step) && SIZES[k as SizedTool][from.step] !== undefined) into.size = from.step;
+        else if (Number.isInteger(from.size) && SIZE_PRESETS[from.size as number] !== undefined) into.size = SIZE_PRESETS[from.size as number];
       }
     }
     return { prefs, tool: saved && TOOLS.some(t => t.id === saved.tool) ? saved.tool : 'pen' };
@@ -54,9 +60,20 @@ export function loadPrefs(storage: Pick<Storage, 'getItem'> | null = safeStorage
   }
 }
 
+/** The preset (0..3) nearest to a size step; the smaller one when two are as near. */
+export function nearestPreset(step: number): number {
+  let best = 0;
+  SIZE_PRESETS.forEach((p, i) => { if (Math.abs(p - step) < Math.abs(SIZE_PRESETS[best] - step)) best = i; });
+  return best;
+}
+
 function savePrefs(storage: Pick<Storage, 'setItem'> | null, app: StoredPrefs): void {
+  const prefs: Record<string, object> = {};
+  for (const [k, v] of Object.entries(app.prefs)) {
+    prefs[k] = 'size' in v ? { ...v, size: nearestPreset(v.size), step: v.size } : v;
+  }
   try {
-    if (storage) storage.setItem(PREFS_KEY, JSON.stringify({ tool: app.tool, prefs: app.prefs }));
+    if (storage) storage.setItem(PREFS_KEY, JSON.stringify({ tool: app.tool, prefs }));
   } catch (_) { /* storage blocked: prefs are a convenience only */ }
 }
 
@@ -163,7 +180,12 @@ export interface Annotator {
   currentColor(): string | null;
   currentSize(): number | null;
   setColor(color: string): void;
+  /** Set size step i of the current tool, or restyle the selection to it. */
   setSize(i: number): void;
+  /** One size step smaller (-1) or larger (1): the current tool's size, or each selected stroke's. */
+  stepSize(dir: -1 | 1): void;
+  /** Whether stepSize(dir) changes something (false at the end of the scale). */
+  canStepSize(dir: -1 | 1): boolean;
   selectedStrokes(): Stroke[];
   selectedImages(): PageImage[];
   select(sel: { pageId: string; ids: readonly string[] } | null): void;
@@ -228,6 +250,8 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
   const notify = (text: string, kind: 'info' | 'warn' | 'error' = 'info'): void => { if (opts.notify) opts.notify(text, kind); };
   /** The tool to go back to after a snapshot. */
   let beforeSnapshot: ToolId = tool;
+  /** The tool a size command changes: the current one if it has a size, else the pen. */
+  const sizedTool = (): SizedTool => (toolInfo(app.tool).size ? app.tool as SizedTool : 'pen');
   /** The selection as a clip; null without one. */
   const selectionClip = (): Clip | null =>
     app.selection && makeClip(app.selectedStrokes(), doc.pageSize(app.selection.pageId), app.selectedImages());
@@ -382,6 +406,24 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       app.prefs[app.tool as SizedTool].size = i;
       savePrefs(storage, app);
       app.refresh();
+    },
+
+    stepSize(dir) {
+      if (app.tool === 'selector' && app.selection) {
+        const unit = selectionUnit();
+        doc.restyleStrokes(app.selection.pageId, app.selection.ids, { size: s => nextSize(s.tool, s.size, dir, unit) });
+        return;
+      }
+      // A tool without a size steps the pen's (as the size buttons did).
+      const i = app.prefs[sizedTool()].size + dir;
+      if (SIZES[sizedTool()][i] !== undefined) app.setSize(i);
+    },
+    canStepSize(dir) {
+      if (app.tool === 'selector' && app.selection) {
+        const unit = selectionUnit();
+        return app.selectedStrokes().some(s => nextSize(s.tool, s.size, dir, unit) !== s.size);
+      }
+      return SIZES[sizedTool()][app.prefs[sizedTool()].size + dir] !== undefined;
     },
 
     // Selection
@@ -558,7 +600,8 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
         render.syncImages(s.layer, doc.images(s.pageId));
       });
     }
-    if (app.selection && (pageId === null || app.selection.pageId === pageId)) app.refreshSelection();
+    // A save changes no strokes: redrawing the box would undo a running drag's offset.
+    if (kind !== 'saved' && app.selection && (pageId === null || app.selection.pageId === pageId)) app.refreshSelection();
     app.refresh();
   });
   doc.history.onChange(() => app.refresh());
