@@ -4,6 +4,7 @@
  * PDF has no path or the sidecar cannot be written, they go to app storage,
  * userData/notes/<sha256>.notes.json, with userData/notes/<sha256>.sidecar.json
  * saying which sidecar they replace and what it held. Reading takes the newer.
+ * Once that sidecar is written again, both go (dropReplacedStore).
  *
  * The backup is always in app storage, userData/notes/<sha256>.notes.backup.json:
  * before a save replaces the notes, the saved notes are copied there if they
@@ -233,6 +234,7 @@ export async function writeNotesFor(t: NotesTarget, text: string, userData: stri
   const follow = await sidecarFollow(t, userData);
   let sha = '';
   const file = await writeBesideOrStored(sidecar, async () => fallbackNotesPath(userData, sha = await hashOf(t)), text, follow);
+  if (sidecar && file === sidecar) await dropReplacedStore(t, sidecar, userData);
   if (sidecar && file !== sidecar) {
     const state = sidecarStatePath(userData, sha);
     const record: SidecarState = { sidecar, sha256: await sidecarHash(sidecar, follow) };
@@ -244,6 +246,25 @@ export async function writeNotesFor(t: NotesTarget, text: string, userData: stri
     }
   }
   return file;
+}
+
+/**
+ * The sidecar was written: app-storage notes written instead of it before
+ * (their record names it) are older now, whatever the times or the text, so
+ * they go, with their record. Kept, they would be read again as soon as the
+ * sidecar holds the text the record has (Revert to Backup, an undo). A
+ * failure is logged; the sidecar write stands.
+ */
+async function dropReplacedStore(t: NotesTarget, sidecar: string, userData: string): Promise<void> {
+  try {
+    const sha = await hashIfKnown(t);
+    const state = sha ? sidecarStatePath(userData, sha) : null;
+    if (!sha || !state || (await readSidecarState(state))?.sidecar !== sidecar) return;
+    await rm(fallbackNotesPath(userData, sha), { force: true });
+    await rm(state, { force: true });
+  } catch (err) {
+    console.warn(`could not remove the app-storage notes the sidecar replaces: ${(err as Error).message}`);
+  }
 }
 
 // ── Backup ─────────────────────────────────────────────────────

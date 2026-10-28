@@ -298,13 +298,36 @@ describe('notes location', () => {
     writeFileSync(sidecar, 'restored');
     utimesSync(sidecar, past, past);
     expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('restored');
-    // A later sidecar write wins over the app-storage copy whatever its time.
+    // A later sidecar write wins over the app-storage copy whatever its time:
+    // the copy it replaces goes, with its record.
     await writeNotesFor({ path: pdf, sha256: sha }, 'latest', ud);
     utimesSync(sidecar, past, past);
     expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('latest');
+    expect(readdirSync(join(ud, 'notes'))).toEqual([]);
     // A broken record: the newer file wins, as without one.
+    await writeNotesFor({ path: null, sha256: sha }, 'pathless', ud);
     writeFileSync(join(ud, 'notes', `${sha}.sidecar.json`), '{ broken');
-    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('while-blocked');
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('pathless');
+  });
+
+  it.skipIf(isRoot || process.platform === 'win32')('reads the sidecar after it is written again with the text the record has (revert after a fallback)', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const sidecar = `${pdf}.notes.json`;
+    const notes = (id: string) => JSON.stringify({ format: 'marp-notes', version: 2, deck: { source: 'pdf', sha256: sha },
+      pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: [{ id, tool: 'pen', color: '#000', size: 3, points: [[1, 1, 0.5], [9, 9, 0.5]] }] }] });
+    writeFileSync(sidecar, notes('S0'));
+    // The sidecar is read-only for a while: S1 goes to app storage, the record has S0's hash.
+    chmodSync(sidecar, 0o444);
+    await writeNotesFor({ path: pdf, sha256: sha }, notes('S1'), ud);
+    chmodSync(sidecar, 0o644);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe(notes('S1'));
+    // Backup S0, then revert to it: the sidecar is writable again and gets S0.
+    writeFileSync(join(ud, 'notes', `${sha}.notes.backup.json`), notes('S0'));
+    expect(await revertToBackupFor({ path: pdf, sha256: sha }, ud)).toBe(notes('S0'));
+    expect(readFileSync(sidecar, 'utf8')).toBe(notes('S0'));
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe(notes('S0'));
+    expect(readFileSync(join(ud, 'notes', `${sha}.notes.backup.json`), 'utf8')).toBe(notes('S1')); // S1 kept as the backup
   });
 
   it.skipIf(isRoot)('keeps reading app storage while the sidecar stays as it was', async () => {
