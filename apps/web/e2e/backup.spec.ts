@@ -321,6 +321,32 @@ test('opening the open PDF again keeps strokes made while it loaded', async ({ p
   expect(strokesIn((await stub(page)).notes)).toBe(2);
 });
 
+test('opening the open PDF again: if reading the notes again fails, the strokes just written stay', async ({ page }) => {
+  await openWith(page, { notes: notes(0), backup: null, answers: [], gateWrites: true });
+  await expect(page.locator('.ink-stage')).toBeVisible();
+  const release = () => page.evaluate(() => (window as unknown as { stub: Stub }).stub.release());
+  const waitPending = () => expect.poll(async () => (await stub(page)).pending).toBe(1);
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.gateReads = true; });
+  void page.evaluate(() => (window as unknown as { inkslideViewer: { openFrom(p: string): Promise<void> } })
+    .inkslideViewer.openFrom('/docs/deck.pdf'));
+  await waitPending(); // the read of the notes (none)
+  await penStroke(page, [0.4, 0.2], [0.6, 0.4]); // after the read
+  await release();
+  await waitPending(); // the write of the stroke, before the PDF closes
+  await release();
+  await waitPending(); // the notes read again: it fails
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.firstReads = ['unreadable']; });
+  await release();
+  await expect.poll(async () => (await stub(page)).calls.filter(c => c === 'opened')).toHaveLength(2);
+  await expect(penStrokes(page)).toHaveCount(1);
+  expect(strokesIn((await stub(page)).notes)).toBe(1);
+  // A later change is written on top of it, not on the notes read before.
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.gateWrites = false; });
+  await penStroke(page, [0.1, 0.6], [0.3, 0.8]);
+  await page.keyboard.press('Control+s');
+  await expect.poll(async () => strokesIn((await stub(page)).notes)).toBe(2);
+});
+
 test('browser: a save after a save makes a backup, and the toolbar\'s Revert to Backup swaps it in and back', async ({ page }) => {
   page.on('dialog', d => void d.accept());
   await page.goto('/');

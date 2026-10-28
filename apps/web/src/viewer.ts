@@ -30,7 +30,7 @@ import {
   createAnnotator, NotesDoc, type Annotator, type Capture, type NotesBackup, type Paper, type PdfFile, type RectLike,
   type Surface,
 } from '@inkslide/annotate';
-import { deckFromPdf, loadNotesText, sha256Hex } from '@inkslide/annotate/io';
+import { deckFromPdf, loadNotesText, serializeNotes, sha256Hex } from '@inkslide/annotate/io';
 import { PAPERS, pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
 import * as render from '@inkslide/annotate/render';
 import type { ToolRenderer } from '@inkslide/annotate/tools';
@@ -733,10 +733,23 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         if (!(await saveOpen())) return;
       } while (!loseUnsaved && saveState() !== 'saved');
       if (queued) return; // a newer request replaces this one
+      // The open notes, as just written: if reading them again fails, the notes read
+      // before (without the strokes written since) must not take their place.
+      const openText = reread && s ? serializeNotes(s.doc) : '';
       closeSession();
       if (reread) {
         const again = await loadSaved(file, sha256, newDoc);
-        if (!again.problem) doc = again.doc; // else the notes read before, the most there is
+        if (!again.problem) doc = again.doc;
+        else {
+          console.warn('Reading the notes again failed; the open notes are kept', again.reason);
+          const open = newDoc();
+          try {
+            loadNotesMessages(open, openText);
+            doc = open;
+          } catch (e) {
+            console.error('The open notes could not be loaded again', e); // the notes read before, the most there is
+          }
+        }
       }
       startSession(file, sha256, pdf, doc);
       if (fromBackup) banner([`Opened the backup from ${fromBackup.when}.`, keptMsg, ...fromBackup.warnings].filter(Boolean).join('\n'), 'warn');
