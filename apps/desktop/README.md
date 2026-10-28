@@ -25,7 +25,7 @@ pnpm --filter @inkslide/desktop smoke    # launches Electron with a fixture page
 | `src/main/fsutil.ts` | Atomic writes (temp file, fsync, rename, fsync the folder; on Windows the rename is retried briefly while another program holds the file), writability checks. |
 | `src/main/access.ts` | `PathGrants`: the renderer may only read PDFs the user chose; `HashGrants`: notes only of PDFs whose hash main computed; checks of IPC arguments. |
 | `src/main/crashRecovery.ts` | After the page's renderer dies: reload it (the PDF reopens), or ask when it dies again within 5 minutes or before it saved. |
-| `src/main/openRequests.ts` | PDFs to open before the page has loaded: the first through `initialPath()`, the others sent once it has. |
+| `src/main/openRequests.ts` | PDFs to open before the page has loaded: the first through `initialPath()`, the others sent once it has; `CurrentPdf`, the PDF the page has open (set by `opened()`). |
 | `src/main/paths.ts` | Front end location (dev, packaged, override) and the `app://inkslide/` URLs it is served under, the test-only environment variables, the PDF in a command line, the app-storage notes path. |
 | `src/main/recent.ts`, `windowState.ts`, `preferences.ts`, `jsonStore.ts` | Recent files (with the hash and page count, for the start screen list), window state and preferences (backups on or off) in `userData`. |
 | `src/main/print.ts` | Printing: the exported PDF in a hidden window, Chromium's PDF viewer, the system print dialog; one print at a time per window (`PrintGate`), of at most 2 GB. |

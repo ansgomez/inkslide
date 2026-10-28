@@ -1,4 +1,4 @@
-/* Inkslide desktop - PDFs to open before the page can take them (no Electron)
+/* Inkslide desktop - PDFs to open before the page can take them, and the one it has open (no Electron)
  *
  * The page asks initialPath() once, early while it loads; main sends later
  * requests as openRequest messages once it has loaded (the preload keeps them
@@ -39,5 +39,38 @@ export class OpenRequests {
   newPage(reopen: string | null = null): void {
     this.initialTaken = false;
     if (reopen !== null && this.initial === null && !this.queued.length) this.initial = reopen;
+  }
+}
+
+/**
+ * The PDF the front end has open, as main knows it. Reading a PDF for the
+ * page (readPdf) does not make it the open one: the page may fail to load
+ * it, or keep the open PDF (its notes could not be saved). Only the page's
+ * opened() call does. The export may not replace the open PDF, and a
+ * reloaded page reopens it; dialogs start in its folder, else in the folder
+ * of the PDF read last.
+ */
+export class CurrentPdf {
+  private shown: string | null = null;
+  private lastRead: string | null = null;
+
+  /** Main read `path` for the page. */
+  read(path: string): void {
+    this.lastRead = path;
+  }
+
+  /** The page opened a PDF: `path`, or null for one without a path. */
+  opened(path: string | null): void {
+    this.shown = path;
+  }
+
+  /** The open PDF's path; null if none is open or it has no path. */
+  get open(): string | null {
+    return this.shown;
+  }
+
+  /** The PDF whose folder dialogs start in: the open one, else the one read last. */
+  get forDialogs(): string | null {
+    return this.shown ?? this.lastRead;
   }
 }

@@ -36,7 +36,7 @@ import {
   cleanupNotesStore, hasBackup, keepUnreadableFor, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup, revertToBackupFor,
   writeNotesFor, type NotesTarget,
 } from './notes';
-import { OpenRequests } from './openRequests';
+import { CurrentPdf, OpenRequests } from './openRequests';
 import { APP_ORIGIN, APP_SCHEME, isSha256, pdfFromArgv, resolveWebEntry, testEnv, webFileFor, type WebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
 import { audienceEntry, audienceKey, audiencePlacement } from './presenter';
@@ -97,8 +97,8 @@ function start(): void {
   let webRoot: string | null = null;
   /** PDFs from the command line or the OS before the page loaded. */
   const opens = new OpenRequests();
-  /** The PDF opened last (default folder for dialogs, never an export target). */
-  let current: string | null = null;
+  /** The PDF the page has open (never an export target, reopened after a reload; dialogs start in its folder). */
+  const current = new CurrentPdf();
   /** Window close: the front end was asked to save first / said it may close. */
   let closeAsked = false;
   let closeOk = false;
@@ -199,7 +199,10 @@ function start(): void {
   }
 
   /** Folder the dialogs start in: the open PDF's, else Documents. */
-  const dialogDir = (): string => (current ? dirname(current) : app.getPath('documents'));
+  const dialogDir = (): string => {
+    const pdf = current.forDialogs;
+    return pdf ? dirname(pdf) : app.getPath('documents');
+  };
   // Dialogs are modal to the window when there is one.
   const openDialog = (o: Electron.OpenDialogOptions) => (win ? dialog.showOpenDialog(win, o) : dialog.showOpenDialog(o));
   const saveDialog = (o: Electron.SaveDialogOptions) => (win ? dialog.showSaveDialog(win, o) : dialog.showSaveDialog(o));
@@ -291,7 +294,7 @@ function start(): void {
     let navigated = false;
     let reopen = true;
     wc.on('did-navigate', () => {
-      opens.newPage(navigated && reopen ? current : null);
+      opens.newPage(navigated && reopen ? current.open : null);
       navigated = true;
       reopen = true;
     });
@@ -484,13 +487,13 @@ function start(): void {
     return readPdf(p);
   });
 
-  /** Read a granted PDF and make it the current and most recent file. */
+  /** Read a granted PDF and make it the most recent file (the open one only once the page says so, opened()). */
   async function readPdf(p: string): Promise<PdfFile> {
     const { bytes: buf, ...st } = await readFileLimited(p, MAX_PDF_BYTES);
     hashes.grantBytes(buf); // the page's notes calls name this hash
     grants.grant(p); // also a recent file: its notes stay writable after Clear Recent
     void removeLegacyBackup(p);
-    current = p;
+    current.read(p);
     recent.add(p, { size: st.size, mtimeMs: st.mtimeMs });
     app.addRecentDocument(p);
     recentChanged();
@@ -505,6 +508,7 @@ function start(): void {
 
   handle(IPC.opened, (ref: unknown, sha256: unknown, pages?: unknown): void => {
     notesTarget = checkTarget(ref, sha256);
+    current.opened(notesTarget.path);
     if (notesTarget.path) recent.describe(notesTarget.path, { sha256: notesTarget.sha256, pages: typeof pages === 'number' ? pages : undefined });
     void updateRevert();
   });
@@ -547,7 +551,7 @@ function start(): void {
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     });
     if (r.canceled || !r.filePath) return false;
-    await writeExport(r.filePath, bytes, current);
+    await writeExport(r.filePath, bytes, current.open);
     return true;
   });
 

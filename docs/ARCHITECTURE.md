@@ -148,7 +148,9 @@ Main checks every call:
   read stops at the limit (`fsutil.ts`, `readFileLimited`, `readFileChecked`). PDF bytes
   from the page (export, print) have the PDF limit, and a window prints one PDF at a time
   (`print.ts`, `PrintGate`: another request while its dialog is open is refused);
-- an export may not overwrite the open PDF (also not through a link or another letter case),
+- an export may not overwrite the open PDF (also not through a link or another letter case);
+  that is the PDF the page reported with `opened()`, not one main read that the page then failed
+  to load or did not switch to (`CurrentPdf` in `openRequests.ts`),
   and a symlink at the chosen name is replaced by the export, never written through
   (`writeExport`).
 
