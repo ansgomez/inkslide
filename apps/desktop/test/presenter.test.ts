@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   APP_READ_EVERY, AUDIENCE_SIZE, AUTO_FULL_SCREEN_START, audienceAutoFullScreen, audienceEntry, audienceFollower, audienceKey,
-  audiencePlacement, readingWithin, screenDisplay, type AudienceFollowerDeps, type AutoFullScreenState, type DisplayInfo,
+  audiencePlacement, oneAtATime, readingWithin, screenDisplay, type AudienceFollowerDeps, type AutoFullScreenState, type DisplayInfo,
   type ScreenReport,
 } from '../src/main/presenter';
 
@@ -131,6 +131,26 @@ describe('readingWithin', () => {
   });
 });
 
+describe('oneAtATime', () => {
+  it('reuses the call still running, and calls again once it has settled', async () => {
+    let calls = 0;
+    const settle: Array<(v: number) => void> = [];
+    const fail: Array<(e: Error) => void> = [];
+    const read = oneAtATime(() => { calls++; return new Promise<number>((res, rej) => { settle.push(res); fail.push(rej); }); });
+    const a = read(), b = read();
+    expect(b).toBe(a);
+    expect(calls).toBe(1);
+    settle[0]!(1);
+    expect(await a).toBe(1);
+    const c = read();
+    expect(calls).toBe(2);
+    fail[1]!(new Error('gone'));
+    await expect(c).rejects.toThrow('gone');
+    void read();
+    expect(calls).toBe(3);
+  });
+});
+
 describe('audienceFollower', () => {
   function harness(readAudience: () => Promise<ScreenReport | null>, readApp: () => Promise<ScreenReport | null> = async () => at(hiLaptop.workArea)) {
     const calls = { audience: 0, app: 0, fullScreen: 0 };
@@ -153,15 +173,27 @@ describe('audienceFollower', () => {
     for (let i = 0; i < 4; i++) await h.follower.tick();
     expect(h.calls.fullScreen).toBe(1);
   });
-  it('keeps checking after a reading that hangs or fails (a page that is loading)', async () => {
+  it('keeps checking after a reading that hangs or fails, without piling up calls to a hung page', async () => {
     let n = 0;
-    const h = harness(() => (++n === 1 ? new Promise<ScreenReport>(() => {}) : n === 2 ? Promise.reject(new Error('reload')) : onBeamer()));
-    await h.follower.tick();
-    await h.follower.tick();
+    let release: (r: ScreenReport) => void = () => {};
+    const h = harness(() => (++n === 1 ? new Promise<ScreenReport>(r => { release = r; }) : n === 2 ? Promise.reject(new Error('reload')) : onBeamer()));
+    // hung: each check gives up after the timeout, and asks the page nothing new
+    for (let i = 0; i < 3; i++) await h.follower.tick();
+    expect(h.calls.audience).toBe(1);
     expect(h.calls.fullScreen).toBe(0);
+    release(at(hiLaptop.workArea)); // it answers at last: the next check asks again
+    await new Promise(r => setTimeout(r, 0));
+    await h.follower.tick();
+    expect(h.calls.audience).toBe(2);
     await h.follower.tick();
     await h.follower.tick();
     expect(h.calls.fullScreen).toBe(1);
+  });
+  it('does not pile up calls to a hung app page either', async () => {
+    let n = 0;
+    const h = harness(async () => at((++n % 2 ? hiLaptop : beamer).workArea), () => new Promise<ScreenReport>(() => {}));
+    for (let i = 0; i < 4; i++) await h.follower.tick();
+    expect(h.calls.app).toBe(1);
   });
   it('does not overlap checks', async () => {
     let release: (r: ScreenReport) => void = () => {};
