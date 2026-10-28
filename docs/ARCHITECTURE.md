@@ -276,6 +276,17 @@ page, 24 MB per document, 4096 px per side): with them a save writes at most abo
 adapter. Notes that exist but cannot be read or parsed are never overwritten without asking
 (see Backup for the second read, the backup offer and the kept copy).
 
+A browser does not wait for an asynchronous write when a tab closes or reloads. So in the
+browser build (`main.ts`), hiding or leaving the page (`visibilitychange`, `pagehide`,
+`beforeunload`) with unsaved notes first calls `viewer.checkpoint()`: the web adapter's
+synchronous `checkpointNotes` writes the notes to their `localStorage` key with their time
+(`inkslide-notes-time:<sha256>`, see the browser adapter under Backup), and the flush follows.
+Notes longer than `CHECKPOINT_MAX_CHARS` (1 M characters; `localStorage` holds about 5 MB) or a
+full store skip it, and then `beforeunload` asks the browser to confirm leaving. The next open
+reads the checkpoint only if it is newer than the OPFS file, by the time each save began: a
+save that began before the checkpoint and ended after it keeps it, one that began after it
+removes it, so it never hides notes saved later (another tab, a later session).
+
 ### Backup
 
 Desktop only, and all in the main process (`apps/desktop/src/main/notes.ts`): the backup is a
@@ -291,7 +302,11 @@ copy of the saved notes from before a save, `userData/notes/<sha256>.notes.backu
   both are put back), so a second revert undoes the first; the fresh
   backup time keeps the next saves from replacing it for 2 minutes. The front end saves first,
   asks with `confirm`, then loads the notes the revert returns into the document (`replaceNotes` in
-  `viewer.ts`, like Import; `NotesDoc.load` clears the history, so it is no undo step).
+  `viewer.ts`, like Import; `NotesDoc.load` clears the history, so it is no undo step). From
+  the final save until the notes are loaded the page box is `inert` (no pen input), and the
+  swap runs under `holdSaves` (`persist.ts`: no autosave write at the same time). If the notes
+  changed anyway (a key such as undo), the viewer reverts once more inside the hold, which
+  swaps the files back, keeps its notes and says so.
 - Main tracks the open PDF (the bridge's `opened`, called once a PDF has opened) and enables
   Revert to Backup when backups are on and that PDF has a backup. Turning backups off
   (`preferences.ts`) deletes every backup in `userData/notes` (`removeAllBackups`).
@@ -316,6 +331,12 @@ themselves fall back to.
 - `writeNotes` reads the notes it is about to replace if a backup is due, writes the new
   notes, and only then the backup, so near the quota the backup never takes the room the
   notes need. A failed backup read or write is logged and never fails the save.
+- Notes are written to OPFS, else to `localStorage`; the other copy is then removed. Both can
+  remain (removing the older OPFS file failed too), so the `localStorage` item
+  `inkslide-notes-time:<sha256>` keeps when each copy was saved, `{local, opfs}` in ms, taken
+  when the save began: `readNotes` reads the newer copy, and the OPFS file when the
+  `localStorage` copy has no time (older data). A write keeps a copy newer than its own start.
+  `writeOpfsFile` aborts a writable whose write or close failed, so the file is not left locked.
 - An OPFS notes file that exists but cannot be read rejects (only `NotFoundError` means "no
   notes"), so `readNotes` reports it and `revertToBackup` stops without changing anything;
   but if `localStorage` holds the key (where a failed OPFS write put the newer notes), that

@@ -4,8 +4,13 @@
  * there is one (Chromium: the file handle is kept for reopening), else a
  * file input (or a URL, for links and tests); there is no file system
  * path, so notes are kept in the origin's storage keyed by the PDF's
- * SHA-256: OPFS when the browser has it, else localStorage. Opened PDFs are
- * remembered for the start screen (../recent.ts). Exports go through the
+ * SHA-256: OPFS when the browser has it, else localStorage. Where both hold
+ * a copy (an OPFS write failed, and so did removing the older OPFS file),
+ * the newer one is read: a small localStorage item keeps when each copy was
+ * saved (NotesTimes). Leaving the page with unsaved notes writes them to
+ * localStorage at once (checkpointNotes: an OPFS write may not finish before
+ * the page is gone); the next open reads that copy if it is the newer one.
+ * Opened PDFs are remembered for the start screen (../recent.ts). Exports go through the
  * save dialog of the File System Access API where there is one, else the
  * share sheet on touch devices (iPad: "Save to Files"), else a download.
  *
@@ -35,6 +40,8 @@ import { createRecentStorage } from './recent-storage';
 
 /** localStorage key prefix of notes. */
 export const NOTES_KEY_PREFIX = 'inkslide-notes:';
+/** localStorage key prefix of the times of a PDF's notes copies (NotesTimes). */
+export const NOTES_TIME_PREFIX = 'inkslide-notes-time:';
 const OPFS_DIR = 'notes';
 
 /** The browser's platform adapter, with the recent files. */
@@ -47,6 +54,12 @@ export interface WebAdapter extends PlatformAdapter {
   readonly recent: RecentFiles;
   /** Read a recent file (from a click: it may ask for permission). Rejects with a RecentError. */
   openRecent(id: string): Promise<PdfFile>;
+  /**
+   * Keep unsaved notes in localStorage at once, synchronously (the page is
+   * being left). False if they could not be kept: too large
+   * (CHECKPOINT_MAX_CHARS) or storage full or blocked.
+   */
+  checkpointNotes(pdf: PdfFile, text: string, sha256?: string): boolean;
 }
 
 /** A PdfFile read through the File System Access API keeps its handle (recent files). */
@@ -59,13 +72,44 @@ export const notesKey = (pdf: Pick<PdfFile, 'name'>, sha256?: string): string =>
 const fileName = (key: string): string => safeFileName(key, '.json');
 
 /**
- * The notes in OPFS; an empty file (left by a failed write of an older build)
- * counts as none. Rejects if they are there but can not be read: taken for
- * "no notes", the first autosave would replace them.
+ * When each copy of a PDF's notes was saved, ms: `local` the localStorage
+ * copy, `opfs` the OPFS file. The time is when the save began (when its text
+ * was taken), not when the write ended, so a write that ends late does not
+ * pass for newer than a copy taken after it began. Notes saved before these
+ * times were kept have none: then the OPFS file is read first, as it was.
  */
-async function opfsRead(key: string): Promise<string | null> {
+interface NotesTimes {
+  local?: number;
+  opfs?: number;
+}
+
+const timeKey = (key: string): string => NOTES_TIME_PREFIX + key.slice(NOTES_KEY_PREFIX.length);
+
+/** The times of a notes key; none if missing, unreadable or storage is blocked. */
+function readTimes(key: string): NotesTimes {
+  try {
+    const t = JSON.parse(storedItem(timeKey(key)) || '{}') as NotesTimes;
+    const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+    return { local: num(t?.local), opfs: num(t?.opfs) };
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeTimes(key: string, t: NotesTimes): void {
+  storeItem(timeKey(key), t.local === undefined && t.opfs === undefined ? null : JSON.stringify(t));
+}
+
+/**
+ * The notes in OPFS with the file's modification time; an empty file (left
+ * by a failed write of an older build) counts as none. Rejects if they are
+ * there but can not be read: taken for "no notes", the first autosave would
+ * replace them.
+ */
+async function opfsRead(key: string): Promise<{ text: string; time: number } | null> {
   const file = await readOpfsFile(OPFS_DIR, fileName(key));
-  return file ? (await file.text()) || null : null;
+  const text = file ? await file.text() : '';
+  return file && text ? { text, time: file.lastModified } : null;
 }
 
 async function opfsWrite(key: string, text: string): Promise<boolean> {
@@ -78,32 +122,75 @@ async function opfsRemove(key: string): Promise<void> {
   if (!dir) return;
   try {
     await dir.removeEntry(fileName(key));
-  } catch (_) { /* not there */ }
+  } catch (_) { /* not there, or busy: the times say the localStorage copy is newer */ }
 }
 
 /**
- * The saved notes: OPFS first, then localStorage. If the OPFS file can not be
- * read, a localStorage copy is the newer notes (writeSaved puts them there when
- * OPFS fails, and removes it after an OPFS write); rejects only without one.
+ * The saved notes: the newer of the OPFS file and the localStorage copy (by
+ * their NotesTimes; the OPFS file without a time for the localStorage copy).
+ * If the OPFS file can not be read, a localStorage copy is the newer notes
+ * (writeSaved puts them there when OPFS fails); rejects only without one.
  */
 async function readSaved(key: string): Promise<string | null> {
-  let text: string | null;
+  let opfs: { text: string; time: number } | null;
   try {
-    text = await opfsRead(key);
+    opfs = await opfsRead(key);
   } catch (e) {
     const stored = storedItem(key);
     if (stored !== null) return stored;
     throw e;
   }
-  return text ?? storedItem(key);
+  const stored = storedItem(key);
+  if (!opfs || stored === null) return opfs ? opfs.text : stored;
+  const { local, opfs: opfsTime = opfs.time } = readTimes(key);
+  return local !== undefined && local > opfsTime ? stored : opfs.text;
 }
 
-/** Write the notes: OPFS, else localStorage (throws when full). */
-async function writeSaved(key: string, text: string): Promise<void> {
-  if (await opfsWrite(key, text)) storeItem(key, null); // do not leave an older copy behind
-  else {
-    localStorage.setItem(key, text); // throws when full: autosave reports it and retries
-    if (canWriteOpfs()) await opfsRemove(key); // an older OPFS copy would be read first
+/**
+ * Write the notes taken at time `at`: OPFS, else localStorage (throws when
+ * full). The other copy is removed, unless it is newer than `at` (taken
+ * after this save began): then it stays and is the one read.
+ */
+async function writeSaved(key: string, text: string, at = Date.now()): Promise<void> {
+  if (await opfsWrite(key, text)) {
+    const times = readTimes(key);
+    if (times.local !== undefined && times.local > at) writeTimes(key, { ...times, opfs: at });
+    else {
+      storeItem(key, null); // do not leave an older copy behind
+      writeTimes(key, { opfs: at });
+    }
+    return;
+  }
+  const times = readTimes(key);
+  if (times.local !== undefined && times.local > at) return; // the copy there is newer
+  localStorage.setItem(key, text); // throws when full: autosave reports it and retries
+  writeTimes(key, { ...times, local: at });
+  // An older OPFS copy would be in the way; if it can not be removed, the times say which is newer.
+  if (canWriteOpfs()) await opfsRemove(key);
+}
+
+/**
+ * Longest notes text a checkpoint writes, in UTF-16 code units. localStorage
+ * holds about 5 MB per site, shared with the notes that fall back to it;
+ * larger notes (images) are not checkpointed.
+ */
+export const CHECKPOINT_MAX_CHARS = 1_000_000;
+
+/**
+ * Write `text`, the notes as they are now, to localStorage with the time
+ * `now` (checkpointNotes). The next open reads it unless a save that began
+ * later wrote OPFS; a save that began earlier and ends later leaves it be
+ * (writeSaved), and one that begins later removes it.
+ */
+function checkpointOf(key: string, text: string, now = Date.now()): boolean {
+  if (text.length > CHECKPOINT_MAX_CHARS) return false;
+  const times = readTimes(key);
+  try {
+    localStorage.setItem(key, text);
+    localStorage.setItem(timeKey(key), JSON.stringify({ ...times, local: now }));
+    return true;
+  } catch (_) {
+    return false; // full or blocked; a copy without its time is not read before OPFS
   }
 }
 
@@ -174,11 +261,12 @@ async function writeBackup(key: string, text: string): Promise<boolean> {
  * read or written is logged and does not fail the save.
  */
 async function saveWithBackup(key: string, text: string): Promise<void> {
+  const at = Date.now();
   const before = await backupDue(key).catch(e => {
     console.warn('The notes backup failed', e);
     return null;
   });
-  await writeSaved(key, text);
+  await writeSaved(key, text, at);
   if (before !== null && !(await writeBackup(key, before))) console.warn('The notes backup could not be written');
 }
 
@@ -402,6 +490,8 @@ export function createWebAdapter(): WebAdapter {
     readNotes: (pdf, sha256) => readSaved(notesKey(pdf, sha256)),
 
     writeNotes: (pdf, text, sha256) => saveWithBackup(notesKey(pdf, sha256), text),
+
+    checkpointNotes: (pdf, text, sha256) => checkpointOf(notesKey(pdf, sha256), text),
 
     readBackup: (pdf, sha256) => readBackupOf(notesKey(pdf, sha256)),
 

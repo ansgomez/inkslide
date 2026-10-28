@@ -30,7 +30,7 @@ import {
   createAnnotator, NotesDoc, type Annotator, type Capture, type NotesBackup, type Paper, type PdfFile, type RectLike,
   type Surface,
 } from '@inkslide/annotate';
-import { deckFromPdf, loadNotesText, sha256Hex } from '@inkslide/annotate/io';
+import { deckFromPdf, loadNotesText, serializeNotes, sha256Hex } from '@inkslide/annotate/io';
 import { PAPERS, pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
 import * as render from '@inkslide/annotate/render';
 import type { ToolRenderer } from '@inkslide/annotate/tools';
@@ -47,7 +47,7 @@ import { createLiveInk } from './live-ink';
 import { createOverview, type Overview } from './overview';
 import { bitmapKey, createPageBitmaps } from './page-bitmaps';
 import { isCancelled, openPdfDoc, PRIORITY, type PdfDoc } from './pdf';
-import { flushSave, pageTurned, saveState, scheduleSave, setSaveTarget } from './persist';
+import { flushSave, holdSaves, pageTurned, saveState, scheduleSave, setSaveTarget } from './persist';
 import type { AppAdapter } from './platform';
 import type { ViewerMirror } from './presenter';
 import { printPageImages } from './print';
@@ -102,6 +102,8 @@ interface Session {
   pages: ViewerPages;
   /** The PDF has a notes backup (shows the Revert to Backup button). */
   hasBackup: boolean;
+  /** Counts the changes of the notes (to see whether they changed during a wait). */
+  revision: number;
   unbind: () => void;
 }
 
@@ -144,6 +146,12 @@ export interface Viewer {
    * ask `question`. True: saved, or the user agreed to lose the changes.
    */
   saveOrAsk(question: string): Promise<boolean>;
+  /**
+   * The page is being left: keep unsaved notes at once through the adapter's
+   * synchronous checkpointNotes (web). True if nothing is unsaved or they
+   * were kept; false if they could not be (or the adapter has no checkpoint).
+   */
+  checkpoint(): boolean;
   /**
    * Revert to Backup (desktop: File menu; browser: File group of the
    * toolbar): save, ask, swap the saved notes and the backup, and load the
@@ -731,10 +739,23 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         if (!(await saveOpen())) return;
       } while (!loseUnsaved && saveState() !== 'saved');
       if (queued) return; // a newer request replaces this one
+      // The open notes, as just written: if reading them again fails, the notes read
+      // before (without the strokes written since) must not take their place.
+      const openText = reread && s ? serializeNotes(s.doc) : '';
       closeSession();
       if (reread) {
         const again = await loadSaved(file, sha256, newDoc);
-        if (!again.problem) doc = again.doc; // else the notes read before, the most there is
+        if (!again.problem) doc = again.doc;
+        else {
+          console.warn('Reading the notes again failed; the open notes are kept', again.reason);
+          const open = newDoc();
+          try {
+            loadNotesMessages(open, openText);
+            doc = open;
+          } catch (e) {
+            console.error('The open notes could not be loaded again', e); // the notes read before, the most there is
+          }
+        }
       }
       startSession(file, sha256, pdf, doc);
       if (fromBackup) banner([`Opened the backup from ${fromBackup.when}.`, keptMsg, ...fromBackup.warnings].filter(Boolean).join('\n'), 'warn');
@@ -767,10 +788,11 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     });
     app.sync = mirror;
     const ses: Session = {
-      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: storedPaper(), hasBackup: false,
+      file, sha256, pdf, doc, app, current: 'p1', defaultPaper: storedPaper(), hasBackup: false, revision: 0,
       overview: null as unknown as Overview, pages: null as unknown as ViewerPages, unbind: () => {},
     };
     s = ses;
+    doc.onChange((_pageId, kind) => { if (kind !== 'saved') ses.revision++; });
     bitmaps.setDoc(pdf);
     const pages = pagesController();
     app.pages = ses.pages = pages;
@@ -975,14 +997,30 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         }
         const when = new Date(backup.time).toLocaleString();
         if (!(await ask(`Replace the current notes with the backup from ${when}?`)) || s !== ses) return;
-        if (!(await saveNow())) return void banner('The notes could not be saved, so they were not reverted.', 'error');
-        const text = await adapter.revertToBackup(ses.file, ses.sha256);
-        if (s !== ses) return;
-        const warnings = replaceNotes(ses, text);
-        // Write the reloaded notes (the same text) at once, so nothing shows as unsaved.
-        await saveNow();
-        banner(warnings.length ? `Reverted to the backup from ${when}:\n${warnings.join('\n')}` : `Reverted to the backup from ${when}.`,
-          warnings.length ? 'warn' : 'info');
+        // No pen input until the backup is loaded: a stroke written meanwhile would be replaced by it.
+        pageEl.inert = true;
+        try {
+          if (!(await saveNow())) return void banner('The notes could not be saved, so they were not reverted.', 'error');
+          const revert = adapter.revertToBackup.bind(adapter, ses.file, ses.sha256);
+          const revision = ses.revision;
+          // No autosave write during the swap. Notes changed meanwhile (a key: undo, a new
+          // page) are newer than the swap: it is swapped back (the backup stays) and they are kept.
+          const text = await holdSaves(async () => {
+            const reverted = await revert();
+            if (ses.revision === revision) return reverted;
+            await revert();
+            return null;
+          });
+          if (s !== ses) return;
+          if (text === null) return void banner('The notes changed during the revert, so they were kept. Revert to Backup again to load the backup.', 'warn');
+          const warnings = replaceNotes(ses, text);
+          // Write the reloaded notes (the same text) at once, so nothing shows as unsaved.
+          await saveNow();
+          banner(warnings.length ? `Reverted to the backup from ${when}:\n${warnings.join('\n')}` : `Reverted to the backup from ${when}.`,
+            warnings.length ? 'warn' : 'info');
+        } finally {
+          pageEl.inert = false;
+        }
       } catch (e) {
         banner(`Could not revert to the backup: ${(e as Error).message || e}`, 'error');
         void checkBackup(ses);
@@ -990,6 +1028,16 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     },
 
     saveOrAsk: async question => (await saveNow()) || ask(question),
+
+    checkpoint() {
+      if (!s || saveState() === 'saved') return true;
+      try {
+        return !!adapter.checkpointNotes && adapter.checkpointNotes(s.file, serializeNotes(s.doc), s.sha256);
+      } catch (e) {
+        console.error('Keeping the unsaved notes failed', e);
+        return false;
+      }
+    },
   };
 
   // Back in the page: another tab may have added or removed the backup.

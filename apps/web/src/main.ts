@@ -83,10 +83,25 @@ void (async () => {
   }
 })();
 
-// Leaving the page: write unsaved notes now.
-const flush = (): void => { if (viewer.session) void viewer.save(); };
+// Leaving the page: write unsaved notes now. The write is asynchronous and the
+// page may be gone before it ends, so the browser build first keeps the unsaved
+// notes in localStorage at once (a checkpoint, read on the next open if it is the
+// newer copy). If that fails (notes too large, storage full), the browser asks
+// before it closes or reloads the page.
+const flush = (): void => {
+  if (!viewer.session) return;
+  if (web) viewer.checkpoint();
+  void viewer.save();
+};
 window.addEventListener('pagehide', flush);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+if (web) {
+  window.addEventListener('beforeunload', e => {
+    if (viewer.checkpoint()) return;
+    e.preventDefault();
+    e.returnValue = ''; // older browsers ask only with this
+  });
+}
 
 // Electron: the window closes (or the app quits) only after the notes are
 // written; if that fails, the user decides. pagehide cannot wait for a write.

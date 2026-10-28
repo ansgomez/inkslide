@@ -286,6 +286,50 @@ test('reload restores the notes (web adapter storage)', async ({ page }) => {
   await expect(penStrokes(page)).toHaveCount(1);
 });
 
+test('leaving the page before the notes are written keeps them (localStorage checkpoint)', async ({ page }) => {
+  // On the next load OPFS writes never end, as when the page is gone before they do.
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem('opfs-hangs')) return;
+    sessionStorage.setItem('opfs-hangs', '1');
+    FileSystemFileHandle.prototype.createWritable = () => new Promise(() => {});
+  });
+  await page.reload();
+  await openPdf(page);
+  await penStroke(page, [0.2, 0.2], [0.5, 0.4]);
+  await expect(page.locator('.ann-bar [data-id="save"]')).toHaveClass(/is-unsaved/);
+  await page.reload(); // no question (it would stop the reload): the checkpoint was kept
+  await openPdf(page);
+  await expect(penStrokes(page)).toHaveCount(1);
+  // Saved normally from now on: the checkpoint gives way to the OPFS file.
+  await penStroke(page, [0.2, 0.6], [0.8, 0.6]);
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('.ann-bar [data-id="save"]')).not.toHaveClass(/is-unsaved/);
+  const key = `inkslide-notes:${createHash('sha256').update(readFileSync(FIXTURE)).digest('hex')}`;
+  await expect.poll(() => page.evaluate(k => localStorage.getItem(k), key)).toBeNull();
+  await page.reload();
+  await openPdf(page);
+  await expect(penStrokes(page)).toHaveCount(2);
+});
+
+test('leaving the page with unsaved notes that cannot be kept asks first', async ({ page }) => {
+  await page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (this: Storage, k: string, v: string) {
+      if (k.startsWith('inkslide-notes:')) throw new DOMException('full', 'QuotaExceededError');
+      setItem.call(this, k, v);
+    };
+  });
+  await page.reload();
+  await openPdf(page); // a click: the page may ask before it is left
+  await penStroke(page, [0.2, 0.2], [0.5, 0.4]);
+  await expect(page.locator('.ann-bar [data-id="save"]')).toHaveClass(/is-unsaved/);
+  const dialog = page.waitForEvent('dialog');
+  await page.close({ runBeforeUnload: true });
+  const d = await dialog;
+  expect(d.type()).toBe('beforeunload');
+  await d.accept();
+});
+
 test('asks before saved notes that cannot be loaded are replaced', async ({ page }) => {
   const key = `inkslide-notes:${createHash('sha256').update(readFileSync(FIXTURE)).digest('hex')}`;
   const newer = JSON.stringify({ format: 'marp-notes', version: 99, deck: {}, pages: [] });

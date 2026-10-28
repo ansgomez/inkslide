@@ -37,6 +37,8 @@ interface Files {
   gateWrites?: boolean;
   /** readNotes waits for release() too (one per read). */
   gateReads?: boolean;
+  /** revertToBackup waits for release() too (one per call). */
+  gateRevert?: boolean;
 }
 
 interface Stub extends Files {
@@ -91,6 +93,10 @@ async function openWith(page: Page, files: Files): Promise<void> {
       readBackup: async () => (st.backup === null ? null : { text: st.backup, time: Date.UTC(2026, 9, 26, 9, 30) }),
       revertToBackup: async () => {
         st.calls.push('revertToBackup');
+        if (st.gateRevert) {
+          st.pending++;
+          await new Promise<void>(r => gates.push(r));
+        }
         [st.notes, st.backup] = [st.backup, st.notes];
         return st.notes;
       },
@@ -219,6 +225,46 @@ test('Revert to Backup saves first, asks, swaps, and a second revert undoes it',
   expect(strokesIn((await stub(page)).backup)).toBe(3);
 });
 
+test('Revert to Backup: no pen input while the swap runs, so no stroke is lost', async ({ page }) => {
+  await openWith(page, { notes: notes(1), backup: notes(3), answers: [true], gateRevert: true });
+  await expect(penStrokes(page)).toHaveCount(1);
+  const release = () => page.evaluate(() => (window as unknown as { stub: Stub }).stub.release());
+  await menu(page, 'revert-backup');
+  await expect.poll(async () => (await stub(page)).pending).toBe(1);
+  await penStroke(page, [0.2, 0.6], [0.7, 0.3]); // during the swap: not taken
+  await expect(penStrokes(page)).toHaveCount(1);
+  await release();
+  await expect(penStrokes(page)).toHaveCount(3);
+  const s = await stub(page);
+  expect(strokesIn(s.notes)).toBe(3);
+  expect(strokesIn(s.backup)).toBe(1);
+  // Input works again.
+  await penStroke(page, [0.2, 0.6], [0.7, 0.3]);
+  await expect(penStrokes(page)).toHaveCount(4);
+});
+
+test('Revert to Backup: notes changed during the swap are kept, and the backup is swapped back', async ({ page }) => {
+  await openWith(page, { notes: notes(1), backup: notes(3), answers: [true] });
+  await expect(penStrokes(page)).toHaveCount(1);
+  await penStroke(page, [0.2, 0.6], [0.7, 0.3]);
+  await expect(penStrokes(page)).toHaveCount(2);
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.gateRevert = true; });
+  const release = () => page.evaluate(() => (window as unknown as { stub: Stub }).stub.release());
+  await menu(page, 'revert-backup');
+  await expect.poll(async () => (await stub(page)).pending).toBe(1);
+  await page.keyboard.press('Control+z'); // a change no pen block stops
+  await expect(penStrokes(page)).toHaveCount(1);
+  await release();
+  await expect.poll(async () => (await stub(page)).pending).toBe(1); // swapped back
+  await release();
+  await expect(page.locator('.ann-banner-warn')).toContainText('The notes changed during the revert, so they were kept.');
+  await expect(penStrokes(page)).toHaveCount(1);
+  // The backup is still the backup, and the changed notes are written over the saved ones.
+  expect(strokesIn((await stub(page)).backup)).toBe(3);
+  await expect.poll(async () => strokesIn((await stub(page)).notes), { timeout: 5000 }).toBe(1);
+  expect((await stub(page)).calls.filter(c => c === 'revertToBackup')).toHaveLength(2);
+});
+
 test('Revert to Backup without a backup says so', async ({ page }) => {
   await openWith(page, { notes: notes(1), backup: null, answers: [] });
   await expect(penStrokes(page)).toHaveCount(1);
@@ -273,6 +319,32 @@ test('opening the open PDF again keeps strokes made while it loaded', async ({ p
   await release();
   await expect(penStrokes(page)).toHaveCount(2);
   expect(strokesIn((await stub(page)).notes)).toBe(2);
+});
+
+test('opening the open PDF again: if reading the notes again fails, the strokes just written stay', async ({ page }) => {
+  await openWith(page, { notes: notes(0), backup: null, answers: [], gateWrites: true });
+  await expect(page.locator('.ink-stage')).toBeVisible();
+  const release = () => page.evaluate(() => (window as unknown as { stub: Stub }).stub.release());
+  const waitPending = () => expect.poll(async () => (await stub(page)).pending).toBe(1);
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.gateReads = true; });
+  void page.evaluate(() => (window as unknown as { inkslideViewer: { openFrom(p: string): Promise<void> } })
+    .inkslideViewer.openFrom('/docs/deck.pdf'));
+  await waitPending(); // the read of the notes (none)
+  await penStroke(page, [0.4, 0.2], [0.6, 0.4]); // after the read
+  await release();
+  await waitPending(); // the write of the stroke, before the PDF closes
+  await release();
+  await waitPending(); // the notes read again: it fails
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.firstReads = ['unreadable']; });
+  await release();
+  await expect.poll(async () => (await stub(page)).calls.filter(c => c === 'opened')).toHaveLength(2);
+  await expect(penStrokes(page)).toHaveCount(1);
+  expect(strokesIn((await stub(page)).notes)).toBe(1);
+  // A later change is written on top of it, not on the notes read before.
+  await page.evaluate(() => { (window as unknown as { stub: Stub }).stub.gateWrites = false; });
+  await penStroke(page, [0.1, 0.6], [0.3, 0.8]);
+  await page.keyboard.press('Control+s');
+  await expect.poll(async () => strokesIn((await stub(page)).notes)).toBe(2);
 });
 
 test('browser: a save after a save makes a backup, and the toolbar\'s Revert to Backup swaps it in and back', async ({ page }) => {

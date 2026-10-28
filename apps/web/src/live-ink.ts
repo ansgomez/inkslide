@@ -6,9 +6,13 @@
  * { desynchronized: true }, so Chromium can show it without waiting for the
  * compositor. Points come straight from the pointer events (coalesced ones,
  * plus the predicted ones drawn ahead of the pen), and the canvas is redrawn
- * in the event handler, not once per frame. On pen up the tool removes the
- * live stroke and adds the real one to the document, which syncs the SVG in
- * the same task, so nothing flickers.
+ * in the event handler, not once per frame; the tool's own once-per-frame
+ * update() then redraws only what the pointer events did not (a new color or
+ * size, or the tool's points when no pointer events came). A redraw still
+ * goes over the whole stroke (its outline is not cut into pieces: joins
+ * would show). On pen up the tool removes the live stroke and adds the real
+ * one to the document, which syncs the SVG in the same task, so nothing
+ * flickers.
  */
 import { centerlinePath, outlinePath, smoothPoints, strokeOutline, type Point, type Stroke, type StrokeTool } from '@inkslide/annotate/geometry';
 import { screenToPage } from '@inkslide/annotate/input';
@@ -26,6 +30,8 @@ interface Session {
   style: Pick<Stroke, 'color' | 'size'> | null;
   /** Smoothed points from the tool (fallback when no pointer events were seen). */
   toolPoints: readonly Point[];
+  /** The canvas shows the points as they are (nothing changed since the last draw). */
+  drawn: boolean;
 }
 
 /** The live stroke canvas of the viewer. */
@@ -62,6 +68,7 @@ export function createLiveInk(canvas: HTMLCanvasElement, events: HTMLElement): L
       pts = s.toolPoints.slice();
     }
     if (!pts.length) return;
+    s.drawn = true;
     clear();
     const k = canvas.width / s.layer.size[0];
     ctx.setTransform(k, 0, 0, k, 0, 0);
@@ -100,6 +107,7 @@ export function createLiveInk(canvas: HTMLCanvasElement, events: HTMLElement): L
       if (pt) s.predicted.push(pt);
     }
     s.straight = e.shiftKey;
+    s.drawn = false;
     draw();
   };
   events.addEventListener('pointerdown', onDown, true);
@@ -110,18 +118,21 @@ export function createLiveInk(canvas: HTMLCanvasElement, events: HTMLElement): L
     pendingDown = null;
     const s: Session = {
       layer, tool, pointerId: down ? down.pointerId : null, raw: [], predicted: [],
-      straight: !!(down && down.shift), style: null, toolPoints: [],
+      straight: !!(down && down.shift), style: null, toolPoints: [], drawn: false,
     };
     session = s;
     canvas.classList.toggle('is-hl', tool === 'highlighter');
     return {
       update(stroke) {
         if (session !== s) return;
+        const was = s.style;
         s.style = { color: stroke.color, size: stroke.size };
+        if (!was || was.color !== stroke.color || was.size !== stroke.size) s.drawn = false;
         s.toolPoints = stroke.points;
         // The tool's first point is the pointerdown position (not in the raw list yet).
         if (!s.raw.length && s.pointerId !== null && stroke.points[0]) s.raw.push(stroke.points[0].slice() as Point);
-        draw();
+        // The pointer events drew their points already: no second redraw of the same stroke.
+        if (!s.raw.length || !s.drawn) draw();
       },
       remove() {
         if (session !== s) return;

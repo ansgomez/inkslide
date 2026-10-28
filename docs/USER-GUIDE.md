@@ -18,6 +18,8 @@ pen. Your ink is saved automatically in a separate notes file; the PDF is never 
   itself (they may ask for permission to read it again); other browsers (Safari, Firefox)
   keep a copy of the PDF in the site's storage, up to 250 MB together, the oldest first to go.
 
+A PDF can have at most 100,000 pages; a larger one is not opened, and a message says so.
+
 ### Installing as an app (iPad, Chrome, Edge)
 
 The browser version can be installed and then works without a network connection:
@@ -208,6 +210,12 @@ now. The save button shows a dot while there are unsaved changes; the dot turns 
 failed; Inkslide then keeps retrying. If the notes cannot be saved when you close the window,
 Inkslide asks before closing.
 
+In the browser, a tab can be closed or reloaded before a save has finished. Leaving the page
+with unsaved changes therefore also puts them in the site's small quick storage at once, and
+the next time you open the PDF Inkslide uses them if they are newer than the saved notes. If
+they cannot be kept there (notes with large snapshots, or that storage is full), the browser
+asks whether to leave the page.
+
 ### Where notes are stored
 
 - **Desktop:** next to the PDF as `<name>.pdf.notes.json` (e.g. `lecture.pdf.notes.json`).
@@ -255,7 +263,9 @@ never copied, and the backup stays when you close the PDF.
 
 **File → Revert to Backup…** puts it back: after asking *Replace the current notes with the
 backup from <time>?*, the backup becomes the notes and the notes you had become the backup,
-so choosing Revert to Backup again undoes it. Unsaved strokes are saved first. Revert is not an
+so choosing Revert to Backup again undoes it. Unsaved strokes are saved first, and the pen
+does nothing until the backup is loaded; if the notes change meanwhile (an undo, say), they
+are kept and the backup stays the backup, with a message saying so. Revert is not an
 undo step (Ctrl/Cmd+Z does not take it back); it is greyed out while there is no backup. The
 backup has the format of a notes file, so **File → Import Notes…** can load it too.
 
