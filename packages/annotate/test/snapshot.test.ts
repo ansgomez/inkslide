@@ -172,6 +172,28 @@ describe('annotator snapshot', () => {
     expect(doc.history.top()!.label).toBe('cut');
   });
 
+  it('a capture that finishes after a later one is dropped; so is one of a closed document', async () => {
+    const pending: ((c: Capture) => void)[] = [];
+    const captureArea = () => new Promise<Capture>(resolve => { pending.push(resolve); });
+    const { app, messages } = setup({ captureArea });
+    const a = app.snapshot('p1', { x: 0, y: 0, w: 10, h: 10 });
+    const b = app.snapshot('p1', { x: 20, y: 20, w: 30, h: 30 });
+    pending[1]({ src: PNG });
+    await b;
+    pending[0]({ src: PNG });
+    await a;
+    expect(getClip()!.images![0]).toMatchObject({ x: 20, w: 30 });
+    expect(messages).toHaveLength(1);
+    // Closed (unmounted) while capturing: nothing changes.
+    const unmount = app.mount();
+    const c = app.snapshot('p1', { x: 50, y: 50, w: 5, h: 5 });
+    unmount();
+    pending[2]({ src: PNG });
+    await c;
+    expect(getClip()!.images![0]).toMatchObject({ x: 20 });
+    expect(messages).toHaveLength(1);
+  });
+
   it('keeps the tool and reports a failed capture', async () => {
     const { app, messages } = setup({ captureArea: () => Promise.reject(new Error('page closed')) });
     app.setTool('snapshot');

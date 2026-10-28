@@ -77,6 +77,13 @@ function savePrefs(storage: Pick<Storage, 'setItem'> | null, app: StoredPrefs): 
   } catch (_) { /* storage blocked: prefs are a convenience only */ }
 }
 
+/**
+ * The latest snapshot started in this window (all documents): a capture that
+ * finishes after a later one has started is dropped, so the clip is always
+ * the last area chosen.
+ */
+let snapshotGeneration = 0;
+
 const systemClipboard = (): Clipboard | undefined => {
   try { return typeof navigator !== 'undefined' ? navigator.clipboard : undefined; } catch (_) { return undefined; }
 };
@@ -250,6 +257,8 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
   const notify = (text: string, kind: 'info' | 'warn' | 'error' = 'info'): void => { if (opts.notify) opts.notify(text, kind); };
   /** The tool to go back to after a snapshot. */
   let beforeSnapshot: ToolId = tool;
+  /** mount()'s unbind ran: the document is closed, a snapshot still running is dropped. */
+  let unmounted = false;
   /** The tool a size command changes: the current one if it has a size, else the pen. */
   const sizedTool = (): SizedTool => (toolInfo(app.tool).size ? app.tool as SizedTool : 'pen');
   /** The selection as a clip; null without one. */
@@ -505,14 +514,18 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     },
     async snapshot(pageId, rect) {
       if (!opts.captureArea) return;
+      const generation = ++snapshotGeneration;
+      // A later snapshot started meanwhile, or this document was closed (unmounted): drop this one.
+      const stale = (): boolean => generation !== snapshotGeneration || unmounted;
       let image: PageImage;
       let png: Blob | null | undefined;
       try {
         const cap = await opts.captureArea(pageId, rect);
-        if (!cap) return;
+        if (!cap || stale()) return;
         image = createImage({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, src: cap.src });
         png = cap.png;
       } catch (e) {
+        if (stale()) return;
         return notify(`The snapshot failed: ${(e as Error).message || e}`, 'error');
       }
       // The image sits where the area was: pasted on a page of the same size, it covers the area exactly.
@@ -573,7 +586,9 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
       for (const type of events) window.addEventListener(type, onClipboardEvent, true);
       app.toolbar = createToolbar(app, parent);
       app.refresh();
+      unmounted = false;
       return () => {
+        unmounted = true;
         unbind();
         for (const type of events) window.removeEventListener(type, onClipboardEvent, true);
       };
