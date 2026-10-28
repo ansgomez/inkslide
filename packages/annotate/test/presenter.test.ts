@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Point } from '../src/geometry';
-import { commonPrefix, parsePresenterMessage, PRESENTER_LIMITS } from '../src/presenter';
+import { applyLivePoints, commonPrefix, parsePresenterMessage, PRESENTER_LIMITS } from '../src/presenter';
 import { NotesDoc } from '../src/model';
 import { deckFromPdf } from '../src/io';
 
@@ -75,6 +75,21 @@ describe('commonPrefix', () => {
     expect(commonPrefix(a, [[0, 0, 0.5], [2, 2, 0.5]])).toBe(1);
     expect(commonPrefix([], a)).toBe(0);
     expect(commonPrefix(a, [[0, 0, 0.6]])).toBe(0);
+  });
+});
+
+describe('applyLivePoints', () => {
+  it('keeps the first `from` points and appends the new ones', () => {
+    const pts: Point[] = [[0, 0, 0.5], [1, 1, 0.5], [2, 2, 0.5]];
+    expect(applyLivePoints(pts, 2, [[5, 5, 1]])).toEqual([[0, 0, 0.5], [1, 1, 0.5], [5, 5, 1]]);
+    expect(applyLivePoints(pts, 9, [[6, 6, 1]])).toHaveLength(4);
+    expect(applyLivePoints(pts, 0, [])).toEqual([]);
+  });
+
+  it('takes more points than a call takes arguments', () => {
+    const add: Point[] = Array.from({ length: 1_000_000 }, (_, i) => [i, 0, 0.5]);
+    expect(() => [].push(...(add as never[]))).toThrow(RangeError);
+    expect(applyLivePoints([[9, 9, 0.5]], 1, add)).toHaveLength(1_000_001);
   });
 });
 

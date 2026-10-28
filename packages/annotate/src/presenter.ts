@@ -214,3 +214,14 @@ export function commonPrefix(a: readonly Point[], b: readonly Point[]): number {
   while (i < n && (a[i] === b[i] || (a[i][0] === b[i][0] && a[i][1] === b[i][1] && a[i][2] === b[i][2]))) i++;
   return i;
 }
+
+/**
+ * The live stroke's points after a `live` message: `points` keeps its first
+ * `from` points and gets `add` after them (in place). A loop, not
+ * push(...add): a message may carry more points than a call takes arguments.
+ */
+export function applyLivePoints(points: Point[], from: number, add: readonly Point[]): Point[] {
+  points.length = Math.min(points.length, from);
+  for (const p of add) points.push(p);
+  return points;
+}
