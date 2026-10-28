@@ -223,6 +223,11 @@ export function createStroke({ id, tool, color, size, points }: StrokeInput): St
 
 // ── Images ─────────────────────────────────────────────────────
 
+/**
+ * Smallest width and height of an image, in page units: the rounding of a
+ * saved file (2 decimals) keeps it positive, so a saved image always loads.
+ */
+export const MIN_IMAGE_SIZE = 0.01;
 /** Image types a notes file may contain, with the start of their base64 data (the file signature). */
 const IMAGE_MAGIC: Readonly<Record<string, string>> = { 'image/png': 'iVBORw0KGgo', 'image/jpeg': '/9j/' };
 /** Longest data URL of one image, in characters (about 2.2 MB of image data). */
@@ -334,7 +339,7 @@ export function imageInfo(src: unknown): ImageInfo | null {
 /**
  * A checked image: a PNG or JPEG data URL of at most MAX_IMAGE_CHARS and
  * MAX_IMAGE_SIDE × MAX_IMAGE_SIDE pixels (MAX_IMAGE_PIXELS in all), finite x
- * and y within ±MAX_COORD, positive finite w and h up to MAX_COORD. Throws on
+ * and y within ±MAX_COORD, w and h from MIN_IMAGE_SIZE to MAX_COORD. Throws on
  * bad input; a missing or unusable id (not a string, longer than
  * MAX_ID_LENGTH) gets newId().
  */
@@ -344,7 +349,9 @@ export function createImage(input: ImageInput): PageImage {
   if (typeof info === 'string') throw new Error(info);
   const coord = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= MAX_COORD;
   if (!coord(x) || !coord(y)) throw new Error('Image position must be finite numbers in range');
-  if (!coord(w) || !coord(h) || !(w > 0) || !(h > 0)) throw new Error('Image size must be positive numbers in range');
+  if (!coord(w) || !coord(h) || !(w >= MIN_IMAGE_SIZE) || !(h >= MIN_IMAGE_SIZE)) {
+    throw new Error(`Image size must be numbers from ${MIN_IMAGE_SIZE} to ${MAX_COORD}`);
+  }
   return { id: itemId(id), x, y, w, h, src: src as string };
 }
 

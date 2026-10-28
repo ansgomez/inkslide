@@ -60,6 +60,8 @@ describe('createImage', () => {
     expect(bad({ y: Infinity })).toThrow(/position/);
     expect(bad({ x: '3' })).toThrow(/position/);
     expect(bad({ w: 2e6 })).toThrow(/size/);
+    expect(bad({ w: 0.001 })).toThrow(/size/); // would save as 0
+    expect(createImage({ x: 0, y: 0, w: 0.01, h: 0.0149, src: PNG })).toMatchObject({ w: 0.01, h: 0.0149 });
     expect(() => createImage(null as never)).toThrow(/PNG or JPEG/);
   });
 });
@@ -206,6 +208,14 @@ describe('notes file with images', () => {
     deck: { source: 'pdf', title: 'a', slides: 3, size: [960, 540], sha256: 'abc' },
     pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: [], images }],
     ...extra,
+  });
+
+  it('saves the smallest image so that it loads again', () => {
+    const doc = pdfDoc();
+    doc.addItems('p1', [], [createImage({ id: 'tiny', x: 1, y: 1, w: 0.01, h: 0.0149, src: PNG })]);
+    const again = pdfDoc();
+    expect(loadNotesText(again, serializeNotes(doc)).warnings).toEqual([]);
+    expect(again.images('p1')).toHaveLength(1);
   });
 
   it('round-trips images through save and load', () => {
