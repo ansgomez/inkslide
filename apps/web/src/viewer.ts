@@ -462,7 +462,6 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
   }).observe(stage);
 
   attachGestures(stage, {
-    touchDraws: () => !!s && s.app.enabled && !s.app.input.penSeen,
     // Only a finger's stroke: a pen stroke must not be dropped by a palm (penSeen may
     // also have turned true while the finger was drawing, by a hovering pen).
     discardStroke: () => { if (s && s.app.input.activePointerType === 'touch') s.app.input.discard(); },

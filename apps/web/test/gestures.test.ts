@@ -2,12 +2,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { attachGestures, PEN_GRACE_MS, type GestureHost } from '../src/gestures';
 
-function setup(opts: { scrolls?: boolean; touchDraws?: boolean; drawing?: boolean } = {}) {
+function setup(opts: { scrolls?: boolean; drawing?: boolean } = {}) {
   const stage = document.createElement('div');
   document.body.appendChild(stage);
   let view = { zoom: 1, tx: 0, ty: 0 };
   const host: GestureHost = {
-    touchDraws: () => !!opts.touchDraws,
     discardStroke: vi.fn(),
     setView: vi.fn((zoom, tx, ty) => { view = { zoom, tx, ty }; }),
     view: () => view,
@@ -26,6 +25,7 @@ function setup(opts: { scrolls?: boolean; touchDraws?: boolean; drawing?: boolea
   const pinch = (t: number) => {
     fire('pointerdown', 'touch', 1, 380, 300, t);
     fire('pointerdown', 'touch', 2, 420, 300, t);
+    fire('pointermove', 'touch', 2, 424, 300, t + 25); // past the slop: the zoom starts
     fire('pointermove', 'touch', 2, 520, 300, t + 50);
     fire('pointerup', 'touch', 1, 380, 300, t + 100);
     fire('pointerup', 'touch', 2, 520, 300, t + 100);
@@ -65,6 +65,7 @@ describe('gestures', () => {
     const g = setup();
     g.fire('pointerdown', 'touch', 1, 380, 300, 1000);
     g.fire('pointerdown', 'touch', 2, 420, 300, 1000);
+    g.fire('pointermove', 'touch', 2, 424, 300, 1025);
     g.fire('pointermove', 'touch', 2, 460, 300, 1050);
     const zoom = g.view().zoom;
     expect(zoom).toBeGreaterThan(1);
@@ -74,33 +75,41 @@ describe('gestures', () => {
     expect(g.host.setView).toHaveBeenLastCalledWith(zoom, expect.any(Number), expect.any(Number), true);
   });
 
-  it('one finger scrolls a page fitted to the width (touch does not draw)', () => {
+  it('one finger never scrolls or pans, even zoomed', () => {
     const g = setup({ scrolls: true });
     g.fire('pointerdown', 'touch', 1, 400, 500, 1000);
     g.fire('pointermove', 'touch', 1, 400, 300, 1050);
-    expect(g.view()).toEqual({ zoom: 1, tx: 0, ty: -200 });
     g.fire('pointerup', 'touch', 1, 400, 300, 1100);
-    expect(g.host.setView).toHaveBeenLastCalledWith(1, 0, -200, true);
-  });
-
-  it('one finger does not scroll while touch draws or the pen is busy', () => {
-    const drawing = setup({ scrolls: true, touchDraws: true });
-    drawing.fire('pointerdown', 'touch', 1, 400, 500, 1000);
-    drawing.fire('pointermove', 'touch', 1, 400, 300, 1050);
-    expect(drawing.view().ty).toBe(0);
-
-    const g = setup({ scrolls: true });
-    g.fire('pointerdown', 'pen', 7, 100, 100, 1000);
-    g.fire('pointerdown', 'touch', 1, 400, 500, 1010);
-    g.fire('pointermove', 'touch', 1, 400, 300, 1050);
-    expect(g.view().ty).toBe(0);
-  });
-
-  it('one finger does not move an unzoomed page fit', () => {
-    const g = setup();
-    g.fire('pointerdown', 'touch', 1, 400, 500, 1000);
-    g.fire('pointermove', 'touch', 1, 400, 300, 1050);
     expect(g.host.setView).not.toHaveBeenCalled();
+    g.pinch(2000);
+    vi.mocked(g.host.setView).mockClear();
+    g.fire('pointerdown', 'touch', 1, 400, 500, 3000);
+    g.fire('pointermove', 'touch', 1, 300, 300, 3050);
+    expect(g.host.setView).not.toHaveBeenCalled();
+  });
+
+  it('two fingers scroll without zooming while their spread stays within the slop', () => {
+    const g = setup({ scrolls: true });
+    g.fire('pointerdown', 'touch', 1, 380, 500, 1000);
+    g.fire('pointerdown', 'touch', 2, 420, 500, 1000);
+    g.fire('pointermove', 'touch', 1, 380, 400, 1050);
+    g.fire('pointermove', 'touch', 2, 422, 400, 1100); // spread 40 to 42: 5 %
+    g.fire('pointermove', 'touch', 1, 380, 300, 1150);
+    g.fire('pointermove', 'touch', 2, 422, 300, 1200);
+    expect(g.view()).toEqual({ zoom: 1, tx: 1, ty: -200 });
+    g.fire('pointerup', 'touch', 1, 380, 400, 1300);
+    expect(g.host.setView).toHaveBeenLastCalledWith(1, 1, -200, true);
+    expect(g.host.step).not.toHaveBeenCalled();
+  });
+
+  it('a pinch zooms from where it passed the slop, without a jump', () => {
+    const g = setup();
+    g.fire('pointerdown', 'touch', 1, 380, 300, 1000);
+    g.fire('pointerdown', 'touch', 2, 420, 300, 1000);
+    g.fire('pointermove', 'touch', 2, 424, 300, 1050); // 44 / 40: zoom starts here
+    expect(g.view().zoom).toBe(1);
+    g.fire('pointermove', 'touch', 2, 468, 300, 1100); // 88 / 44
+    expect(g.view().zoom).toBeCloseTo(2, 6);
   });
 
   it('the wheel scrolls (lines count 16 px), but not while the pen is down', () => {

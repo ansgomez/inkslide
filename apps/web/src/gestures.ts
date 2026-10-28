@@ -2,11 +2,13 @@
  *
  * Runs in the capture phase on the stage, before input.ts sees the events
  * on the page SVG:
- *   - One finger draws (input.ts) until a pen has been seen or while
- *     annotate mode is off; after that it pans a zoomed page, or scrolls a
- *     page fitted to the width that is taller than the stage.
+ *   - One finger draws (input.ts) until a pen has been seen and annotate
+ *     mode is on; otherwise it does nothing here. It never pans or scrolls:
+ *     a hand brushing the screen moved the page too often.
  *   - A second finger ends a finger stroke (discarded) and starts a
- *     pinch: zoom around the fingers' midpoint and pan with them.
+ *     pinch: pan or scroll with the fingers' midpoint, and zoom around it
+ *     once their spread has changed by PINCH_SLOP (two fingers scrolling
+ *     do not zoom by accident).
  *   - Two fingers that move quickly sideways without zooming turn the
  *     page (swipeDirection from input.ts). The touch events never reach
  *     the SVG, so input.ts's own swipe does not step a second time.
@@ -24,14 +26,12 @@ import { swipeDirection } from '@inkslide/annotate/input';
 
 /** What the gestures read from and do to the viewer. */
 export interface GestureHost {
-  /** Touch is a pen-only drawing device: one finger never draws. */
-  touchDraws(): boolean;
   /** Drop a stroke a finger started (a pinch is starting). */
   discardStroke(): void;
   /** The view transform changed (zoom, tx, ty in CSS px). */
   setView(zoom: number, tx: number, ty: number, done: boolean): void;
   view(): { zoom: number; tx: number; ty: number };
-  /** The unzoomed page can move (fit width, page taller than the stage): one finger scrolls it. */
+  /** The unzoomed page can move (fit width, page taller than the stage): the wheel scrolls it. */
   scrolls(): boolean;
   /** A stroke (or other tool gesture) is running: the page must not move under it. */
   drawing(): boolean;
@@ -42,7 +42,9 @@ export interface GestureHost {
 
 /** Largest pinch / Ctrl + wheel zoom. */
 export const MAX_ZOOM = 6;
-const ZOOMED = 1.02; // above this the page counts as zoomed (one finger pans, swipes pan)
+const ZOOMED = 1.02; // above this the page counts as zoomed (the wheel pans, swipes pan)
+/** Change of the two fingers' spread (ratio) before a pinch zooms. */
+export const PINCH_SLOP = 0.08;
 /** Touch stays ignored this long after the pen's last event (lifting the hand). */
 export const PEN_GRACE_MS = 500;
 
@@ -54,8 +56,9 @@ export function attachGestures(stage: HTMLElement, host: GestureHost): () => voi
   let pinch: {
     d0: number; m0: Pt; zoom0: number; tx0: number; ty0: number; t0: number;
     zoomed: boolean; last: Pt; maxScale: number;
+    /** Spread the zoom is measured from; null until the spread passed PINCH_SLOP. */
+    dz: number | null;
   } | null = null;
-  let pan: { start: Pt; tx0: number; ty0: number } | null = null;
   const pensDown = new Set<number>();
   let penLast = -Infinity; // timeStamp of the pen's last event
   const ignored = new Set<number>(); // touches that started while the pen was busy
@@ -64,8 +67,8 @@ export function attachGestures(stage: HTMLElement, host: GestureHost): () => voi
 
   /** The pen arrived: end a running pinch or pan where it is. */
   function stopGestures(): void {
-    if (!pinch && !pan) return;
-    pinch = pan = null;
+    if (!pinch) return;
+    pinch = null;
     touches.forEach((_p, id) => ignored.add(id));
     touches.clear();
     const v = host.view();
@@ -101,8 +104,7 @@ export function attachGestures(stage: HTMLElement, host: GestureHost): () => voi
 
   function startPinch(t: number): void {
     const v = host.view();
-    pan = null;
-    pinch = { d0: spread(), m0: mid(), zoom0: v.zoom, tx0: v.tx, ty0: v.ty, t0: t, zoomed: v.zoom > ZOOMED, last: mid(), maxScale: 1 };
+    pinch = { d0: spread(), m0: mid(), zoom0: v.zoom, tx0: v.tx, ty0: v.ty, t0: t, zoomed: v.zoom > ZOOMED, last: mid(), maxScale: 1, dz: null };
   }
 
   function onDown(e: PointerEvent): void {
@@ -121,9 +123,6 @@ export function attachGestures(stage: HTMLElement, host: GestureHost): () => voi
     } else if (touches.size > 2) {
       e.stopPropagation();
       pinch = null;
-    } else if (!host.touchDraws()) {
-      const v = host.view();
-      if (v.zoom > ZOOMED || host.scrolls()) pan = { start: { x: e.clientX, y: e.clientY }, tx0: v.tx, ty0: v.ty };
     }
   }
 
@@ -136,16 +135,16 @@ export function attachGestures(stage: HTMLElement, host: GestureHost): () => voi
     if (pinch && touches.size === 2 && rect) {
       const m = mid();
       pinch.last = m;
-      const scale = spread() / pinch.d0;
-      pinch.maxScale = Math.max(pinch.maxScale, scale, 1 / scale);
+      const d = spread(), raw = d / pinch.d0;
+      pinch.maxScale = Math.max(pinch.maxScale, raw, 1 / raw);
+      // Zoom from where the spread passed the slop: no jump when it starts.
+      if (pinch.dz === null && Math.abs(Math.log(raw)) > Math.log(1 + PINCH_SLOP)) pinch.dz = d;
+      const scale = pinch.dz === null ? 1 : d / pinch.dz;
       const zoom = Math.min(MAX_ZOOM, Math.max(1, pinch.zoom0 * scale));
       // Keep the page point under the starting midpoint under the fingers.
       const px = (pinch.m0.x - rect.left - pinch.tx0) / pinch.zoom0;
       const py = (pinch.m0.y - rect.top - pinch.ty0) / pinch.zoom0;
       host.setView(zoom, m.x - rect.left - px * zoom, m.y - rect.top - py * zoom, false);
-    } else if (pan && touches.size === 1) {
-      const v = host.view();
-      host.setView(v.zoom, pan.tx0 + e.clientX - pan.start.x, pan.ty0 + e.clientY - pan.start.y, false);
     }
   }
 
@@ -163,11 +162,6 @@ export function attachGestures(stage: HTMLElement, host: GestureHost): () => voi
         : swipeDirection(p.last.x - p.m0.x, p.last.y - p.m0.y, e.timeStamp - p.t0);
       if (dir) host.step(dir);
       else host.setView(v.zoom, v.tx, v.ty, true);
-    }
-    if (pan && touches.size === 0) {
-      pan = null;
-      const v = host.view();
-      host.setView(v.zoom, v.tx, v.ty, true);
     }
   }
 

@@ -417,7 +417,7 @@ when the PNG exceeds the per-image limit, scaled down further if even that does.
   a second finger. `input.ts`'s own two-finger swipe (for hosts without `gestures.ts`) is
   ignored while a gesture runs and for 500 ms after a pen event.
 - `gestures.ts` runs in the capture phase on the stage, before `input.ts`: one finger draws
-  until a pen is seen, then pans a zoomed page; two fingers pinch-zoom and pan, or turn the
+  until a pen is seen and never pans; two fingers pan (and zoom past an 8 % spread change), or turn the
   page with a quick sideways swipe; Ctrl + wheel zooms (the − and + buttons and Ctrl/Cmd+= and
   Ctrl/Cmd+− are the viewer's). While the pen touches or hovers, and
   500 ms after, touch is ignored, and a pinch or pan already running is ended.

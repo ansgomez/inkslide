@@ -136,9 +136,10 @@ exceed the site storage of browsers without OPFS; the app then reports that savi
 - **Palm rejection:** once the pen has been used, a finger never draws. While the pen touches
   or hovers the screen, and for half a second after, touch is ignored completely, so a resting
   palm neither zooms nor turns the page.
-- **Touch:** before a pen has been seen, one finger draws. Two fingers pinch to zoom and pan;
-  a quick two-finger swipe sideways turns the page (to the left: next). Once zoomed in, one
-  finger pans.
+- **Touch:** before a pen has been seen, one finger draws; after that it does nothing (it
+  never scrolls or pans, so a brushing hand does not move the page). Two fingers scroll and
+  pan, and zoom once they pinch apart or together; a quick two-finger swipe sideways turns the
+  page (to the left: next).
 - **Mouse and touchpad:** the left button draws; Ctrl + wheel (or a touchpad pinch) zooms at
   the pointer; the wheel (or a two-finger touchpad scroll) moves a zoomed page or scrolls a
   page in fit-width mode.
@@ -164,9 +165,8 @@ toolbar turn pages too.
 
 **W** (or the fit-width button next to the page buttons) switches between showing the whole
 page and filling the window width. Fit width suits a portrait page (A4) on a landscape screen:
-the page is larger and scrolls up and down. Scroll with the wheel or touchpad, with two
-fingers, or with one finger once the pen has been used (or in plain viewing). **PgDn** and
-**Space** scroll about a screen and turn to the next page at the bottom; **PgUp** and
+the page is larger and scrolls up and down. Scroll with the wheel, the touchpad or two
+fingers on the screen. **PgDn** and **Space** scroll about a screen and turn to the next page at the bottom; **PgUp** and
 **Shift+Space** scroll back and, at the top, go to the bottom of the previous page. The arrow
 keys still turn pages; a new page starts at its top. Pinch zoom works on top. The mode is
 remembered.

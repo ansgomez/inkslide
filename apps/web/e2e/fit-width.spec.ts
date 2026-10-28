@@ -162,26 +162,41 @@ test('ink lands under the pen on a scrolled page (live canvas and SVG)', async (
   expect(r.path.bottom - r.path.top).toBeLessThan(30);
 });
 
-test('one finger scrolls once a pen was seen; not while the pen is busy', async ({ page }) => {
+test('two fingers scroll; one finger never does', async ({ page }) => {
   await portraitInWidthMode(page);
   const stage = await box(page, '.ink-stage');
   const top0 = (await box(page, '.ink-page')).y;
   const x = stage.x + stage.width / 2, y = stage.y + stage.height / 2;
-  /** One-finger drag up by 200 px; `pen` first puts the pen down (palm while writing). */
-  const drag = (pen: boolean) => firePointers(page, [
-    ...(pen ? [{ type: 'pointerdown', pointerType: 'pen', id: 3, x, y, buttons: 1 } as const] : []),
+
+  // The pen was seen, so one finger does not draw either: it does nothing.
+  await firePointers(page, [
+    { type: 'pointerdown', pointerType: 'pen', id: 3, x: x - 300, y, buttons: 1 },
+    { type: 'pointerup', pointerType: 'pen', id: 3, x: x - 300, y, buttons: 0 },
+  ]);
+  await page.waitForTimeout(600); // past the pen's grace time
+  await firePointers(page, [
     { type: 'pointerdown', pointerType: 'touch', id: 21, x, y, buttons: 1 },
     ...[1, 2, 3, 4, 5].map(i => ({ type: 'pointermove', pointerType: 'touch', id: 21, x, y: y - 40 * i, buttons: 1 } as const)),
     { type: 'pointerup', pointerType: 'touch', id: 21, x, y: y - 200, buttons: 0 },
-    ...(pen ? [{ type: 'pointerup', pointerType: 'pen', id: 3, x, y, buttons: 0 } as const] : []),
   ]);
-
-  await drag(true); // the pen is down (and now seen): the finger is a palm
-  await page.waitForTimeout(100);
+  await page.waitForTimeout(300);
   expect((await box(page, '.ink-page')).y).toBeCloseTo(top0, 0);
-  await page.waitForTimeout(600); // past the pen's grace time
-  await drag(false); // touch no longer draws: one finger scrolls
+
+  // Two fingers dragged up 200 px together scroll by that much, without zooming.
+  const w0 = (await box(page, '.ink-page')).width;
+  const steps = [1, 2, 3, 4, 5].flatMap(i => [
+    { type: 'pointermove', pointerType: 'touch', id: 31, x: x - 30, y: y - 40 * i, buttons: 1 } as const,
+    { type: 'pointermove', pointerType: 'touch', id: 32, x: x + 30, y: y - 40 * i, buttons: 1 } as const,
+  ]);
+  await firePointers(page, [
+    { type: 'pointerdown', pointerType: 'touch', id: 31, x: x - 30, y, buttons: 1 },
+    { type: 'pointerdown', pointerType: 'touch', id: 32, x: x + 30, y, buttons: 1 },
+    ...steps,
+    { type: 'pointerup', pointerType: 'touch', id: 31, x: x - 30, y: y - 200, buttons: 0 },
+    { type: 'pointerup', pointerType: 'touch', id: 32, x: x + 30, y: y - 200, buttons: 0 },
+  ]);
   await expect.poll(async () => (await box(page, '.ink-page')).y).toBeCloseTo(top0 - 200, 0);
+  expect((await box(page, '.ink-page')).width).toBeCloseTo(w0, 0);
 });
 
 test('zoom works on top of the width fit and re-renders sharper', async ({ page }) => {
