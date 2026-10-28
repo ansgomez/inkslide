@@ -278,4 +278,26 @@ describe('createPresenter: images', () => {
       { type: 'strokes', page: 'p1', strokes: [] },
     ]);
   });
+
+  it('sends the images of a deleted blank page again when an undo brings it back', () => {
+    const { presenter, doc, file, clock, take } = setup();
+    presenter.opened(file, doc);
+    presenter.setActive(true);
+    take();
+    const { pageId } = doc.insertBlankPage('p1');
+    const img = createImage({ x: 10, y: 20, w: 100, h: 50, src: PNG });
+    doc.addItems(pageId, [], [img]);
+    clock.flush();
+    take();
+    doc.deletePage(pageId);
+    clock.flush();
+    expect(take().map(m => m.type)).toEqual(['blanks']);
+    doc.undo();
+    clock.flush();
+    expect(take()).toEqual([
+      { type: 'blanks', blanks: doc.blankMeta() },
+      { type: 'images', page: pageId, images: [{ id: img.id, x: 10, y: 20, w: 100, h: 50, src: PNG }] },
+      { type: 'strokes', page: pageId, strokes: [] },
+    ]);
+  });
 });
