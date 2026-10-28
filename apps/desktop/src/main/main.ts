@@ -22,14 +22,14 @@
  */
 import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, net, protocol, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { existsSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 import { checkDroppedPdf, checkPath, checkText, PathGrants } from './access';
 import { CrashRecovery } from './crashRecovery';
-import { MAX_PDF_BYTES, MAX_TEXT_BYTES, sameFile, writeFileAtomic } from './fsutil';
+import { MAX_PDF_BYTES, MAX_TEXT_BYTES, readFileLimited, sameFile, writeFileAtomic } from './fsutil';
 import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
 import { buildMenu } from './menu';
 import {
@@ -480,10 +480,7 @@ function start(): void {
 
   /** Read a granted PDF and make it the current and most recent file. */
   async function readPdf(p: string): Promise<PdfFile> {
-    const st = await stat(p);
-    if (!st.isFile()) throw new Error(`${basename(p)} is not a file`);
-    if (st.size > MAX_PDF_BYTES) throw new Error(`${basename(p)} is too large`);
-    const buf = await readFile(p);
+    const { bytes: buf, ...st } = await readFileLimited(p, MAX_PDF_BYTES);
     grants.grant(p); // also a recent file: its notes stay writable after Clear Recent
     void removeLegacyBackup(p);
     current = p;
@@ -567,8 +564,7 @@ function start(): void {
     });
     const p = !r.canceled && r.filePaths[0];
     if (!p) return null;
-    if ((await stat(p)).size > MAX_TEXT_BYTES) throw new Error(`${basename(p)} is too large`);
-    return { name: basename(p), text: await readFile(p, 'utf8') };
+    return { name: basename(p), text: (await readFileLimited(p, MAX_TEXT_BYTES)).bytes.toString('utf8') };
   });
 
   handle(IPC.confirm, async (message: unknown): Promise<boolean> => {

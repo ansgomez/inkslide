@@ -138,7 +138,10 @@ Main checks every call:
   `pathForFile` (`webUtils.getPathForFile`, synchronous IPC so the grant is in place before
   the following `openPdf`). Main cannot tell a real drop from a renderer that names a path, so
   only `.pdf` files are granted that way; others open from their bytes;
-- hashes must be 64 hex characters, text and PDFs have size limits;
+- hashes must be 64 hex characters, text and PDFs have size limits (notes in UTF-8 bytes,
+  256 MB; PDFs 2 GB). Main reads a PDF, an imported notes file or a sidecar through one
+  handle: only a regular file (no FIFO or device), its size taken from that handle, and the
+  read stops at the limit (`fsutil.ts`, `readFileLimited`, `readFileChecked`);
 - an export may not overwrite the open PDF (also not through a link or another letter case).
 
 Main to renderer messages: `openRequest` (queued in the preload until the front end

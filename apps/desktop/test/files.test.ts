@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { canWriteIn, MAX_TEXT_BYTES, readFileChecked, RefusedLinkError, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
+import { canWriteIn, MAX_TEXT_BYTES, readFileChecked, readFileLimited, RefusedLinkError, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
 import {
   backupBeforeSave, BACKUP_MIN_AGE_MS, hasBackup, isUsableNotes, notesWritePath, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup,
   cleanupNotesStore, keepUnreadableFor, OLD_COPIES_MAX_AGE_DAYS,
@@ -152,6 +152,31 @@ describe('readFileChecked', () => {
     await expect(readFileChecked(fifo)).rejects.toThrow(/not a file/);
     symlinkSync(fifo, join(dir, 'to-fifo.json'));
     await expect(readFileChecked(join(dir, 'to-fifo.json'), () => true)).rejects.toThrow(/not a file/);
+  });
+});
+
+describe('readFileLimited', () => {
+  it('reads a regular file with its size and time, through one handle', async () => {
+    const f = join(tempDir(), 'deck.pdf');
+    writeFileSync(f, pdfBytes);
+    const r = await readFileLimited(f, 100);
+    expect(r.bytes.toString()).toBe('%PDF-1.4 test');
+    expect({ size: r.size, mtimeMs: r.mtimeMs }).toEqual({ size: statSync(f).size, mtimeMs: statSync(f).mtimeMs });
+    // Its own memory: a view of a shared pool would send that pool over IPC.
+    expect(r.bytes.buffer.byteLength).toBe(pdfBytes.length);
+  });
+  it('refuses a file over the limit before reading it, and anything but a regular file', async () => {
+    const dir = tempDir();
+    const f = join(dir, 'big.pdf');
+    writeFileSync(f, '');
+    truncateSync(f, 1025);
+    await expect(readFileLimited(f, 1024)).rejects.toThrow(/too large/);
+    if (process.platform === 'win32') return;
+    await expect(readFileLimited(dir, 1024)).rejects.toThrow(/not a file/);
+    await expect(readFileLimited('/dev/zero', 1024)).rejects.toThrow(/not a file/);
+    const fifo = join(dir, 'fifo.pdf');
+    if (spawnSync('mkfifo', [fifo]).status !== 0) return; // no mkfifo
+    await expect(readFileLimited(fifo, 1024)).rejects.toThrow(/not a file/); // without waiting for a writer
   });
 });
 

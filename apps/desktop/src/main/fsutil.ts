@@ -1,6 +1,6 @@
 /* Inkslide desktop - file helpers (no Electron) */
 import { randomBytes } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import { access, type FileHandle, lstat, mkdir, open, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
@@ -131,11 +131,12 @@ const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
  * comes from the handle (fstat), and the read stops there: a file that grows
  * meanwhile is refused, one that shrinks gives what it has. `name` is for the errors.
  */
-async function readHandle(fh: FileHandle, name: string, maxBytes: number): Promise<Buffer> {
-  const st = await fh.stat();
+async function readHandle(fh: FileHandle, name: string, maxBytes: number, st?: Stats): Promise<Buffer> {
+  st ??= await fh.stat();
   if (!st.isFile()) throw new Error(`${name} is not a file`);
   if (st.size > maxBytes) throw new Error(`${name} is too large`);
-  const buf = Buffer.allocUnsafe(st.size);
+  // Not pooled, zero-filled: the bytes may cross IPC as a view, which clones its whole ArrayBuffer.
+  const buf = Buffer.alloc(st.size);
   let n = 0;
   while (n < buf.length) {
     const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
@@ -176,6 +177,22 @@ export async function readFileChecked(file: string, follow: FollowLink = () => t
   } catch (err) {
     if (isMissing(err)) return null;
     throw err;
+  }
+}
+
+/**
+ * Bytes of `file` (links followed: the user chose it) and its size and
+ * modification time, opened once: the file whose type and size are checked
+ * is the one read, a regular file of at most `maxBytes` (readHandle). For
+ * PDFs and imported notes.
+ */
+export async function readFileLimited(file: string, maxBytes: number): Promise<{ bytes: Buffer; size: number; mtimeMs: number }> {
+  const fh = await open(file, READ_FLAGS);
+  try {
+    const st = await fh.stat();
+    return { bytes: await readHandle(fh, basename(file), maxBytes, st), size: st.size, mtimeMs: st.mtimeMs };
+  } finally {
+    await fh.close();
   }
 }
 

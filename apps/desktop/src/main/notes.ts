@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { BACKUP_MIN_AGE_MS, BACKUP_SUFFIX, isUsableNotes, NOTES_SUFFIX, notesPathFor, OLD_COPIES_MAX_AGE_DAYS, type NotesBackup } from '@inkslide/annotate/io';
-import { canWriteIn, ensureDir, type FollowLink, readFileChecked, readTextIfExists, RefusedLinkError, writeFileAtomic } from './fsutil';
+import { canWriteIn, ensureDir, type FollowLink, MAX_PDF_BYTES, readFileChecked, readFileLimited, readTextIfExists, RefusedLinkError, writeFileAtomic } from './fsutil';
 import { fallbackBackupPath, fallbackNotesPath, isSha256, isStorageName, NOTES_DIR, sidecarStatePath, UNREADABLE_SUFFIX, unreadableNotesPath } from './paths';
 
 /** The PDF whose notes are read or written. */
@@ -41,7 +41,7 @@ async function hashOf(t: NotesTarget): Promise<string> {
     return t.sha256;
   }
   if (t.bytes) return sha256OfBytes(t.bytes);
-  if (t.path) return sha256OfBytes(await readFile(t.path));
+  if (t.path) return sha256OfBytes((await readFileLimited(t.path, MAX_PDF_BYTES)).bytes);
   throw new Error('notes need a PDF path, its sha256 or its bytes');
 }
 
