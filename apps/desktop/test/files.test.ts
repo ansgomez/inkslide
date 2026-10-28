@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { canWriteIn, readFileChecked, RefusedLinkError, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
+import { canWriteIn, MAX_TEXT_BYTES, readFileChecked, readFileLimited, RefusedLinkError, renameRetrying, sameFile, writeExport, writeFileAtomic } from '../src/main/fsutil';
 import {
   backupBeforeSave, BACKUP_MIN_AGE_MS, hasBackup, isUsableNotes, notesWritePath, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup,
   cleanupNotesStore, keepUnreadableFor, OLD_COPIES_MAX_AGE_DAYS,
@@ -131,6 +132,78 @@ describe('readFileChecked', () => {
     const r = await readFileChecked(join(dir, 'side.json'), swapLink).then(b => b?.toString(), (e: Error) => e.message);
     expect(r).not.toBe('secret');
   });
+  it('reads at most maxBytes (MAX_TEXT_BYTES by default)', async () => {
+    const f = join(tempDir(), 'deck.pdf.notes.json');
+    writeFileSync(f, '12345678');
+    expect((await readFileChecked(f, undefined, 8))?.toString()).toBe('12345678');
+    await expect(readFileChecked(f, undefined, 7)).rejects.toThrow(/too large/);
+    // Sparse: large on disk without taking space; refused before anything is read.
+    const big = join(tempDir(), 'big.pdf.notes.json');
+    writeFileSync(big, '');
+    truncateSync(big, MAX_TEXT_BYTES + 1);
+    await expect(readFileChecked(big)).rejects.toThrow(/too large/);
+  });
+  it.skipIf(process.platform === 'win32')('reads regular files only: no device through a link, no FIFO (without waiting for a writer)', async () => {
+    const dir = tempDir();
+    symlinkSync('/dev/zero', join(dir, 'zero.json'));
+    await expect(readFileChecked(join(dir, 'zero.json'), () => true)).rejects.toThrow(/not a file/);
+    const fifo = join(dir, 'fifo.json');
+    if (spawnSync('mkfifo', [fifo]).status !== 0) return; // no mkfifo
+    await expect(readFileChecked(fifo)).rejects.toThrow(/not a file/);
+    symlinkSync(fifo, join(dir, 'to-fifo.json'));
+    await expect(readFileChecked(join(dir, 'to-fifo.json'), () => true)).rejects.toThrow(/not a file/);
+  });
+});
+
+describe('readFileLimited', () => {
+  it('reads a regular file with its size and time, through one handle', async () => {
+    const f = join(tempDir(), 'deck.pdf');
+    writeFileSync(f, pdfBytes);
+    const r = await readFileLimited(f, 100);
+    expect(r.bytes.toString()).toBe('%PDF-1.4 test');
+    expect({ size: r.size, mtimeMs: r.mtimeMs }).toEqual({ size: statSync(f).size, mtimeMs: statSync(f).mtimeMs });
+    // Its own memory: a view of a shared pool would send that pool over IPC.
+    expect(r.bytes.buffer.byteLength).toBe(pdfBytes.length);
+  });
+  it('refuses a file over the limit before reading it, and anything but a regular file', async () => {
+    const dir = tempDir();
+    const f = join(dir, 'big.pdf');
+    writeFileSync(f, '');
+    truncateSync(f, 1025);
+    await expect(readFileLimited(f, 1024)).rejects.toThrow(/too large/);
+    if (process.platform === 'win32') return;
+    await expect(readFileLimited(dir, 1024)).rejects.toThrow(/not a file/);
+    await expect(readFileLimited('/dev/zero', 1024)).rejects.toThrow(/not a file/);
+    const fifo = join(dir, 'fifo.pdf');
+    if (spawnSync('mkfifo', [fifo]).status !== 0) return; // no mkfifo
+    await expect(readFileLimited(fifo, 1024)).rejects.toThrow(/not a file/); // without waiting for a writer
+  });
+});
+
+describe('writeExport', () => {
+  it('never replaces the open PDF, also not through a link', async () => {
+    const dir = tempDir();
+    const pdf = pdfIn(dir);
+    await expect(writeExport(pdf, new Uint8Array([1]), pdf)).rejects.toThrow(/cannot replace the PDF that is open/);
+    if (process.platform !== 'win32') {
+      symlinkSync(pdf, join(dir, 'link.pdf'));
+      await expect(writeExport(join(dir, 'link.pdf'), new Uint8Array([1]), pdf)).rejects.toThrow(/open/);
+    }
+    expect(readFileSync(pdf)).toEqual(Buffer.from(pdfBytes));
+    await writeExport(join(dir, 'out.pdf'), new Uint8Array([1, 2]), pdf);
+    expect([...readFileSync(join(dir, 'out.pdf'))]).toEqual([1, 2]);
+  });
+  it.skipIf(process.platform === 'win32')('replaces a link at the destination instead of writing to its target', async () => {
+    const dir = tempDir();
+    const important = join(dir, 'important-document.docx');
+    writeFileSync(important, 'keep me');
+    const dest = join(dir, 'deck-notes.pdf');
+    symlinkSync(important, dest);
+    await writeExport(dest, new TextEncoder().encode('%PDF-export'), null);
+    expect(readFileSync(important, 'utf8')).toBe('keep me');
+    expect(lstatSync(dest).isSymbolicLink()).toBe(false);
+    expect(readFileSync(dest, 'utf8')).toBe('%PDF-export');
+  });
 });
 
 describe('sameFile', () => {
@@ -225,13 +298,36 @@ describe('notes location', () => {
     writeFileSync(sidecar, 'restored');
     utimesSync(sidecar, past, past);
     expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('restored');
-    // A later sidecar write wins over the app-storage copy whatever its time.
+    // A later sidecar write wins over the app-storage copy whatever its time:
+    // the copy it replaces goes, with its record.
     await writeNotesFor({ path: pdf, sha256: sha }, 'latest', ud);
     utimesSync(sidecar, past, past);
     expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('latest');
+    expect(readdirSync(join(ud, 'notes'))).toEqual([]);
     // A broken record: the newer file wins, as without one.
+    await writeNotesFor({ path: null, sha256: sha }, 'pathless', ud);
     writeFileSync(join(ud, 'notes', `${sha}.sidecar.json`), '{ broken');
-    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('while-blocked');
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('pathless');
+  });
+
+  it.skipIf(isRoot || process.platform === 'win32')('reads the sidecar after it is written again with the text the record has (revert after a fallback)', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const pdf = pdfIn(dir);
+    const sidecar = `${pdf}.notes.json`;
+    const notes = (id: string) => JSON.stringify({ format: 'marp-notes', version: 2, deck: { source: 'pdf', sha256: sha },
+      pages: [{ id: 'p1', kind: 'slide', slide: 1, strokes: [{ id, tool: 'pen', color: '#000', size: 3, points: [[1, 1, 0.5], [9, 9, 0.5]] }] }] });
+    writeFileSync(sidecar, notes('S0'));
+    // The sidecar is read-only for a while: S1 goes to app storage, the record has S0's hash.
+    chmodSync(sidecar, 0o444);
+    await writeNotesFor({ path: pdf, sha256: sha }, notes('S1'), ud);
+    chmodSync(sidecar, 0o644);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe(notes('S1'));
+    // Backup S0, then revert to it: the sidecar is writable again and gets S0.
+    writeFileSync(join(ud, 'notes', `${sha}.notes.backup.json`), notes('S0'));
+    expect(await revertToBackupFor({ path: pdf, sha256: sha }, ud)).toBe(notes('S0'));
+    expect(readFileSync(sidecar, 'utf8')).toBe(notes('S0'));
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe(notes('S0'));
+    expect(readFileSync(join(ud, 'notes', `${sha}.notes.backup.json`), 'utf8')).toBe(notes('S1')); // S1 kept as the backup
   });
 
   it.skipIf(isRoot)('keeps reading app storage while the sidecar stays as it was', async () => {
@@ -246,6 +342,32 @@ describe('notes location', () => {
     const future = new Date(Date.now() + 3600_000);
     utimesSync(sidecar, future, future);
     expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('two');
+  });
+
+  it.skipIf(isRoot || process.platform === 'win32')('keeps app storage first when a sidecar appears that cannot be read yet', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const folder = join(dir, 'lectures');
+    const pdf = pdfIn(folder);
+    const sidecar = `${pdf}.notes.json`;
+    // No sidecar, folder read-only: S1 goes to app storage, recorded as replacing a missing sidecar.
+    chmodSync(folder, 0o555);
+    await writeNotesFor({ path: pdf, sha256: sha }, 'S1', ud);
+    chmodSync(folder, 0o755);
+    // A sidecar appears (a sync client), unreadable and unwritable for now.
+    writeFileSync(sidecar, 'synced-old');
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(sidecar, past, past);
+    chmodSync(sidecar, 0o000);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('S1');
+    await writeNotesFor({ path: pdf, sha256: sha }, 'S2', ud); // app storage again
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('S2');
+    // Readable now, unchanged since it appeared: the notes written since still win.
+    chmodSync(sidecar, 0o444);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('S2');
+    // Changed after that: the sidecar wins.
+    chmodSync(sidecar, 0o644);
+    writeFileSync(sidecar, 'synced-new');
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('synced-new');
   });
 
   it('stores notes of a PDF without a path by hash (given or computed)', async () => {

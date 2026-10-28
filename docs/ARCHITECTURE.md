@@ -138,14 +138,31 @@ Main checks every call:
   `pathForFile` (`webUtils.getPathForFile`, synchronous IPC so the grant is in place before
   the following `openPdf`). Main cannot tell a real drop from a renderer that names a path, so
   only `.pdf` files are granted that way; others open from their bytes;
-- hashes must be 64 hex characters, text and PDFs have size limits;
-- an export may not overwrite the open PDF (also not through a link or another letter case).
+- a PDF hash in a notes, backup or revert call must be one main computed itself
+  (`HashGrants` in `access.ts`): of a PDF it read, or of the bytes a PDF without a path
+  comes with (the preload sends them until main has taken that hash). A hash alone, of a
+  PDF never opened, reaches no notes in app storage;
+- hashes must be 64 hex characters, text and PDFs have size limits (notes in UTF-8 bytes,
+  256 MB; PDFs 2 GB). Main reads a PDF, an imported notes file or a sidecar through one
+  handle: only a regular file (no FIFO or device), its size taken from that handle, and the
+  read stops at the limit (`fsutil.ts`, `readFileLimited`, `readFileChecked`). PDF bytes
+  from the page (export, print) have the PDF limit, and a window prints one PDF at a time
+  (`print.ts`, `PrintGate`: another request while its dialog is open is refused);
+- an export may not overwrite the open PDF (also not through a link or another letter case);
+  that is the PDF the page reported with `opened()`, not one main read that the page then failed
+  to load or did not switch to (`CurrentPdf` in `openRequests.ts`),
+  and a symlink at the chosen name is replaced by the export, never written through
+  (`writeExport`).
 
 Main to renderer messages: `openRequest` (queued in the preload until the front end
 subscribes), `menuCommand` (Export, Import notes), `closeRequest`, and for presenter mode
 `presenterState` (to the app window) and `audience` (to the audience window). On window close, main
 cancels the close, asks the front end to flush its notes, and closes when the reply is `ok`.
-If saving fails, the user is asked. `will-quit` waits for notes writes still running. Open
+If saving fails, the user is asked; if the front end's close handler itself fails, the
+preload replies `failed` and main asks whether to close anyway (never closing unasked). Closing again while the front end is asked is cancelled
+too, so a double click or a second Cmd+Q does not skip the save. If the page does not reply
+within 15 s (a hung renderer), main asks whether to close anyway and lose the unsaved notes,
+again after each wait, but not while the page's own question is open (`closeHandshake.ts`). `will-quit` waits for notes writes still running. Open
 requests that come before the page has loaded wait in `OpenRequests` (the first one is
 `initialPath()`); a reloaded page gets the PDF it showed. Reload is in the menu of development
 builds only, since it skips the save before closing. If the page's renderer process dies
@@ -158,7 +175,11 @@ window simply closes.
 All windows (the app, the audience window of presenter mode and the hidden print window) are
 locked down by `harden.ts`: context isolation, sandbox, no Node; no navigation, no new windows;
 every permission request and check is refused except fullscreen. Only the app window hands
-http(s) links to the system browser; in the audience and print windows they are only refused.
+http(s) links to the system browser, and only after the user confirms each in a native dialog
+that shows its host and whole URL (`confirmLinks`; one question at a time, links over 2048
+characters dropped): the page cannot prove a click, and a compromised page could otherwise
+send data out in a URL. The front end has no links of its own today. In the audience and
+print windows links are only refused.
 
 ## Presenter mode
 

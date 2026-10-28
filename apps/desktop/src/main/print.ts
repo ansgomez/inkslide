@@ -28,6 +28,26 @@ export interface PrintOptions {
   toPdf?: string;
 }
 
+/**
+ * One print at a time for each window: each print makes a temp file and a
+ * hidden window with a PDF viewer, so a request that comes while one of the
+ * same window runs (its dialog open) is refused, not queued.
+ */
+export class PrintGate {
+  private readonly busy = new WeakSet<object>();
+
+  /** Run `print` for `owner` (the window that asked); rejects at once while another of its prints runs. */
+  async run<T>(owner: object, print: () => Promise<T>): Promise<T> {
+    if (this.busy.has(owner)) throw new Error('a print is already in progress');
+    this.busy.add(owner);
+    try {
+      return await print();
+    } finally {
+      this.busy.delete(owner);
+    }
+  }
+}
+
 /** File name for the temp copy: the export's name, without path or odd characters. */
 function printFileName(name: string): string {
   const base = basename(name || '').replace(/[^\p{L}\p{N} ._-]/gu, '_').replace(/^\.+/, '').slice(0, 120);

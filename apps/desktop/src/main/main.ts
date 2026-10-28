@@ -22,33 +22,31 @@
  */
 import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, net, protocol, screen, session, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { existsSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
-import { checkDroppedPdf, checkPath, PathGrants } from './access';
+import { checkDroppedPdf, checkPath, checkPdfBytes, checkText, HashGrants, notesTargetFor, PathGrants } from './access';
+import { CloseHandshake } from './closeHandshake';
 import { CrashRecovery } from './crashRecovery';
-import { sameFile, writeFileAtomic } from './fsutil';
-import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
+import { MAX_PDF_BYTES, MAX_TEXT_BYTES, readFileLimited, writeExport } from './fsutil';
+import { confirmLinks, lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
 import { buildMenu } from './menu';
 import {
   cleanupNotesStore, hasBackup, keepUnreadableFor, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup, revertToBackupFor,
   writeNotesFor, type NotesTarget,
 } from './notes';
-import { OpenRequests } from './openRequests';
+import { CurrentPdf, OpenRequests } from './openRequests';
 import { APP_ORIGIN, APP_SCHEME, isSha256, pdfFromArgv, resolveWebEntry, testEnv, webFileFor, type WebEntry } from './paths';
 import { loadPreferences, savePreferences } from './preferences';
 import { audienceEntry, audienceKey, audiencePlacement } from './presenter';
-import { printPdf } from './print';
+import { PrintGate, printPdf } from './print';
 import { RECENT_MAX, recentInfo, RecentFiles } from './recent';
 import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowState } from './windowState';
 
 /** true in a test build (dist.mjs --test-build, via build.mjs): packaged, it still takes the test variables. */
 declare const INKSLIDE_TEST_BUILD: boolean;
-
-const MAX_PDF_BYTES = 2 ** 31 - 1;
-const MAX_TEXT_BYTES = 256 * 2 ** 20;
 
 // Native Wayland when available (pen pressure, tilt and eraser need it).
 app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -90,6 +88,8 @@ function start(): void {
   let notesTarget: NotesTarget | null = null;
   let canRevert = false;
   const grants = new PathGrants(p => recent.has(p));
+  /** Hashes of the PDFs main read or was sent: the only ones notes calls may use. */
+  const hashes = new HashGrants();
 
   let win: BrowserWindow | null = null;
   let state: WindowState = loadWindowState(stateFile);
@@ -98,11 +98,32 @@ function start(): void {
   let webRoot: string | null = null;
   /** PDFs from the command line or the OS before the page loaded. */
   const opens = new OpenRequests();
-  /** The PDF opened last (default folder for dialogs, never an export target). */
-  let current: string | null = null;
-  /** Window close: the front end was asked to save first / said it may close. */
-  let closeAsked = false;
-  let closeOk = false;
+  /** The PDF the page has open (never an export target, reopened after a reload; dialogs start in its folder). */
+  const current = new CurrentPdf();
+  /** Window close: the front end saves first (closeHandshake.ts). */
+  const closing = new CloseHandshake({
+    request: () => win?.webContents.send(IPC.closeRequest),
+    close: () => win?.close(),
+    confirm: async reason => {
+      if (!win || win.isDestroyed()) return true;
+      const r = await dialog.showMessageBox(win, reason === 'timeout'
+        ? {
+          type: 'warning', buttons: ['Wait', 'Close Anyway'], defaultId: 0, cancelId: 0,
+          title: 'Inkslide', message: 'Inkslide is not responding while it saves the notes.',
+          detail: 'Wait a little longer, or close the window and lose the notes that are not saved yet.',
+        }
+        : {
+          type: 'warning', buttons: ['Keep Open', 'Close Anyway'], defaultId: 0, cancelId: 0,
+          title: 'Inkslide', message: 'The notes could not be saved before closing.',
+          detail: 'Close the window anyway and lose the notes that are not saved yet?',
+        });
+      return r.response === 1;
+    },
+    keptOpen: () => { quitting = false; }, // the user kept the window open
+    busy: () => pageDialogs > 0,
+  });
+  /** Dialogs open for the page (confirm()): while one is, a close does not time out. */
+  let pageDialogs = 0;
   /** The app quits once the window has closed (menu Quit, Cmd+Q). */
   let quitting = false;
   /** Notes writes in progress; quitting waits for them. */
@@ -200,7 +221,10 @@ function start(): void {
   }
 
   /** Folder the dialogs start in: the open PDF's, else Documents. */
-  const dialogDir = (): string => (current ? dirname(current) : app.getPath('documents'));
+  const dialogDir = (): string => {
+    const pdf = current.forDialogs;
+    return pdf ? dirname(pdf) : app.getPath('documents');
+  };
   // Dialogs are modal to the window when there is one.
   const openDialog = (o: Electron.OpenDialogOptions) => (win ? dialog.showOpenDialog(win, o) : dialog.showOpenDialog(o));
   const saveDialog = (o: Electron.SaveDialogOptions) => (win ? dialog.showSaveDialog(win, o) : dialog.showSaveDialog(o));
@@ -243,7 +267,7 @@ function start(): void {
     refreshMenu(); // Presenter Mode is enabled with a window
     const w = win;
     const wc = w.webContents;
-    closeAsked = closeOk = false;
+    closing.reset();
 
     w.once('ready-to-show', () => {
       if (smokeMode) return;
@@ -264,13 +288,12 @@ function start(): void {
       }
       if (!smokeMode) saveWindowState(stateFile, state);
       // Ask the front end to write its notes first (closeReply closes the
-      // window again). Closing once more while it is asked closes at once.
-      if (closeOk || closeAsked || !loaded) return;
-      e.preventDefault();
-      closeAsked = true;
-      wc.send(IPC.closeRequest);
+      // window again). Closing once more while it is asked waits for it too;
+      // if it does not reply, the user is asked.
+      if (!closing.closing(loaded)) e.preventDefault();
     });
     w.on('closed', () => {
+      closing.reset();
       audience?.close(); // presenter mode ends with the app window
       win = null;
       loaded = false;
@@ -278,8 +301,12 @@ function start(): void {
       refreshMenu(); // Presenter Mode needs a window
     });
 
-    // The page never navigates or opens windows; links go to the browser.
-    lockNavigation(wc, url => void shell.openExternal(url));
+    // The page never navigates or opens windows; links go to the browser
+    // once the user confirms them (the dialog shows where they lead).
+    lockNavigation(wc, confirmLinks(async url => (await dialog.showMessageBox(w, {
+      type: 'question', buttons: ['Cancel', 'Open in Browser'], defaultId: 0, cancelId: 0,
+      title: 'Inkslide', message: `Open a link to ${url.host} in your browser?`, detail: url.href,
+    })).response === 1, url => void shell.openExternal(url)));
 
     wc.on('did-start-loading', () => { loaded = false; });
     // A new page asks initialPath() again; a reload (menu in development,
@@ -288,7 +315,7 @@ function start(): void {
     let navigated = false;
     let reopen = true;
     wc.on('did-navigate', () => {
-      opens.newPage(navigated && reopen ? current : null);
+      opens.newPage(navigated && reopen ? current.open : null);
       navigated = true;
       reopen = true;
     });
@@ -299,7 +326,7 @@ function start(): void {
     // closes: there is nothing left to save.
     wc.on('render-process-gone', (_e, details) => {
       loaded = false;
-      if (closeAsked) {
+      if (closing.asking) {
         w.close();
         return;
       }
@@ -457,13 +484,7 @@ function start(): void {
     return value;
   }
 
-  const checkTarget = (ref: unknown, sha256: unknown): NotesTarget => ({ ...checkRef(ref), sha256: checkSha(sha256) });
-
-  function checkText(value: unknown): string {
-    if (typeof value !== 'string') throw new Error('notes must be a string');
-    if (value.length > MAX_TEXT_BYTES) throw new Error('notes too large');
-    return value;
-  }
+  const checkTarget = (ref: unknown, sha256: unknown): NotesTarget => notesTargetFor(checkRef(ref), checkSha(sha256), hashes);
 
   handle(IPC.openPdf, async (path?: unknown): Promise<PdfFile | null> => {
     let p: string | null;
@@ -487,15 +508,13 @@ function start(): void {
     return readPdf(p);
   });
 
-  /** Read a granted PDF and make it the current and most recent file. */
+  /** Read a granted PDF and make it the most recent file (the open one only once the page says so, opened()). */
   async function readPdf(p: string): Promise<PdfFile> {
-    const st = await stat(p);
-    if (!st.isFile()) throw new Error(`${basename(p)} is not a file`);
-    if (st.size > MAX_PDF_BYTES) throw new Error(`${basename(p)} is too large`);
-    const buf = await readFile(p);
+    const { bytes: buf, ...st } = await readFileLimited(p, MAX_PDF_BYTES);
+    hashes.grantBytes(buf); // the page's notes calls name this hash
     grants.grant(p); // also a recent file: its notes stay writable after Clear Recent
     void removeLegacyBackup(p);
-    current = p;
+    current.read(p);
     recent.add(p, { size: st.size, mtimeMs: st.mtimeMs });
     app.addRecentDocument(p);
     recentChanged();
@@ -510,6 +529,7 @@ function start(): void {
 
   handle(IPC.opened, (ref: unknown, sha256: unknown, pages?: unknown): void => {
     notesTarget = checkTarget(ref, sha256);
+    current.opened(notesTarget.path);
     if (notesTarget.path) recent.describe(notesTarget.path, { sha256: notesTarget.sha256, pages: typeof pages === 'number' ? pages : undefined });
     void updateRevert();
   });
@@ -542,8 +562,8 @@ function start(): void {
     return text;
   });
 
-  handle(IPC.exportPdf, async (bytes: unknown, suggestedName: unknown): Promise<boolean> => {
-    if (!(bytes instanceof Uint8Array)) throw new Error('export bytes must be a Uint8Array');
+  handle(IPC.exportPdf, async (value: unknown, suggestedName: unknown): Promise<boolean> => {
+    const bytes = checkPdfBytes(value, 'export');
     let name = basename(typeof suggestedName === 'string' && suggestedName ? suggestedName : 'annotated.pdf');
     if (extname(name).toLowerCase() !== '.pdf') name += '.pdf';
     const r = await saveDialog({
@@ -552,19 +572,19 @@ function start(): void {
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     });
     if (r.canceled || !r.filePath) return false;
-    if (current && await sameFile(r.filePath, current)) {
-      throw new Error('The export cannot replace the PDF that is open; choose another name.');
-    }
-    await writeFileAtomic(r.filePath, bytes);
+    await writeExport(r.filePath, bytes, current.open);
     return true;
   });
 
-  handle(IPC.print, (bytes: unknown, name: unknown): Promise<boolean> => {
-    if (!(bytes instanceof Uint8Array)) throw new Error('print bytes must be a Uint8Array');
-    return printPdf(bytes, typeof name === 'string' ? name : '', {
-      parent: win,
+  // One print at a time per window (PrintGate), of at most MAX_PDF_BYTES.
+  const prints = new PrintGate();
+  handle(IPC.print, (value: unknown, name: unknown): Promise<boolean> => {
+    const bytes = checkPdfBytes(value, 'print');
+    const parent = win!; // the sender, checked by handle()
+    return prints.run(parent, () => printPdf(bytes, typeof name === 'string' ? name : '', {
+      parent,
       toPdf: smokeMode ? testVars.printToPdf : undefined,
-    });
+    }));
   });
 
   handle(IPC.importNotes, async (): Promise<{ name: string; text: string } | null> => {
@@ -576,16 +596,20 @@ function start(): void {
     });
     const p = !r.canceled && r.filePaths[0];
     if (!p) return null;
-    if ((await stat(p)).size > MAX_TEXT_BYTES) throw new Error(`${basename(p)} is too large`);
-    return { name: basename(p), text: await readFile(p, 'utf8') };
+    return { name: basename(p), text: (await readFileLimited(p, MAX_TEXT_BYTES)).bytes.toString('utf8') };
   });
 
   handle(IPC.confirm, async (message: unknown): Promise<boolean> => {
-    const r = await messageBox({
-      type: 'question', buttons: ['OK', 'Cancel'], defaultId: 0, cancelId: 1,
-      title: 'Inkslide', message: String(message ?? '').slice(0, 4000),
-    });
-    return r.response === 0;
+    pageDialogs++;
+    try {
+      const r = await messageBox({
+        type: 'question', buttons: ['OK', 'Cancel'], defaultId: 0, cancelId: 1,
+        title: 'Inkslide', message: String(message ?? '').slice(0, 4000),
+      });
+      return r.response === 0;
+    } finally {
+      pageDialogs--;
+    }
   });
 
   handle(IPC.initialPath, (): string | null => opens.takeInitial());
@@ -630,14 +654,7 @@ function start(): void {
     } catch (_) {
       return;
     }
-    if (!win || !closeAsked) return;
-    closeAsked = false;
-    if (ok === true) {
-      closeOk = true;
-      win.close();
-    } else {
-      quitting = false; // the user kept the window open
-    }
+    if (win) closing.reply(ok);
   });
 
   // ── App events ───────────────────────────────────────────────

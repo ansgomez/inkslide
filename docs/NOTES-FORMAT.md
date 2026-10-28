@@ -237,12 +237,16 @@ so in a banner. Once saved, the notes are a v2 file.
 - **App storage:** `<userData>/notes/<sha256>.notes.json` when the sidecar cannot be written
   (the PDF's folder or an existing sidecar is not writable, or the write fails), or the PDF has
   no path. Next to it, `<sha256>.sidecar.json` records which sidecar the notes replace and the
-  SHA-256 of what it held then. `<userData>` is `~/.config/Inkslide` on Linux,
+  SHA-256 of what it held then (or that it was missing; a sidecar that could not be read gets no
+  record). `<userData>` is `~/.config/Inkslide` on Linux,
   `%APPDATA%\Inkslide` on Windows and `~/Library/Application Support/Inkslide` on macOS.
 - **Reading:** both files exist when the sidecar could not be written for a while. App storage
-  wins while the sidecar still holds what was recorded; once the sidecar changes (a later save,
-  or a backup put back, whatever its date) the sidecar wins. Without a record (notes saved
-  without a path) the newer file by modification time wins, the sidecar on a tie. If only one
+  wins while the sidecar still holds what was recorded, or cannot be read; once the sidecar
+  changes (a later save, or a backup put back, whatever its date) the sidecar wins. When the
+  app writes that sidecar again, the app-storage notes it replaced and their record are
+  deleted, so they cannot win again when the sidecar later holds the recorded text once more
+  (Revert to Backup). Without a record (notes saved without a path, or while the sidecar could
+  not be read) the newer file by modification time wins, the sidecar on a tie. If only one
   exists, that one is read.
 - **Writing** is crash-safe: a temp file in the same folder, `fsync`, rename over the old file,
   then `fsync` of the folder. A crash leaves the old or the new file, never half of one. On

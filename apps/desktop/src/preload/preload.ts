@@ -6,13 +6,28 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import { IPC, type InkslideBridge, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
 
-/** Main only needs the bytes to hash them when there is neither a path nor a sha256. */
+/** Hashes of PDFs without a path that main has hashed itself: later calls send only the hash. */
+const knownHashes = new Set<string>();
+
+/**
+ * Main takes a hash only if it computed it (access.ts HashGrants): a PDF
+ * with a path it has read; one without a path goes with its bytes until
+ * main has accepted its hash.
+ */
 const refOf = (pdf: PdfFile, sha256?: string): PdfRef => {
   if (!pdf || typeof pdf !== 'object') throw new TypeError('pdf must be a PdfFile');
   const ref: PdfRef = { path: pdf.path ?? null, name: String(pdf.name ?? '') };
-  if (!ref.path && sha256 === undefined) ref.bytes = pdf.bytes;
+  if (!ref.path && (sha256 === undefined || !knownHashes.has(sha256))) ref.bytes = pdf.bytes;
   return ref;
 };
+
+/** A notes call: the PDF's ref, then `args` (by default the hash); a hash main accepted with the bytes is remembered. */
+function notesCall<R>(channel: string, pdf: PdfFile, sha256: string | undefined, args: unknown[] = [sha256]): Promise<R> {
+  const ref = refOf(pdf, sha256);
+  const r: Promise<R> = ipcRenderer.invoke(channel, ref, ...args);
+  if (ref.bytes && typeof sha256 === 'string') r.then(() => knownHashes.add(sha256), () => {});
+  return r;
+}
 
 /** Open requests that came before the front end subscribed are kept and replayed. */
 const openHandlers = new Set<(path: string) => void>();
@@ -33,12 +48,16 @@ ipcRenderer.on(IPC.recentChanged, () => {
   recentHandlers.forEach(h => h());
 });
 
-/** Before the window closes, the front end writes its notes; ok = false keeps it open. */
+/**
+ * Before the window closes, the front end writes its notes; ok = false keeps
+ * it open. A handler that fails replies 'failed': main asks the user whether
+ * to close anyway, so the failure neither loses the notes unasked nor makes
+ * the window impossible to close.
+ */
 let closeHandler: (() => Promise<boolean>) | null = null;
 ipcRenderer.on(IPC.closeRequest, () => {
   const h = closeHandler;
-  // A failing handler must not make the window impossible to close.
-  void Promise.resolve().then(() => (h ? h() : true)).then(ok => ok !== false, () => true)
+  void Promise.resolve().then(() => (h ? h() : true)).then(ok => ok !== false, () => 'failed' as const)
     .then(ok => ipcRenderer.send(IPC.closeReply, ok));
 });
 
@@ -59,12 +78,12 @@ ipcRenderer.on(IPC.audience, (_e: IpcRendererEvent, message: unknown) => {
 const bridge: InkslideBridge = {
   platform: 'electron',
   openPdf: path => ipcRenderer.invoke(IPC.openPdf, path),
-  readNotes: (pdf, sha256) => ipcRenderer.invoke(IPC.readNotes, refOf(pdf, sha256), sha256),
-  writeNotes: (pdf, text, sha256) => ipcRenderer.invoke(IPC.writeNotes, refOf(pdf, sha256), text, sha256),
-  readBackup: (pdf, sha256) => ipcRenderer.invoke(IPC.readBackup, refOf(pdf, sha256), sha256),
-  opened: (pdf, info) => ipcRenderer.invoke(IPC.opened, refOf(pdf, info?.sha256), info?.sha256, info?.pages),
-  keepUnreadableNotes: (pdf, sha256) => ipcRenderer.invoke(IPC.keepUnreadableNotes, refOf(pdf, sha256), sha256),
-  revertToBackup: (pdf, sha256) => ipcRenderer.invoke(IPC.revertToBackup, refOf(pdf, sha256), sha256),
+  readNotes: (pdf, sha256) => notesCall(IPC.readNotes, pdf, sha256),
+  writeNotes: (pdf, text, sha256) => notesCall(IPC.writeNotes, pdf, sha256, [text, sha256]),
+  readBackup: (pdf, sha256) => notesCall(IPC.readBackup, pdf, sha256),
+  opened: (pdf, info) => notesCall(IPC.opened, pdf, info?.sha256, [info?.sha256, info?.pages]),
+  keepUnreadableNotes: (pdf, sha256) => notesCall(IPC.keepUnreadableNotes, pdf, sha256),
+  revertToBackup: (pdf, sha256) => notesCall(IPC.revertToBackup, pdf, sha256),
   exportPdf: (bytes, suggestedName) => ipcRenderer.invoke(IPC.exportPdf, bytes, suggestedName),
   print: (bytes, name) => ipcRenderer.invoke(IPC.print, bytes, name),
   importNotes: () => ipcRenderer.invoke(IPC.importNotes),

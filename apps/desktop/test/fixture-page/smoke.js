@@ -87,6 +87,25 @@ async function basic() {
   const memPdf = { path: null, name: 'mem.pdf', bytes: pdf.bytes };
   await bridge.writeNotes(memPdf, text, undefined);
   assert((await bridge.readNotes(memPdf, sha)) === text, 'pathless notes by hash');
+  assert((await bridge.readNotes(memPdf, sha)) === text, 'pathless notes by hash, the hash accepted before');
+
+  // A hash main did not compute reaches no notes: made up, or with bytes that are not that PDF.
+  const otherSha = 'f'.repeat(64);
+  for (const [what, ref] of [['pathless', { path: null, name: 'x.pdf', bytes: new Uint8Array() }], ['with a path', pdf]]) {
+    let refused = false;
+    await bridge.readNotes(ref, otherSha).catch(() => { refused = true; });
+    assert(refused, `readNotes refuses a hash main did not compute (${what})`);
+    refused = false;
+    await bridge.writeNotes(ref, text, otherSha).catch(() => { refused = true; });
+    assert(refused, `writeNotes refuses a hash main did not compute (${what})`);
+  }
+  // A pathless PDF's own bytes make its hash known.
+  const dropped = new TextEncoder().encode('%PDF-1.4 dropped without a path');
+  const droppedSha = await sha256Hex(dropped);
+  const droppedPdf = { path: null, name: 'dropped.pdf', bytes: dropped };
+  assert((await bridge.readNotes(droppedPdf, droppedSha)) === null, 'pathless PDF: its bytes make its hash known');
+  await bridge.writeNotes(droppedPdf, text, droppedSha);
+  assert((await bridge.readNotes(droppedPdf, droppedSha)) === text, 'pathless PDF: notes by its hash');
 
   return { name: pdf.name, size: pdf.bytes.length, sha256: sha };
 }
@@ -117,7 +136,12 @@ async function close() {
 /** Print the PDF from the command line (main writes it to INKSLIDE_PRINT_TO_PDF instead of the dialog). */
 async function print() {
   const pdf = await bridge.openPdf(await bridge.initialPath());
-  const printed = await bridge.print(pdf.bytes, pdf.name);
+  // A second print while one runs is refused (one at a time per window).
+  const first = bridge.print(pdf.bytes, pdf.name);
+  let refused = '';
+  await bridge.print(pdf.bytes, pdf.name).catch(e => { refused = String(e.message || e); });
+  assert(/already in progress/.test(refused), `second print refused: ${refused}`);
+  const printed = await first;
   assert(printed === true, 'print resolved true');
   return { printed: pdf.name };
 }
