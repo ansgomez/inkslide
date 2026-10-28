@@ -118,6 +118,8 @@ The image has the resolution of the page on screen (at least twice the screen si
 system clipboard as a PNG, to paste into other programs; the desktop app does not let its pages
 write to the system clipboard themselves, so there the snapshot stays within the app window. An image copied in
 another program pastes into Inkslide with Ctrl/Cmd+V too (centered, at most 80 % of the page).
+It wins over a snapshot that stayed within the app window: there, while the system clipboard holds
+an image from another program, Ctrl/Cmd+V pastes that image and the paste button the snapshot.
 
 A page holds at most 32 images and a PDF's notes at most 256, with about 24 MB of image data in
 all; a paste beyond that is refused with a message. Notes with images are saved in a newer

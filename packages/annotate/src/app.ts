@@ -12,7 +12,7 @@
  *   app.keymap.push(...);                                          // optional
  *   app.mount();                                                   // keys + toolbar
  */
-import { clipForPaste, getClip, makeClip, markClipSynced, placeItems, serializeClip, setClip, PASTE_OFFSET, type Clip } from './clipboard';
+import { clipForPaste, getClip, makeClip, markClipSynced, placeItems, serializeClip, setClip, CLIP_FORMAT, PASTE_OFFSET, type Clip } from './clipboard';
 import { rectBBox, strokeBBox, unionBBox, type RectLike, type Stroke } from './geometry';
 import { createImage, type NotesDoc, type PageImage } from './model';
 import { attachInput, type InputController } from './input';
@@ -303,13 +303,14 @@ export function createAnnotator(opts: AnnotatorOptions): Annotator {
     const data = e.clipboardData;
     if (e.type === 'paste') {
       // An image or files on the clipboard have types but no text.
-      const clip = clipForPaste(data ? data.getData('text/plain') : null, !!(data && data.types && data.types.length));
+      const text = data ? data.getData('text/plain') : null;
+      const file = data && data.files ? [...data.files].find(f => f.type === 'image/png' || f.type === 'image/jpeg') : null;
+      // An image with no clip text of Inkslide's next to it was copied in another program: it wins
+      // over this window's clip, also one that never reached the system clipboard (Electron).
+      const foreignImage = !!file && !!opts.importImage && !(typeof text === 'string' && text.includes(CLIP_FORMAT));
+      const clip = foreignImage ? null : clipForPaste(text, !!(data && data.types && data.types.length));
       if (clip) app.pasteClip(clip);
-      else {
-        // No clip of Inkslide's: an image copied in another program, if the host can take it.
-        const file = data && data.files ? [...data.files].find(f => f.type === 'image/png' || f.type === 'image/jpeg') : null;
-        if (file) void pasteImage(file);
-      }
+      else if (file) void pasteImage(file);
       return;
     }
     const clip = selectionClip();

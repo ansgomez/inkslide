@@ -261,4 +261,33 @@ describe('annotator snapshot', () => {
     expect(pasted.x).toBeCloseTo(96);
     expect(pasted.y).toBeCloseTo(54);
   });
+
+  it('an image from another program wins over a clip that never reached the system clipboard', async () => {
+    const importImage = vi.fn(async (): Promise<Capture | null> => ({ src: PNG, width: 100, height: 50 }));
+    const { app, doc } = setup({ importImage });
+    app.mount();
+    setClip(makeClip([], [960, 540], [img('stale', 0, 0, 10, 10)])); // never synced (the clipboard refuses)
+    const paste = (clipboardData: object) => {
+      const event = new Event('paste', { cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(event, 'clipboardData', { value: clipboardData });
+      app.clipboardKey('paste');
+      window.dispatchEvent(event);
+    };
+    const file = new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' });
+    paste({ getData: () => '', types: ['Files'], files: [file] });
+    await tick();
+    await tick();
+    expect(importImage).toHaveBeenCalledWith(file);
+    expect(doc.images('p1').map(i => i.w)).toEqual([100]);
+    // An empty clipboard still pastes the window's clip.
+    paste({ getData: () => '', types: [], files: [] });
+    await tick();
+    expect(doc.images('p1').map(i => i.w)).toEqual([100, 10]);
+    // An image next to Inkslide's own clip text (a snapshot on the system clipboard) pastes the clip.
+    const text = serializeClip(makeClip([], [960, 540], [img('own', 300, 300, 20, 20)])!);
+    paste({ getData: () => text, types: ['text/plain', 'Files'], files: [file] });
+    await tick();
+    expect(importImage).toHaveBeenCalledTimes(1);
+    expect(doc.images('p1').map(i => i.w)).toEqual([100, 10, 20]);
+  });
 });
