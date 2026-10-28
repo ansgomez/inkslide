@@ -72,15 +72,17 @@ export const notesKey = (pdf: Pick<PdfFile, 'name'>, sha256?: string): string =>
 const fileName = (key: string): string => safeFileName(key, '.json');
 
 /**
- * When each copy of a PDF's notes was saved, ms: `local` the localStorage
- * copy, `opfs` the OPFS file. The time is when the save began (when its text
- * was taken), not when the write ended, so a write that ends late does not
- * pass for newer than a copy taken after it began. Notes saved before these
- * times were kept have none: then the OPFS file is read first, as it was.
+ * When each copy of a PDF's notes was saved: `local` the localStorage copy,
+ * `opfs` the OPFS file. Each is the stamp its save took when it began (when
+ * its text was taken, see stampOf), not when the write ended, so a write
+ * that ends late does not pass for newer than a copy taken after it began.
+ * `seq` is the last stamp handed out. Notes saved before these times were
+ * kept have none: then the OPFS file is read first, as it was.
  */
 interface NotesTimes {
   local?: number;
   opfs?: number;
+  seq?: number;
 }
 
 const timeKey = (key: string): string => NOTES_TIME_PREFIX + key.slice(NOTES_KEY_PREFIX.length);
@@ -90,14 +92,34 @@ function readTimes(key: string): NotesTimes {
   try {
     const t = JSON.parse(storedItem(timeKey(key)) || '{}') as NotesTimes;
     const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
-    return { local: num(t?.local), opfs: num(t?.opfs) };
+    return { local: num(t?.local), opfs: num(t?.opfs), seq: num(t?.seq) };
   } catch (_) {
     return {};
   }
 }
 
-function writeTimes(key: string, t: NotesTimes): void {
-  storeItem(timeKey(key), t.local === undefined && t.opfs === undefined ? null : JSON.stringify(t));
+/** Store the times (merged with those there: `seq` stays); false if storage is full or blocked. */
+function writeTimes(key: string, t: NotesTimes): boolean {
+  const all = { ...readTimes(key), ...t };
+  try {
+    localStorage.setItem(timeKey(key), JSON.stringify(all));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * A new stamp for a save or checkpoint of a key's notes: the time in ms, but
+ * always above every stamp handed out before (`seq`), so of two taken in the
+ * same millisecond the later one is still the newer. Stamps stay comparable
+ * with the plain times older markers hold and with OPFS modification times.
+ */
+function stampOf(key: string): number {
+  const t = readTimes(key);
+  const stamp = Math.max(Date.now(), (t.seq ?? 0) + 1, (t.local ?? 0) + 1, (t.opfs ?? 0) + 1);
+  writeTimes(key, { seq: stamp });
+  return stamp;
 }
 
 /**
@@ -147,24 +169,25 @@ async function readSaved(key: string): Promise<string | null> {
 }
 
 /**
- * Write the notes taken at time `at`: OPFS, else localStorage (throws when
- * full). The other copy is removed, unless it is newer than `at` (taken
- * after this save began): then it stays and is the one read.
+ * Write the notes taken with stamp `at` (stampOf, when the save began): OPFS,
+ * else localStorage (throws when full). The other copy is removed, unless it
+ * is newer than `at` (taken after this save began): then it stays and is the
+ * one read.
  */
-async function writeSaved(key: string, text: string, at = Date.now()): Promise<void> {
+async function writeSaved(key: string, text: string, at = stampOf(key)): Promise<void> {
   if (await opfsWrite(key, text)) {
     const times = readTimes(key);
-    if (times.local !== undefined && times.local > at) writeTimes(key, { ...times, opfs: at });
+    if (times.local !== undefined && times.local > at) writeTimes(key, { opfs: at });
     else {
       storeItem(key, null); // do not leave an older copy behind
-      writeTimes(key, { opfs: at });
+      writeTimes(key, { local: undefined, opfs: at });
     }
     return;
   }
   const times = readTimes(key);
   if (times.local !== undefined && times.local > at) return; // the copy there is newer
   localStorage.setItem(key, text); // throws when full: autosave reports it and retries
-  writeTimes(key, { ...times, local: at });
+  writeTimes(key, { local: at });
   // An older OPFS copy would be in the way; if it can not be removed, the times say which is newer.
   if (canWriteOpfs()) await opfsRemove(key);
 }
@@ -177,21 +200,21 @@ async function writeSaved(key: string, text: string, at = Date.now()): Promise<v
 export const CHECKPOINT_MAX_CHARS = 1_000_000;
 
 /**
- * Write `text`, the notes as they are now, to localStorage with the time
- * `now` (checkpointNotes). The next open reads it unless a save that began
- * later wrote OPFS; a save that began earlier and ends later leaves it be
- * (writeSaved), and one that begins later removes it.
+ * Write `text`, the notes as they are now, to localStorage with a new stamp
+ * (checkpointNotes). The next open reads it unless a save that began later
+ * wrote OPFS; a save that began earlier (even in the same millisecond: its
+ * stamp is lower) and ends later leaves it be (writeSaved), and one that
+ * begins later removes it.
  */
-function checkpointOf(key: string, text: string, now = Date.now()): boolean {
+function checkpointOf(key: string, text: string): boolean {
   if (text.length > CHECKPOINT_MAX_CHARS) return false;
-  const times = readTimes(key);
+  const stamp = stampOf(key);
   try {
     localStorage.setItem(key, text);
-    localStorage.setItem(timeKey(key), JSON.stringify({ ...times, local: now }));
-    return true;
   } catch (_) {
-    return false; // full or blocked; a copy without its time is not read before OPFS
+    return false; // full or blocked
   }
+  return writeTimes(key, { local: stamp }); // a copy without its time is not read before OPFS
 }
 
 // ── Backup and kept unreadable notes ───────────────────────────
@@ -261,7 +284,7 @@ async function writeBackup(key: string, text: string): Promise<boolean> {
  * read or written is logged and does not fail the save.
  */
 async function saveWithBackup(key: string, text: string): Promise<void> {
-  const at = Date.now();
+  const at = stampOf(key);
   const before = await backupDue(key).catch(e => {
     console.warn('The notes backup failed', e);
     return null;

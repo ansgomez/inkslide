@@ -525,6 +525,52 @@ describe('web adapter notes checkpoint (leaving the page)', () => {
     expect(localStorage.getItem(notesKey(pdf, 'abc'))).toBeNull();
   });
 
+  it('a save that began in the same millisecond before it does not remove it (the clock stands still)', async () => {
+    const { opfs, a } = setup(); // Date.now() stays at 1_000_000 throughout
+    await a.writeNotes(pdf, 'saved', 'abc');
+    let open!: () => void;
+    opfs.state.closeGate = new Promise(r => { open = r; });
+    const late = a.writeNotes(pdf, 'older', 'abc');
+    await new Promise(r => setTimeout(r, 0));
+    expect(a.checkpointNotes(pdf, 'newest', 'abc')).toBe(true);
+    opfs.state.closeGate = null;
+    open();
+    await late;
+    expect(localStorage.getItem(notesKey(pdf, 'abc'))).toBe('newest');
+    expect(await a.readNotes(pdf, 'abc')).toBe('newest');
+    // A save begun after it, still in the same millisecond, takes over.
+    await a.writeNotes(pdf, 'newest + 1', 'abc');
+    expect(await a.readNotes(pdf, 'abc')).toBe('newest + 1');
+    expect(localStorage.getItem(notesKey(pdf, 'abc'))).toBeNull();
+  });
+
+  it('an older save falling back to localStorage in the same millisecond does not overwrite it', async () => {
+    const { opfs, a } = setup();
+    await a.writeNotes(pdf, 'saved', 'abc');
+    let open!: () => void;
+    opfs.state.closeGate = new Promise(r => { open = r; });
+    opfs.state.failClose = true; // the OPFS write fails: the save goes to localStorage
+    const late = a.writeNotes(pdf, 'older', 'abc');
+    await new Promise(r => setTimeout(r, 0));
+    expect(a.checkpointNotes(pdf, 'newest', 'abc')).toBe(true);
+    opfs.state.closeGate = null;
+    open();
+    await late;
+    expect(localStorage.getItem(notesKey(pdf, 'abc'))).toBe('newest');
+    expect(await a.readNotes(pdf, 'abc')).toBe('newest');
+  });
+
+  it('markers of an older version (plain times, no stamp count) still decide', async () => {
+    const { opfs } = setup();
+    const file = notesKey(pdf, 'abc').replace(/[^A-Za-z0-9_-]/g, '_') + '.json';
+    opfs.files.set(file, 'in opfs');
+    localStorage.setItem(notesKey(pdf, 'abc'), 'in localStorage');
+    localStorage.setItem('inkslide-notes-time:abc', JSON.stringify({ local: 900_000, opfs: 800_000 }));
+    expect(await createWebAdapter().readNotes(pdf, 'abc')).toBe('in localStorage');
+    localStorage.setItem('inkslide-notes-time:abc', JSON.stringify({ local: 800_000, opfs: 900_000 }));
+    expect(await createWebAdapter().readNotes(pdf, 'abc')).toBe('in opfs');
+  });
+
   it('never hides notes that another save wrote to OPFS later', async () => {
     const { a } = setup();
     expect(a.checkpointNotes(pdf, 'checkpoint', 'abc')).toBe(true);
