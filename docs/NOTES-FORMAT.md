@@ -177,7 +177,9 @@ next to `strokes`, so a reader that skips the version check keeps the ink.
 page holds at most 32 images, a file at most 256, with at most 24 000 000 characters of `src`
 in all (kept pages count). An image is at most 4096 pixels on a side and 16 000 000 pixels in
 all, whatever its file size: a small PNG can hold a huge image, and decoding one (on screen, in
-a snapshot, in the export) would take seconds and gigabytes. The limits keep the notes file small
+a snapshot, in the export) would take seconds and gigabytes. The images of a page have at most
+64 000 000 pixels in all, those of a file 256 000 000 (each pixel decodes to 4 bytes: 256 MB and
+1 GB); a snapshot has at most 2048 × 2048, about 4 MP. The limits keep the notes file small
 enough to autosave: every save serializes the whole file, base64 image data included, so 24 MB
 of images means writing about 24 MB a few seconds after each change.
 The snapshot tool makes images of at most 2048 px on the long side (PNG; JPEG at 0.9 quality

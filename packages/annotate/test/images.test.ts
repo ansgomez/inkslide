@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_COLOR_LENGTH, MAX_DOC_IMAGES, MAX_ID_LENGTH, MAX_IMAGE_CHARS, MAX_IMAGE_PIXELS, MAX_IMAGE_SIDE, MAX_PAGE_IMAGES, NotesDoc,
+  MAX_COLOR_LENGTH, MAX_DOC_IMAGE_PIXELS, MAX_DOC_IMAGES, MAX_PAGE_IMAGE_PIXELS, imagePixels, MAX_ID_LENGTH, MAX_IMAGE_CHARS, MAX_IMAGE_PIXELS, MAX_IMAGE_SIDE, MAX_PAGE_IMAGES, NotesDoc,
   VERSION, createImage, createStroke, imageInfo, imageType,
   type NotesJSON, type PageImage,
 } from '../src/model';
@@ -190,6 +190,40 @@ describe('NotesDoc images', () => {
     }
     expect(rest % MAX_PAGE_IMAGES).toBe(0);
     expect(doc.imageRoom('p19', [img('y')])).toMatch(/document can hold at most/);
+  });
+
+  it('limits the decoded pixels of the images per page and per document', () => {
+    expect([MAX_PAGE_IMAGE_PIXELS, MAX_DOC_IMAGE_PIXELS]).toEqual([64_000_000, 256_000_000]);
+    const big = dataUrl('image/png', pngHead(4000, 4000)); // 16 MP each
+    const at = (id: string) => createImage({ id, x: 0, y: 0, w: 10, h: 10, src: big });
+    expect(imagePixels(at('a'))).toBe(16_000_000);
+    const doc = pdfDoc(10);
+    doc.addItems('p1', [], ['a', 'b', 'c', 'd'].map(at));
+    expect(doc.imageRoom('p1', [at('e')])).toMatch(/page can have at most 64 megapixels/);
+    expect(() => doc.addItems('p1', [], [at('e')])).toThrow(/megapixels/);
+    expect(doc.imageRoom('p1', [img('small')])).toMatch(/megapixels/); // full: even a small one
+    for (const p of ['p2', 'p3', 'p4']) doc.addItems(p, [], [1, 2, 3, 4].map(k => at(`${p}-${k}`)));
+    expect(doc.imageRoom('p5', [at('f')])).toMatch(/document can have at most 256 megapixels/);
+    expect(doc.imageRoom('p5', [img('tiny')])).toMatch(/256 megapixels/); // exactly full: not even 8 pixels
+    doc.clearPage('p4');
+    expect(doc.imageRoom('p5', [at('f')])).toBeNull();
+  });
+
+  it('skips images over the pixel budgets on load, with a warning', () => {
+    const big = dataUrl('image/png', pngHead(4000, 4000));
+    const doc = pdfDoc(10);
+    const pages = Array.from({ length: 6 }, (_, k) => ({
+      id: `p${k + 1}`, kind: 'slide', slide: k + 1, strokes: [],
+      images: Array.from({ length: k === 0 ? 5 : 3 }, (_, i) => ({ id: `i${k}-${i}`, x: 0, y: 0, w: 1, h: 1, src: big })),
+    }));
+    const { warnings } = loadNotesText(doc, JSON.stringify({
+      format: 'marp-notes', version: 3, deck: { source: 'pdf', title: 'a', slides: 10, size: [960, 540], sha256: 'abc' }, pages,
+    }));
+    expect(doc.images('p1')).toHaveLength(4); // 64 MP
+    const total = [1, 2, 3, 4, 5, 6].reduce((n, k) => n + doc.images(`p${k}`).length, 0);
+    expect(total).toBe(16); // 256 MP
+    expect(warnings.filter(w => /megapixels of images on the page/.test(w))).toHaveLength(1);
+    expect(warnings.filter(w => /megapixels of images in the file/.test(w))).toHaveLength(3);
   });
 
   it('refuses images whose data would make the notes file too large', () => {

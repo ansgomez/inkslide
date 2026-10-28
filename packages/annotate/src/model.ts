@@ -387,13 +387,40 @@ export function createImage(input: ImageInput): PageImage {
   if (!coord(w) || !coord(h) || !(w >= MIN_IMAGE_SIZE) || !(h >= MIN_IMAGE_SIZE)) {
     throw new Error(`Image size must be numbers from ${MIN_IMAGE_SIZE} to ${MAX_COORD}`);
   }
-  return { id: itemId(id), x, y, w, h, src: src as string };
+  const image: PageImage = { id: itemId(id), x, y, w, h, src: src as string };
+  pixelCache.set(image, info.width * info.height);
+  return image;
 }
 
 /** Images and data URL characters in use (see NotesDoc.imageRoom). */
 interface ImageBudget {
   count: number;
   chars: number;
+  /** Decoded pixels of all images (see imagePixels). */
+  pixels: number;
+}
+
+/**
+ * Most decoded pixels of the images of one page, and of a document. Each
+ * image is limited (MAX_IMAGE_PIXELS), but 32 large ones on a page decode to
+ * about 2 GB (4 bytes a pixel) on screen, in a snapshot or in the export. A
+ * snapshot is at most 2048×2048 (4.2 MP), usually much less: a page holds 15
+ * of the largest, a document 61.
+ */
+export const MAX_PAGE_IMAGE_PIXELS = 64_000_000, MAX_DOC_IMAGE_PIXELS = 256_000_000;
+
+/** Pixels of images by object (images are immutable), so the budgets do not read every image header again. */
+const pixelCache = new WeakMap<object, number>();
+
+/** Decoded pixels of an image (width × height from its data); 0 if its data is not a valid image. */
+export function imagePixels(image: { src?: unknown }): number {
+  let n = pixelCache.get(image);
+  if (n === undefined) {
+    const info = imageInfo(image && image.src);
+    n = info ? info.width * info.height : 0;
+    if (image && typeof image === 'object') pixelCache.set(image, n);
+  }
+  return n;
 }
 
 // ── History ────────────────────────────────────────────────────
@@ -635,16 +662,25 @@ export class NotesDoc {
     if (used.chars + chars > MAX_DOC_IMAGE_CHARS) {
       return `The images of a document can take at most ${Math.round(MAX_DOC_IMAGE_CHARS / 1e6)} MB of the notes file.`;
     }
+    const pixels = images.reduce((n, i) => n + imagePixels(i), 0);
+    const pagePixels = this.images(pageId).reduce((n, i) => n + imagePixels(i), 0);
+    if (pagePixels + pixels > MAX_PAGE_IMAGE_PIXELS) {
+      return `The images of a page can have at most ${MAX_PAGE_IMAGE_PIXELS / 1e6} megapixels in all.`;
+    }
+    if (used.pixels + pixels > MAX_DOC_IMAGE_PIXELS) {
+      return `The images of a document can have at most ${MAX_DOC_IMAGE_PIXELS / 1e6} megapixels in all.`;
+    }
     return null;
   }
 
   /** Images and their data URL characters on all pages (kept pages too: they are saved back). */
   private imageBudget(): ImageBudget {
-    const used: ImageBudget = { count: 0, chars: 0 };
+    const used: ImageBudget = { count: 0, chars: 0, pixels: 0 };
     const add = (list: readonly { src?: unknown }[]): void => {
       for (const i of list) {
         used.count++;
         used.chars += i && typeof i.src === 'string' ? i.src.length : 0;
+        used.pixels += i ? imagePixels(i) : 0;
       }
     };
     for (const page of this.pages.values()) add(page.images);
@@ -838,14 +874,19 @@ export class NotesDoc {
     if (!page) return false;
     const had = new Map(page.images.map(i => [i.id, i]));
     const list: PageImage[] = [];
+    let pixels = 0;
     for (const input of images) {
       if (list.length >= MAX_PAGE_IMAGES) break;
       const old = input && typeof input.id === 'string' ? had.get(input.id) : undefined;
+      let image: PageImage;
       if (old && old.x === input.x && old.y === input.y && old.w === input.w && old.h === input.h && old.src === input.src) {
-        list.push(old);
-        continue;
+        image = old;
+      } else {
+        try { image = createImage(input); } catch (_) { continue; } // skipped
       }
-      try { list.push(createImage(input)); } catch (_) { /* skipped */ }
+      if (pixels + imagePixels(image) > MAX_PAGE_IMAGE_PIXELS) continue; // over the page's pixel budget
+      pixels += imagePixels(image);
+      list.push(image);
     }
     if (!list.length && !page.images.length) return true;
     page.images = list;
@@ -966,7 +1007,7 @@ export class NotesDoc {
     const blanks: BlankPage[] = [];
     const strokeIds = new Set<string>(); // stroke and image ids
     // Image limits over the whole file; kept pages count too (they are saved back).
-    const budget: ImageBudget = { count: 0, chars: 0 };
+    const budget: ImageBudget = { count: 0, chars: 0, pixels: 0 };
     const seenPages = new Set<string>();
     const kept: PageJSON[] = [];
     const notices: string[] = [];
@@ -1150,6 +1191,7 @@ function parsePage(
     for (const i of Array.isArray(raw.images) ? raw.images : []) {
       budget.count++;
       budget.chars += i && typeof i.src === 'string' ? i.src.length : 0;
+      budget.pixels += i ? imagePixels(i) : 0;
     }
     const what = raw.kind === 'slide' ? `notes for slide ${beyond}` : `blank page ${raw.id} after slide ${beyond}`;
     notices.push(`Kept ${what} (deck has ${deck.slides}): saved with the notes, not shown`);
@@ -1191,6 +1233,7 @@ function parsePage(
   page.strokes = strokes;
   // Images: checked like strokes, within the limits per page and per file.
   const images: PageImage[] = [];
+  let pagePixels = 0;
   let rawImages: unknown = raw.images || [];
   if (!Array.isArray(rawImages)) { warnings.push(`Skipped the images of page ${raw.id}: not a list`); rawImages = []; }
   for (const i of rawImages as ImageJSON[]) {
@@ -1199,6 +1242,11 @@ function parsePage(
       if (images.length >= MAX_PAGE_IMAGES) throw new Error(`more than ${MAX_PAGE_IMAGES} images on the page`);
       if (budget.count >= MAX_DOC_IMAGES) throw new Error(`more than ${MAX_DOC_IMAGES} images in the file`);
       if (budget.chars + image.src.length > MAX_DOC_IMAGE_CHARS) throw new Error('too much image data in the file');
+      const pixels = imagePixels(image);
+      if (pagePixels + pixels > MAX_PAGE_IMAGE_PIXELS) throw new Error(`more than ${MAX_PAGE_IMAGE_PIXELS / 1e6} megapixels of images on the page`);
+      if (budget.pixels + pixels > MAX_DOC_IMAGE_PIXELS) throw new Error(`more than ${MAX_DOC_IMAGE_PIXELS / 1e6} megapixels of images in the file`);
+      pagePixels += pixels;
+      budget.pixels += pixels;
       budget.count++;
       budget.chars += image.src.length;
       strokeIds.add(image.id);
