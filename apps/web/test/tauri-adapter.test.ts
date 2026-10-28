@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import type { PdfFile } from '@inkslide/annotate';
-import { MAX_FILE_BYTES, base64, createTauriAdapter, fileArgs, mobileOs, nameFromPath, notesFile, notesKey, shareName } from '../src/platform/tauri';
+import { MAX_FILE_BYTES, MAX_NOTES_BYTES, base64, createTauriAdapter, fileArgs, mobileOs, nameFromPath, notesFile, notesKey, shareName } from '../src/platform/tauri';
 
 const SHA = 'a'.repeat(64);
 const pdf: PdfFile = { path: null, name: 'a.pdf', bytes: new Uint8Array() };
@@ -231,6 +231,17 @@ describe('notes', () => {
     expect(backend.commands().filter(c => c.startsWith('plugin:fs|'))).toEqual([]);
   });
 
+  it('has the notes limit of the app commands and does not send notes surely over it', async () => {
+    const lib = readFileSync(join(__dirname, '../../mobile/src-tauri/src/lib.rs'), 'utf8');
+    expect(lib).toMatch(/const MAX_NOTES_BYTES: u64 = 256 << 20;/);
+    expect(lib).toMatch(/const MAX_PICKED_PDF_BYTES: u64 = 512 << 20;/);
+    expect(MAX_NOTES_BYTES).toBe(256 << 20);
+    // A view: length over the limit without allocating it.
+    const huge = { length: MAX_NOTES_BYTES + 1 } as unknown as string;
+    await expect(createTauriAdapter('android').writeNotes(pdf, huge, SHA)).rejects.toThrow(/larger than 256 MB/);
+    expect(backend.commands()).toEqual([]);
+  });
+
   it('passes a failed write on', async () => {
     const a = createTauriAdapter(null);
     await a.writeNotes(pdf, 'old', SHA);
@@ -273,6 +284,14 @@ describe('files', () => {
   it('can not read a file that was not picked in this session', async () => {
     backend.files.set('/home/me/secret.pdf', new Uint8Array([1]));
     await expect(createTauriAdapter('android').openPdf('/home/me/secret.pdf')).rejects.toBe('not a file picked in this session');
+  });
+
+  it('passes on read_picked refusing a file over its limit', async () => {
+    backend.picker.next = 'content://x/document/9';
+    backend.failing.set('read_picked', 'the file is larger than 512 MB');
+    await expect(createTauriAdapter('android').openPdf()).rejects.toBe('the file is larger than 512 MB');
+    backend.failing.set('read_picked', 'the file is larger than 256 MB');
+    await expect(createTauriAdapter('android').importNotes!()).rejects.toBe('the file is larger than 256 MB');
   });
 
   it('returns null when the picker is cancelled; other errors are passed on', async () => {

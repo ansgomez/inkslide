@@ -57,6 +57,12 @@ const MAX_SHARE_NAME_BYTES: usize = 204;
 /// base64, a string a third larger, and web views cap strings at a few hundred
 /// MB; Tauri has also built the whole request before this check runs.
 const MAX_FILE_BYTES: usize = 256 << 20;
+/// Max. size of a picked PDF that `read_picked` reads: the whole file goes to
+/// the web view in one response, and a document provider can stream without end.
+const MAX_PICKED_PDF_BYTES: u64 = 512 << 20;
+/// Max. size of a notes file (picked for import, or in the app data directory;
+/// `MAX_NOTES_BYTES` of tauri.ts, and the desktop's limit for notes).
+const MAX_NOTES_BYTES: u64 = 256 << 20;
 
 /// A notes key (the PDF's SHA-256 in hex, or `name-<safe name>`): 1 to 200 of `[A-Za-z0-9_-]`.
 fn notes_key(key: &str) -> Result<&str, String> {
@@ -219,29 +225,53 @@ fn notes_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("notes"))
 }
 
-/// Files picked with `pick_file` in this session, by the id handed to the web view.
-#[derive(Default)]
-struct Picked(Mutex<HashMap<String, FilePath>>);
+/// A kind of file the web view may ask the picker for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    Pdf,
+    Notes,
+}
 
-impl Picked {
-    fn add(&self, file: FilePath) -> String {
-        let id = file.to_string();
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), file);
-        id
+impl Kind {
+    fn parse(kind: &str) -> Result<Self, String> {
+        match kind {
+            "pdf" => Ok(Self::Pdf),
+            "notes" => Ok(Self::Notes),
+            _ => Err(format!("unknown kind of file: {kind:?}")),
+        }
     }
 
-    fn get(&self, id: &str) -> Result<FilePath, String> {
-        let picked = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        picked.get(id).cloned().ok_or_else(|| "not a file picked in this session".to_owned())
+    /// The picker's filter.
+    fn filter(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Self::Pdf => ("PDF", &["pdf"]),
+            Self::Notes => ("Notes", &["json"]),
+        }
+    }
+
+    /// The most `read_picked` reads of such a file.
+    fn max_bytes(self) -> u64 {
+        match self {
+            Self::Pdf => MAX_PICKED_PDF_BYTES,
+            Self::Notes => MAX_NOTES_BYTES,
+        }
     }
 }
 
-/// The picker's filter for a kind of file the web view may ask for.
-fn picker_filter(kind: &str) -> Result<(&'static str, &'static [&'static str]), String> {
-    match kind {
-        "pdf" => Ok(("PDF", &["pdf"])),
-        "notes" => Ok(("Notes", &["json"])),
-        _ => Err(format!("unknown kind of file: {kind:?}")),
+/// Files picked with `pick_file` in this session, and their kind, by the id handed to the web view.
+#[derive(Default)]
+struct Picked(Mutex<HashMap<String, (FilePath, Kind)>>);
+
+impl Picked {
+    fn add(&self, file: FilePath, kind: Kind) -> String {
+        let id = file.to_string();
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), (file, kind));
+        id
+    }
+
+    fn get(&self, id: &str) -> Result<(FilePath, Kind), String> {
+        let picked = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        picked.get(id).cloned().ok_or_else(|| "not a file picked in this session".to_owned())
     }
 }
 
@@ -249,8 +279,9 @@ fn picker_filter(kind: &str) -> Result<(&'static str, &'static [&'static str]), 
 /// or URI (also its id for `read_picked`), null if cancelled.
 #[tauri::command]
 async fn pick_file<R: Runtime>(app: AppHandle<R>, picked: State<'_, Picked>, kind: String) -> Result<Option<String>, String> {
-    let (name, extensions) = picker_filter(&kind)?;
-    Ok(app.dialog().file().add_filter(name, extensions).blocking_pick_file().map(|f| picked.add(f)))
+    let kind = Kind::parse(&kind)?;
+    let (name, extensions) = kind.filter();
+    Ok(app.dialog().file().add_filter(name, extensions).blocking_pick_file().map(|f| picked.add(f, kind)))
 }
 
 /// Options to read a file. `OpenOptions::new()` of plugin-fs has `read: false`
@@ -261,18 +292,32 @@ fn read_options() -> OpenOptions {
     opts
 }
 
-/// All bytes of the file `open` opens with [`read_options`].
-fn read_all(open: impl FnOnce(OpenOptions) -> std::io::Result<fs::File>) -> std::io::Result<Vec<u8>> {
+/// All bytes of `reader`, an error if there are more than `limit`. Reads at
+/// most one byte over it, whatever the file claims to be (a document provider
+/// can stream without end).
+fn read_limited(reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    open(read_options())?.read_to_end(&mut bytes)?;
+    reader.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("the file is larger than {} MB", limit >> 20),
+        ));
+    }
     Ok(bytes)
 }
 
-/// The bytes of a file picked with `pick_file` in this session; any other path is refused.
+/// All bytes of the file `open` opens with [`read_options`], at most `limit` (see [`read_limited`]).
+fn read_all(open: impl FnOnce(OpenOptions) -> std::io::Result<fs::File>, limit: u64) -> std::io::Result<Vec<u8>> {
+    read_limited(open(read_options())?, limit)
+}
+
+/// The bytes of a file picked with `pick_file` in this session (at most
+/// [`Kind::max_bytes`] of its kind); any other path is refused.
 #[tauri::command]
 async fn read_picked<R: Runtime>(app: AppHandle<R>, picked: State<'_, Picked>, id: String) -> Result<Response, String> {
-    let file = picked.get(&id)?;
-    let read = read_all(|opts| app.fs().open(file.clone(), opts));
+    let (file, kind) = picked.get(&id)?;
+    let read = read_all(|opts| app.fs().open(file.clone(), opts), kind.max_bytes());
     #[cfg(target_os = "ios")]
     let _ = app.fs().stop_accessing_security_scoped_resource(file);
     #[cfg(not(target_os = "ios"))]
@@ -280,21 +325,28 @@ async fn read_picked<R: Runtime>(app: AppHandle<R>, picked: State<'_, Picked>, i
     Ok(Response::new(read.map_err(|e| e.to_string())?))
 }
 
-/// Reads the notes of a PDF (app data `notes/<key>.notes.json`); null if there are none.
+/// Reads the notes of a PDF (app data `notes/<key>.notes.json`, at most
+/// `MAX_NOTES_BYTES`); null if there are none.
 #[tauri::command]
 async fn read_notes<R: Runtime>(app: AppHandle<R>, key: String) -> Result<Option<String>, String> {
     let path = notes_dir(&app)?.join(format!("{}{NOTES_SUFFIX}", notes_key(&key)?));
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let bytes = read_limited(file, MAX_NOTES_BYTES).map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map(Some).map_err(|_| "the notes file is not UTF-8".to_owned())
 }
 
-/// Writes the notes of a PDF: app data `notes/<key>.notes.json`.
+/// Writes the notes of a PDF: app data `notes/<key>.notes.json`, at most
+/// `MAX_NOTES_BYTES` (what `read_notes` reads back).
 #[tauri::command]
 async fn write_notes<R: Runtime>(app: AppHandle<R>, key: String, text: String) -> Result<(), String> {
     let key = notes_key(&key)?;
+    if text.len() as u64 > MAX_NOTES_BYTES {
+        return Err(format!("the notes are larger than {} MB", MAX_NOTES_BYTES >> 20));
+    }
     write_atomic(&notes_dir(&app)?, &format!("{key}{NOTES_SUFFIX}"), text.as_bytes()).map_err(|e| e.to_string())
 }
 
@@ -363,7 +415,7 @@ pub fn run() {
             // the picker: it hands over one file as if picked.
             #[cfg(feature = "smoke")]
             if let Some(path) = std::env::var_os("INKSLIDE_SMOKE_PICK") {
-                _app.state::<Picked>().add(FilePath::from(PathBuf::from(path)));
+                _app.state::<Picked>().add(FilePath::from(PathBuf::from(path)), Kind::Pdf);
             }
             Ok(())
         })
@@ -481,11 +533,40 @@ mod tests {
     fn reads_a_file_with_the_read_options() {
         let path = std::env::temp_dir().join(temp_name("inkslide-read-test.pdf"));
         fs::write(&path, b"%PDF-1.4 test").unwrap();
-        let bytes = read_all(|opts| std::fs::OpenOptions::from(opts).open(&path));
+        let bytes = read_all(|opts| std::fs::OpenOptions::from(opts).open(&path), 13);
+        let over = read_all(|opts| std::fs::OpenOptions::from(opts).open(&path), 12);
         fs::remove_file(&path).unwrap();
         assert_eq!(bytes.unwrap(), b"%PDF-1.4 test");
+        assert!(over.is_err());
         // What the read path did before: plugin-fs's OpenOptions::new() alone does not read.
         assert!(std::fs::OpenOptions::from(OpenOptions::new()).open(std::env::temp_dir()).is_err());
+    }
+
+    #[test]
+    fn reads_at_most_one_byte_over_the_limit() {
+        assert_eq!(read_limited(&b""[..], 0).unwrap(), b"");
+        assert_eq!(read_limited(&b"abc"[..], 3).unwrap(), b"abc");
+        let err = read_limited(&b"abcd"[..], 3).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // An endless stream (a document provider can return one) stops at limit + 1 bytes.
+        struct Endless(u64);
+        impl Read for Endless {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.0 += buf.len() as u64;
+                Ok(buf.len())
+            }
+        }
+        let mut endless = Endless(0);
+        let err = read_limited(&mut endless, 1 << 20).unwrap_err();
+        assert_eq!(err.to_string(), "the file is larger than 1 MB");
+        assert_eq!(endless.0, (1 << 20) + 1);
+    }
+
+    #[test]
+    fn limits_by_kind() {
+        assert_eq!(Kind::Pdf.max_bytes(), 512 << 20);
+        assert_eq!(Kind::Notes.max_bytes(), 256 << 20);
+        assert_eq!(MAX_NOTES_BYTES, MAX_FILE_BYTES as u64);
     }
 
     #[test]
@@ -498,21 +579,21 @@ mod tests {
 
     #[test]
     fn picker_kinds() {
-        assert_eq!(picker_filter("pdf"), Ok(("PDF", &["pdf"][..])));
-        assert_eq!(picker_filter("notes"), Ok(("Notes", &["json"][..])));
-        assert!(picker_filter("any").is_err());
+        assert_eq!(Kind::parse("pdf").map(Kind::filter), Ok(("PDF", &["pdf"][..])));
+        assert_eq!(Kind::parse("notes").map(Kind::filter), Ok(("Notes", &["json"][..])));
+        assert!(Kind::parse("any").is_err());
     }
 
     #[test]
     fn reads_only_picked_files() {
         let picked = Picked::default();
         assert!(picked.get("/etc/passwd").is_err());
-        let id = picked.add(FilePath::from(PathBuf::from("/home/me/deck.pdf")));
+        let id = picked.add(FilePath::from(PathBuf::from("/home/me/deck.pdf")), Kind::Pdf);
         assert_eq!(id, "/home/me/deck.pdf");
-        assert!(picked.get(&id).is_ok());
+        assert_eq!(picked.get(&id).map(|(_, kind)| kind), Ok(Kind::Pdf));
         assert!(picked.get("/home/me/other.pdf").is_err());
-        let url = picked.add("content://com.android.providers/document/42".parse::<FilePath>().unwrap());
-        assert!(picked.get(&url).is_ok());
+        let url = picked.add("content://com.android.providers/document/42".parse::<FilePath>().unwrap(), Kind::Notes);
+        assert_eq!(picked.get(&url).map(|(_, kind)| kind), Ok(Kind::Notes));
         assert!(picked.get("content://com.android.providers/document/43").is_err());
     }
 

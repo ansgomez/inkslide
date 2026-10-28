@@ -104,6 +104,14 @@ export function base64(bytes: Uint8Array): string {
  */
 export const MAX_FILE_BYTES = 256 * 1024 * 1024;
 
+/**
+ * Max. UTF-8 bytes of a notes file: MAX_NOTES_BYTES of lib.rs, where
+ * write_notes refuses more and read_notes and read_picked (an imported notes
+ * file) read no more. A picked PDF may have up to MAX_PICKED_PDF_BYTES there
+ * (512 MiB); the app refuses a larger one with a message.
+ */
+export const MAX_NOTES_BYTES = 256 * 1024 * 1024;
+
 /** Why a PDF over MAX_FILE_BYTES can not be exported or shared on the iPad or Android. */
 export const tooLargeMessage = (size: number): string =>
   `This PDF is too large to export or share here (${Math.ceil(size / 2 ** 20)} MB; at most ${MAX_FILE_BYTES / 2 ** 20} MB).`;
@@ -207,6 +215,9 @@ export function createTauriAdapter(os: MobileOs = mobileOs()): TauriAdapter {
 
     async writeNotes(pdf, text, sha256) {
       // notes/<key>.notes.json in the app data directory, through a temp file of its own.
+      // A string has at most as many UTF-16 units as UTF-8 bytes: one this long is surely too
+      // large, so it is not sent at all (write_notes checks the exact size).
+      if (text.length > MAX_NOTES_BYTES) throw new Error(`The notes are larger than ${MAX_NOTES_BYTES / 2 ** 20} MB.`);
       const [, { invoke }] = await use();
       await invoke('write_notes', { key: notesKey(pdf, sha256), text });
     },

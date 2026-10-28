@@ -58,7 +58,12 @@ smoke test.
   bodies, so there they go as JSON with the bytes in base64 (a JSON number array is refused:
   Tauri would hold it at about 32 bytes per byte). Export and share take PDFs up to 256 MiB
   (`MAX_FILE_BYTES`, the same in `lib.rs` and `tauri.ts`); the front end refuses a larger one
-  with a message before encoding it, as base64 strings that large break web views.
+  with a message before encoding it, as base64 strings that large break web views. Reads are
+  bounded too, whatever size a file or document provider claims: `read_picked` reads at most
+  512 MiB of a picked PDF (`MAX_PICKED_PDF_BYTES`) and 256 MiB of a picked notes file, and
+  refuses a larger one ("the file is larger than … MB"); `read_notes` and `write_notes` keep
+  the same 256 MiB for the app's notes (`MAX_NOTES_BYTES`, also in `tauri.ts`, which does not
+  send notes surely over it; the desktop's limit for notes).
 - **Failed dialogs look cancelled:** on iOS and Android the dialog plugin's Rust API reports a
   picker or save dialog that failed (no activity, a provider error) as no file, the same as a
   cancel, so `pick_file` and `save_pdf` then return null / false and nothing is shown.
