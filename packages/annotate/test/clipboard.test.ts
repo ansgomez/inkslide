@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
-  CLIP_FORMAT, MAX_CLIP_STROKES, clipForPaste, getClip, makeClip, markClipSynced, parseClip, placeClip, serializeClip, setClip,
+  CLIP_FORMAT, MAX_CLIP_CHARS, MAX_CLIP_STROKES, clipForPaste, getClip, makeClip, markClipSynced, parseClip, placeClip, serializeClip, setClip,
   type Clip,
 } from '../src/clipboard';
 import { NotesDoc, createStroke } from '../src/model';
@@ -139,6 +139,20 @@ describe('clip text', () => {
     const long = { ...one, points: Array.from({ length: 1000001 }, () => [0, 0]) };
     expect(parseClip(JSON.stringify({ format: CLIP_FORMAT, version: 1, size: [10, 10], strokes: [long] }))).toBeNull();
   }, 30000); // builds a 1M-point text
+
+  it('rejects text longer than MAX_CLIP_CHARS without parsing it', () => {
+    const text = serializeClip(makeClip([line('a', 1, 2, 3, 4)], [10, 10])!);
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      expect(parseClip(text + ' '.repeat(MAX_CLIP_CHARS - text.length))).not.toBeNull();
+      expect(parse).toHaveBeenCalledTimes(1);
+      parse.mockClear();
+      expect(parseClip(text + ' '.repeat(MAX_CLIP_CHARS - text.length + 1))).toBeNull();
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+  });
 
   it('clipForPaste: a system clip wins; other text pastes nothing once the clip was on the system clipboard', () => {
     const mine = makeClip([line('a', 1, 2, 3, 4)], [10, 10])!;

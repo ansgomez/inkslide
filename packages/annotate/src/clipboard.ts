@@ -26,6 +26,12 @@ export const PASTE_OFFSET = 16;
 const MAX_STEPS = 50;
 /** Most strokes, and points in all, of a clip read from the system clipboard. */
 export const MAX_CLIP_STROKES = 10000, MAX_CLIP_POINTS = 1000000;
+/**
+ * Longest system clipboard text read as a clip, checked before it is parsed.
+ * A clip Inkslide writes within the limits above is shorter: at most about 30
+ * characters per point, 370 per stroke, and MAX_DOC_IMAGE_CHARS of image data.
+ */
+export const MAX_CLIP_CHARS = 64_000_000;
 
 /** Copied strokes and images and the size of the page they were copied from. */
 export interface Clip {
@@ -104,11 +110,12 @@ export function serializeClip(clip: Clip): string {
 
 /**
  * The clip in system clipboard text; null if the text is no clip (any other
- * text, a newer version, nothing valid in it). Malformed strokes and images
- * are skipped; images beyond the limits of a page make it no clip.
+ * text, a newer version, nothing valid in it, longer than MAX_CLIP_CHARS).
+ * Malformed strokes and images are skipped; images beyond the limits of a
+ * page make it no clip.
  */
 export function parseClip(text: unknown): Clip | null {
-  if (typeof text !== 'string' || !text.includes(CLIP_FORMAT)) return null;
+  if (typeof text !== 'string' || text.length > MAX_CLIP_CHARS || !text.includes(CLIP_FORMAT)) return null;
   let data: Partial<ClipJSON> | null;
   try { data = JSON.parse(text); } catch (_) { return null; }
   if (!data || data.format !== CLIP_FORMAT || typeof data.version !== 'number' || data.version > CLIP_VERSION) return null;
