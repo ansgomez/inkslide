@@ -344,6 +344,32 @@ describe('notes location', () => {
     expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('two');
   });
 
+  it.skipIf(isRoot || process.platform === 'win32')('keeps app storage first when a sidecar appears that cannot be read yet', async () => {
+    const dir = tempDir(), ud = tempDir();
+    const folder = join(dir, 'lectures');
+    const pdf = pdfIn(folder);
+    const sidecar = `${pdf}.notes.json`;
+    // No sidecar, folder read-only: S1 goes to app storage, recorded as replacing a missing sidecar.
+    chmodSync(folder, 0o555);
+    await writeNotesFor({ path: pdf, sha256: sha }, 'S1', ud);
+    chmodSync(folder, 0o755);
+    // A sidecar appears (a sync client), unreadable and unwritable for now.
+    writeFileSync(sidecar, 'synced-old');
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(sidecar, past, past);
+    chmodSync(sidecar, 0o000);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('S1');
+    await writeNotesFor({ path: pdf, sha256: sha }, 'S2', ud); // app storage again
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('S2');
+    // Readable now, unchanged since it appeared: the notes written since still win.
+    chmodSync(sidecar, 0o444);
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('S2');
+    // Changed after that: the sidecar wins.
+    chmodSync(sidecar, 0o644);
+    writeFileSync(sidecar, 'synced-new');
+    expect(await readNotesFor({ path: pdf, sha256: sha }, ud)).toBe('synced-new');
+  });
+
   it('stores notes of a PDF without a path by hash (given or computed)', async () => {
     const ud = tempDir();
     await writeNotesFor({ path: null, bytes: pdfBytes }, 'mem', ud);

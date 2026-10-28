@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { BACKUP_MIN_AGE_MS, BACKUP_SUFFIX, isUsableNotes, NOTES_SUFFIX, notesPathFor, OLD_COPIES_MAX_AGE_DAYS, type NotesBackup } from '@inkslide/annotate/io';
-import { canWriteIn, ensureDir, type FollowLink, MAX_PDF_BYTES, readFileChecked, readFileLimited, readTextIfExists, RefusedLinkError, writeFileAtomic } from './fsutil';
+import { canWriteIn, ensureDir, type FollowLink, MAX_PDF_BYTES, NotAFileError, readFileChecked, readFileLimited, readTextIfExists, RefusedLinkError, writeFileAtomic } from './fsutil';
 import { fallbackBackupPath, fallbackNotesPath, isSha256, isStorageName, NOTES_DIR, sidecarStatePath, UNREADABLE_SUFFIX, unreadableNotesPath } from './paths';
 
 /** The PDF whose notes are read or written. */
@@ -146,16 +146,30 @@ async function mtimeOf(file: string): Promise<number> {
 
 /**
  * What app-storage notes were written instead of (userData/notes/<sha256>.sidecar.json):
- * the sidecar and the SHA-256 of its text then (null: missing or unreadable).
+ * the sidecar and the SHA-256 of its text then (null: missing). A sidecar
+ * that could not be read then gets no record.
  */
 interface SidecarState {
   sidecar: string;
   sha256: string | null;
 }
 
-/** SHA-256 of the sidecar's text, null if it is missing or cannot be read (or is a link that is not followed). */
-const sidecarHash = (sidecar: string, follow: FollowLink): Promise<string | null> =>
-  readFileChecked(sidecar, follow).then(b => (b ? sha256OfBytes(b) : null), () => null);
+/**
+ * SHA-256 of the sidecar's text, null if there is none (missing, or not a
+ * file, such as a folder in its place); UNREADABLE if it cannot be read
+ * (permissions, a link that is not followed, too large). Missing and
+ * unreadable are not the same: a sidecar that cannot be read may hold any
+ * text, so it is not known to be unchanged.
+ */
+async function sidecarHash(sidecar: string, follow: FollowLink): Promise<string | null | typeof UNREADABLE> {
+  try {
+    const bytes = await readFileChecked(sidecar, follow);
+    return bytes ? sha256OfBytes(bytes) : null;
+  } catch (err) {
+    return err instanceof NotAFileError ? null : UNREADABLE;
+  }
+}
+const UNREADABLE = Symbol('unreadable');
 
 /** The record in `file`; null if it is missing or broken. */
 async function readSidecarState(file: string): Promise<SidecarState | null> {
@@ -171,13 +185,17 @@ async function readSidecarState(file: string): Promise<SidecarState | null> {
 /**
  * Whether app storage holds the newer notes. It does if they were written
  * instead of this sidecar and the sidecar has not changed since (a later
- * sidecar write or a restored backup wins, whatever its time). Otherwise,
- * e.g. for notes written without a path or before this was recorded, the
- * newer file wins, the sidecar on a tie.
+ * sidecar write or a restored backup wins, whatever its time), or cannot be
+ * read now (app storage can). Otherwise, e.g. for notes written without a
+ * path, before this was recorded or while the sidecar could not be read,
+ * the newer file wins, the sidecar on a tie.
  */
 async function appStorageFirst(sidecar: string, stored: string, state: string, follow: FollowLink): Promise<boolean> {
   const s = await readSidecarState(state);
-  if (s && s.sidecar === sidecar) return (await sidecarHash(sidecar, follow)) === s.sha256;
+  if (s && s.sidecar === sidecar) {
+    const now = await sidecarHash(sidecar, follow);
+    return now === UNREADABLE || now === s.sha256;
+  }
   return (await mtimeOf(stored)) > (await mtimeOf(sidecar));
 }
 
@@ -237,11 +255,15 @@ export async function writeNotesFor(t: NotesTarget, text: string, userData: stri
   if (sidecar && file === sidecar) await dropReplacedStore(t, sidecar, userData);
   if (sidecar && file !== sidecar) {
     const state = sidecarStatePath(userData, sha);
-    const record: SidecarState = { sidecar, sha256: await sidecarHash(sidecar, follow) };
+    const now = await sidecarHash(sidecar, follow);
     const old = await readSidecarState(state);
     // Rewritten only when it changes (autosave runs every few seconds). Without
-    // a record the newer file wins, which here is app storage too.
-    if (old?.sidecar !== record.sidecar || old.sha256 !== record.sha256) {
+    // a record the newer file wins, which here is app storage too: also when
+    // the sidecar cannot be read, as its text cannot be recorded (once it can
+    // be read, its unchanged text must not win over these notes).
+    if (now === UNREADABLE) await rm(state, { force: true }).catch(() => {});
+    else if (old?.sidecar !== sidecar || old.sha256 !== now) {
+      const record: SidecarState = { sidecar, sha256: now };
       await writeFileAtomic(state, JSON.stringify(record)).catch(() => rm(state, { force: true }).catch(() => {}));
     }
   }

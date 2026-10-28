@@ -117,6 +117,13 @@ export class RefusedLinkError extends Error {
   }
 }
 
+/** Something other than a regular file (a folder, FIFO or device): nothing is read from it. */
+export class NotAFileError extends Error {
+  constructor(name: string) {
+    super(`${name} is not a file`);
+  }
+}
+
 const isMissing = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === 'ENOENT';
 
 /**
@@ -133,7 +140,7 @@ const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
  */
 async function readHandle(fh: FileHandle, name: string, maxBytes: number, st?: Stats): Promise<Buffer> {
   st ??= await fh.stat();
-  if (!st.isFile()) throw new Error(`${name} is not a file`);
+  if (!st.isFile()) throw new NotAFileError(name);
   if (st.size > maxBytes) throw new Error(`${name} is too large`);
   // Not pooled, zero-filled: the bytes may cross IPC as a view, which clones its whole ArrayBuffer.
   const buf = Buffer.alloc(st.size);
@@ -165,7 +172,7 @@ export async function readFileChecked(file: string, follow: FollowLink = () => t
       checked = await lstat(path, { bigint: true }); // the file `follow` decides on
       if (!follow(path)) throw new RefusedLinkError(file, path);
     }
-    if (!checked.isFile()) throw new Error(`${basename(file)} is not a file`);
+    if (!checked.isFile()) throw new NotAFileError(basename(file));
     const fh = await open(path, READ_FLAGS | (constants.O_NOFOLLOW ?? 0));
     try {
       const opened = await fh.stat({ bigint: true });
