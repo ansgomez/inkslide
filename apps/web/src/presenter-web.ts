@@ -194,31 +194,35 @@ export function createWebPresenter(changed: () => void, notify: (text: string) =
   };
   const popupOpen = (): boolean => !!popup && !popup.closed;
 
-  /** Back from the back/forward cache: say ready if the id is still this tab's, else move to a new one. */
+  /**
+   * Back from the back/forward cache: say ready if the id is still this tab's,
+   * else (another tab owns it, or it cannot be told) move to a new one.
+   * Chromium keeps pages that hold Web Locks out of the cache, as far as we know
+   * (not verified against its source), so there this rarely runs; other
+   * browsers may cache the page and let its locks go meanwhile.
+   */
   async function restored(): Promise<void> {
     const l = link;
     if (!l) return;
-    if (!e.locks) return l.announce();
+    if (!e.locks) return l.announce(); // the probe's check was made on load
     let mine = await holdsLock(e.locks, lockName(id), self);
-    if (mine === null && (await holdLock(e.locks, self)) === 'held') {
-      // The browser let this page's locks go while it was cached (its own lock too): ask again.
+    if (mine === null) {
+      // This page's own lock went too (or query failed): take it again and ask again.
+      await holdLock(e.locks, self);
       mine = await holdsLock(e.locks, lockName(id), self);
     }
-    if (mine === false) {
-      // Take the id's lock again if it is free.
-      const got = await holdLock(e.locks, lockName(id));
-      if (got === 'taken') {
-        // Another tab (a duplicate) owns the id now, and the audience window with it.
-        l.close();
-        popup = null;
-        stopPoll();
-        id = tabId(e.storage, true);
-        link = null;
-        changed();
-        return claim();
-      }
-    }
-    if (link === l) l.announce();
+    if (mine === false && (await holdLock(e.locks, lockName(id))) === 'held') mine = true;
+    if (link !== l) return;
+    if (mine) return l.announce();
+    // Not this tab's id any more. Its pop-up is not closed: it is the window of the tab
+    // that owns the id now (or of nobody, and it closes itself).
+    l.close();
+    popup = null;
+    stopPoll();
+    id = tabId(e.storage, true);
+    link = null;
+    changed();
+    return claim();
   }
 
   // Leaving (closed, reloading, or into the back/forward cache): the audience waits.

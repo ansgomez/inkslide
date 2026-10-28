@@ -271,7 +271,9 @@ crashes) and joins the channel only once it has it. A tab that cannot get it tak
 first (100 ms apart), as the page before may not have let go yet. Back from the
 back/forward cache the tab checks the lock again (`locks.query`, with a lock only this page
 holds to find its client id): still its own, or free and taken again, it says `ready`; held
-by another tab, it moves to a new id and leaves that tab the audience window. Where there are
+by another tab, or if it cannot tell, it moves to a new id and leaves the audience window to
+the tab that owns the old one. (Chromium keeps pages holding Web Locks out of the
+back/forward cache, as far as we know, unverified; other browsers may not.) Where there are
 no Web Locks, a loading tab `probe`s its channel instead, a tab still open answers `taken`,
 and after 400 ms without an answer (`PROBE_MS`) it says `ready`.
 
@@ -283,11 +285,15 @@ the presenter whose `ready` it heard last, and that presenter sends everything
 reloads or goes into the back/forward cache; also the pop-up seen closed, checked every
 second) stops the sending. `gone` (the presenter tab closes, reloads or goes into the
 back/forward cache) makes the audience wait; so does a presenter that stops answering: the
-audience `ping`s it every 2 s (`BEAT_MS`) and counts it gone after two pings without a `beat`
-or any other message (about 6 s: crashed, killed, frozen). The audience drives this because
-a hidden presenter tab's timers are throttled, its message handlers are not. From its start
-until a presenter first answers, and after a presenter is gone, the audience closes itself if
-none comes within 10 s (`GRACE_MS`); `quit` (F5 again) closes it. After a reload the tab
+audience `ping`s it every 2 s (`BEAT_MS`) and counts it gone after 30 s without a `beat` or
+any other message (`SILENCE_MS`: crashed, killed, frozen). That is long on purpose: a busy
+tab (an export, a large page) must never end presenting, and the audience keeps pinging a
+silent presenter; any word from it brings it back (a `hello`: everything again). The
+audience drives this because a hidden presenter tab's timers are throttled, its message
+handlers are not. From its start until a presenter first answers, and after a presenter is
+gone, the audience closes itself if none comes (back) within 10 s (`GRACE_MS`); `quit` (F5
+again) closes it. A window that cannot close (not opened by a script) stops pinging and
+keeps waiting. After a reload the tab
 finds its audience window again on its channel, so F5 closes that window rather than
 opening another; the pop-up's name is the tab id's, so opening again reuses a window of the
 same tab rather than piling up windows. While a PDF is open, F5 in a text field does nothing

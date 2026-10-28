@@ -363,8 +363,9 @@ presenter button (a screen) at the end of the toolbar. The audience window opens
 - **F5** again (in either window), the presenter button, or **Esc** in the audience window
   (when it is not full screen) ends presenter mode, as does closing the audience window.
 - Reloading either window is fine: the audience window shows everything again once both are
-  back. If you close the main tab (or it stops responding), the audience window waits about
-  10 seconds for it, then closes.
+  back. If you close the main tab, the audience window waits 10 seconds for it, then closes.
+  A tab that is only busy (exporting a large PDF, say) does not end presenting; one that stops
+  responding for 30 seconds does.
 - Each tab has its own audience window: presenting from two tabs (also a duplicated tab)
   opens two.
 - While a PDF is open, F5 is presenter mode, not reload: reload with **Ctrl+R** (**Cmd+R** on
