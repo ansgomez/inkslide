@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   deckFromPdf, inkedPages, loadNotes, loadNotesText, notesPathFor, parseNotes, scaleV1ToPdf, serializeNotes, sha256Hex, slug,
 } from '../src/io';
-import { NotesDoc, createStroke, type BlankPage, type NotesJSON } from '../src/model';
+import {
+  MAX_PAGES, MAX_POINTS, MAX_STROKES, MAX_WARNINGS, NotesDoc, createStroke, type BlankPage, type NotesJSON, type PageJSON,
+} from '../src/model';
 
 /** A notes file as saved by the Marp HTML decks (format v1). */
 const v1File = (): NotesJSON => ({
@@ -62,6 +64,51 @@ describe('parseNotes', () => {
     expect(() => parseNotes('{"format":"other"}')).toThrow(/format mismatch/);
     expect(() => parseNotes('{"format":"marp-notes","version":9}')).toThrow(/Unsupported notes version/);
     expect(parseNotes(JSON.stringify(v1File())).version).toBe(1);
+  });
+});
+
+describe('limits of a notes file', () => {
+  const file = (pages: unknown[]): NotesJSON => ({
+    format: 'marp-notes', version: 2, deck: { source: 'pdf', title: 'lecture.pdf', slides: 3, size: [960, 540] },
+    pages: pages as PageJSON[],
+  });
+  const page = (strokes: unknown[]) => ({ id: 'p1', kind: 'slide', slide: 1, strokes });
+
+  it('rejects too many pages, strokes or points before loading anything', () => {
+    const doc = new NotesDoc(pdfDeck());
+    doc.addStroke('p1', createStroke({ tool: 'pen', color: '#000', size: 4, points: [[1, 1]] }));
+    const pages = new Array(MAX_PAGES + 1).fill(null);
+    expect(() => parseNotes(JSON.stringify(file(pages)))).toThrow(/Too many pages/);
+    expect(() => doc.load(file(pages))).toThrow(/Too many pages/);
+    const strokes = [page(new Array(MAX_STROKES / 2).fill(null)), page(new Array(MAX_STROKES / 2 + 1).fill(null))];
+    expect(() => loadNotes(doc, file(strokes))).toThrow(/Too many strokes/);
+    // A sparse list: its length counts, nothing is allocated.
+    const points = [page([{ tool: 'pen', points: new Array(MAX_POINTS) }, { tool: 'pen', points: [[1, 1]] }])];
+    expect(() => loadNotes(doc, file(points))).toThrow(/Too many stroke points/);
+    expect(doc.strokes('p1')).toHaveLength(1); // the document is unchanged
+    // At the limits it loads.
+    const dot = { tool: 'pen', color: '#000', size: 1, points: [[1, 1]] };
+    doc.load(file([page(new Array(MAX_STROKES).fill(dot))]));
+    expect(doc.strokes('p1')).toHaveLength(MAX_STROKES);
+  });
+
+  it('lists at most MAX_WARNINGS warnings, then how many more', () => {
+    const doc = new NotesDoc(pdfDeck());
+    const { warnings } = loadNotes(doc, file([page(new Array(MAX_WARNINGS + 5).fill(null))]));
+    expect(warnings).toHaveLength(MAX_WARNINGS + 1);
+    expect(warnings[MAX_WARNINGS]).toBe('…and 5 more warnings');
+  });
+
+  it('quotes at most 100 characters of a file\'s text in a warning', () => {
+    const doc = new NotesDoc(pdfDeck());
+    const long = 'x'.repeat(100_000);
+    const { warnings } = loadNotes(doc, {
+      ...file([{ id: long, kind: long }, { id: 'p1', kind: 'slide', slide: long }, page([{ tool: long }])]),
+      deck: { source: 'pdf', title: long, slides: 3, size: [960, 540] },
+    });
+    expect(warnings).toHaveLength(4);
+    for (const w of warnings) expect(w.length).toBeLessThan(300);
+    expect(warnings).toContain(`Skipped page ${'x'.repeat(100)}… of unknown kind ${'x'.repeat(100)}…`);
   });
 });
 

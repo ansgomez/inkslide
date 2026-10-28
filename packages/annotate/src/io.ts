@@ -178,8 +178,13 @@ export interface LoadResult {
   scaled: number | null;
 }
 
-/** Replace the document's content with a parsed notes file (v1 or v2). */
+/**
+ * Replace the document's content with a parsed notes file (v1 or v2). A file
+ * beyond the model's limits (MAX_PAGES, MAX_STROKES, MAX_POINTS) throws before
+ * anything is scaled or loaded.
+ */
 export function loadNotes(doc: NotesDoc, data: NotesJSON): LoadResult {
+  checkFormat(data);
   const { data: fitted, scale, warnings: scaling } = scaleV1ToPdf(data, doc);
   const { warnings, notices } = doc.load(fitted);
   return { warnings: [...warnings, ...scaling], notices, scaled: scale };

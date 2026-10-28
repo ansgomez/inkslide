@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Point } from '../src/geometry';
 import { applyLivePoints, commonPrefix, parsePresenterMessage, PRESENTER_LIMITS } from '../src/presenter';
-import { NotesDoc } from '../src/model';
+import { MAX_PAGES, MAX_POINTS, MAX_STROKES, NotesDoc } from '../src/model';
 import { deckFromPdf } from '../src/io';
 
 const stroke = { id: 's1', tool: 'pen', color: '#000', size: 4, points: [[1, 2, 0.4], [3, 4]] };
@@ -61,8 +61,14 @@ describe('parsePresenterMessage', () => {
 
   it('counts the points of all strokes against one limit', () => {
     // Sparse arrays: only their length counts here (map skips the holes).
-    const many = Array.from({ length: 6 }, (_, i) => ({ ...stroke, id: `s${i}`, points: new Array(2_000_000) }));
+    const many = Array.from({ length: 11 }, (_, i) => ({ ...stroke, id: `s${i}`, points: new Array(2_000_000) }));
     expect(() => parsePresenterMessage({ type: 'strokes', page: 'p1', strokes: many })).toThrow(/points/);
+  });
+
+  it('takes whatever a notes file may hold', () => {
+    expect(PRESENTER_LIMITS.strokes).toBe(MAX_STROKES);
+    expect(PRESENTER_LIMITS.points).toBe(MAX_POINTS);
+    expect(PRESENTER_LIMITS.blanks).toBe(MAX_PAGES);
   });
 });
 

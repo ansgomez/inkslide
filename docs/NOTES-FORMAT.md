@@ -145,6 +145,20 @@ beyond ±10⁶ is skipped with a warning; the rest of the page loads. (Such numb
 `Infinity` in an exported PDF.) The same check applies to every new or changed stroke, so the
 app never writes one.
 
+### File limits
+
+A notes file holds at most 10 000 pages, 200 000 strokes and 20 000 000 points (all strokes
+together); kept pages count too. Real lecture notes stay far below them. A file beyond a limit is rejected before
+any page is read ("Too many strokes …"), like a file that is not valid JSON, so it is never
+loaded in part and saved back shorter. Only list lengths are counted for this; the strokes are
+checked one by one afterwards, as above. The limits apply when a file is read, not while
+drawing. Presenter mode takes the same limits (strokes and points of one message, blank
+pages), so every page that loads can be mirrored. Images have their own limits (below).
+
+On load, at most 10 000 warnings are listed (the rest are counted in a last "…and N more
+warnings"; notices the same way), and a warning quotes at most 100 characters of any text from
+the file (ids, titles).
+
 ## Images
 
 Images are snapshots: an area of a page (PDF render, paper and ink) captured with the snapshot

@@ -171,6 +171,23 @@ export const newId = (): string => `${idPrefix}-${(idCounter++).toString(36)}`;
 export const MAX_ID_LENGTH = 200;
 /** Longest stroke color kept (a CSS color; presenter mode sends colors up to this length). */
 export const MAX_COLOR_LENGTH = 100;
+/**
+ * Most pages, strokes and points (all strokes together) a notes file may have;
+ * kept pages count too. Real lecture notes stay far below them; a file
+ * beyond them is rejected before any page is read, as it would take
+ * gigabytes to load, draw and save.
+ */
+export const MAX_PAGES = 10_000, MAX_STROKES = 200_000, MAX_POINTS = 20_000_000;
+/** Most warnings NotesDoc.load lists; the rest are counted in one last warning. */
+export const MAX_WARNINGS = 10_000;
+/** Longest text from a file quoted in a warning (ids, titles); the rest is cut. */
+const MAX_QUOTED = 100;
+/** `v` as text for a warning, at most MAX_QUOTED characters. */
+const quote = (v: unknown): string => {
+  const t = typeof v === 'string' ? v : String(Array.isArray(v) ? '[list]' : v);
+  return t.length > MAX_QUOTED ? `${t.slice(0, MAX_QUOTED)}…` : t;
+};
+
 /** `id` if it is a usable id (a non-empty string of at most MAX_ID_LENGTH), else a new one. */
 const itemId = (id: unknown): string => (typeof id === 'string' && id && id.length <= MAX_ID_LENGTH ? id : newId());
 
@@ -197,7 +214,7 @@ function notify<A extends unknown[]>(listeners: readonly ((...args: A) => void)[
  * ±MAX_COORD (pressure defaults to 0.5, clamped to 0..1). Throws on bad input; a missing or non-string id gets newId().
  */
 export function createStroke({ id, tool, color, size, points }: StrokeInput): Stroke {
-  if (!TOOLS.includes(tool as StrokeTool)) throw new Error(`Unknown stroke tool: ${tool}`);
+  if (!TOOLS.includes(tool as StrokeTool)) throw new Error(`Unknown stroke tool: ${quote(tool)}`);
   if (!Array.isArray(points)) throw new Error('Stroke points must be an array');
   if (typeof size !== 'number' || !(size > 0)) throw new Error('Stroke size must be a positive number');
   if (!(size <= MAX_COORD)) throw new Error('Stroke size out of range');
@@ -915,7 +932,8 @@ export class NotesDoc {
   load(data: unknown): { warnings: string[]; notices: string[] } {
     checkFormat(data);
     const file = data as NotesJSON;
-    const warnings = deckWarnings(file.deck, this.deck);
+    const warnings = cappedList(MAX_WARNINGS);
+    deckWarnings(file.deck, this.deck).forEach(w => warnings.push(w));
     const pages = new Map<string, Page>();
     for (let n = 1; n <= this.deck.slides; n++) {
       const id = this.slideId(n);
@@ -927,7 +945,7 @@ export class NotesDoc {
     const budget: ImageBudget = { count: 0, chars: 0 };
     const seenPages = new Set<string>();
     const kept: PageJSON[] = [];
-    const notices: string[] = [];
+    const notices = cappedList(MAX_WARNINGS);
     let rawPages = file.pages || [];
     if (!Array.isArray(rawPages)) { warnings.push('Skipped the pages: not a list'); rawPages = []; }
     // A blank page id that is not a usable id (as itemId; presenter mode sends ids up to
@@ -940,16 +958,16 @@ export class NotesDoc {
       do { id = `b-${this.blankPrefix}-load${++fresh}`; } while (fileIds.has(id));
       return id;
     };
-    for (let raw of rawPages) {
+    for (let raw of rawPages as (PageJSON | null)[]) {
       if (raw && raw.kind === 'blank' && !(typeof raw.id === 'string' && raw.id && raw.id.length <= MAX_ID_LENGTH)) {
         raw = { ...raw, id: freshId() };
       }
       const page = parsePage(raw, this.deck, warnings, strokeIds, kept, notices, budget);
       if (!page) continue;
-      if (seenPages.has(page.id)) { warnings.push(`Skipped duplicate page ${page.id}`); continue; }
+      if (seenPages.has(page.id)) { warnings.push(`Skipped duplicate page ${quote(page.id)}`); continue; }
       seenPages.add(page.id);
       if (page.kind === 'blank') {
-        if (pages.has(page.id)) { warnings.push(`Skipped duplicate page ${page.id}`); continue; }
+        if (pages.has(page.id)) { warnings.push(`Skipped duplicate page ${quote(page.id)}`); continue; }
         blanks.push(page);
       }
       pages.set(page.id, page);
@@ -964,8 +982,28 @@ export class NotesDoc {
     // One event for all strokes, not one per page: each would cost the app a full refresh.
     this.emit(null, 'strokes');
     this.emit(null, 'pages');
-    return { warnings, notices };
+    return { warnings: warnings.done('warnings'), notices: notices.done('notices') };
   }
+}
+
+/** A list that keeps its first `max` entries; done() adds a count of the rest. */
+interface CappedList {
+  push(entry: string): void;
+  done(what: string): string[];
+}
+
+function cappedList(max: number): CappedList {
+  const list: string[] = [];
+  let more = 0;
+  return {
+    push(entry) {
+      if (list.length < max) list.push(entry);
+      else more++;
+    },
+    done(what) {
+      return more ? [...list, `…and ${more} more ${what}`] : list;
+    },
+  };
 }
 
 /** style: { color?, size?: number | (stroke) => number } */
@@ -1058,12 +1096,35 @@ export function serializeImage(i: PageImage): ImageJSON {
   return { id: i.id, x: round(i.x, 2), y: round(i.y, 2), w: round(i.w, 2), h: round(i.h, 2), src: i.src };
 }
 
-/** Throw unless `data` is a notes file of a version this model reads. */
+/** Throw unless `data` is a notes file of a version this model reads, within the limits (checkLimits). */
 export function checkFormat(data: unknown): asserts data is NotesJSON {
   const d = data as Partial<NotesJSON> | null;
   if (!d || d.format !== FORMAT) throw new Error(`Not a ${FORMAT} file (format mismatch)`);
   if (!Number.isInteger(d.version) || (d.version as number) < 1 || (d.version as number) > VERSION) {
-    throw new Error(`Unsupported notes version: ${d.version}`);
+    throw new Error(`Unsupported notes version: ${quote(d.version)}`);
+  }
+  checkLimits(d);
+}
+
+/**
+ * Throw if a notes file has more than MAX_PAGES pages, MAX_STROKES strokes or
+ * MAX_POINTS points (kept pages count). Only list lengths are read, so this
+ * is quick even for a file far beyond them; what is not a list is left for
+ * the model to warn about.
+ */
+function checkLimits(d: Partial<NotesJSON>): void {
+  const pages: unknown = d.pages;
+  if (!Array.isArray(pages)) return;
+  if (pages.length > MAX_PAGES) throw new Error(`Too many pages (${pages.length}; at most ${MAX_PAGES})`);
+  let strokes = 0, points = 0;
+  for (const p of pages as (PageJSON | null)[]) {
+    if (!p || !Array.isArray(p.strokes)) continue;
+    strokes += p.strokes.length;
+    if (strokes > MAX_STROKES) throw new Error(`Too many strokes (more than ${MAX_STROKES})`);
+    for (const st of p.strokes) {
+      if (st && Array.isArray(st.points)) points += st.points.length;
+    }
+    if (points > MAX_POINTS) throw new Error(`Too many stroke points (more than ${MAX_POINTS})`);
   }
 }
 
@@ -1074,11 +1135,11 @@ export function deckWarnings(fileDeck: Partial<DeckJSON> | undefined | null, dec
   const sameFile = !!fileDeck.sha256 && !!deck.sha256 && fileDeck.sha256 === deck.sha256;
   if (fileDeck.sha256 && deck.sha256 && !sameFile) w.push('Notes were made for a different version of this PDF (checksum differs)');
   // A renamed but identical PDF is the same document.
-  if (!sameFile && fileDeck.title !== deck.title) w.push(`Notes were made for "${fileDeck.title}", not "${deck.title}"`);
-  if (fileDeck.slides !== deck.slides) w.push(`Notes deck has ${fileDeck.slides} slides, this deck has ${deck.slides}`);
+  if (!sameFile && fileDeck.title !== deck.title) w.push(`Notes were made for "${quote(fileDeck.title)}", not "${quote(deck.title)}"`);
+  if (fileDeck.slides !== deck.slides) w.push(`Notes deck has ${quote(fileDeck.slides)} slides, this deck has ${deck.slides}`);
   const fs = Array.isArray(fileDeck.size) ? fileDeck.size : [], ds = deck.size;
   const what = deck.source === 'pdf' ? 'Page' : 'Slide';
-  if (fs[0] !== ds[0] || fs[1] !== ds[1]) w.push(`${what} size differs (${fs.join('x')} vs ${ds.join('x')})`);
+  if (fs[0] !== ds[0] || fs[1] !== ds[1]) w.push(`${what} size differs (${quote(fs.slice(0, 2).join('x'))} vs ${ds.join('x')})`);
   if (Array.isArray(fileDeck.pageSizes) && deck.pageSizes) {
     const n = Math.min(fileDeck.pageSizes.length, deck.pageSizes.length);
     let differ = 0;
@@ -1098,7 +1159,7 @@ function beyondDeck(raw: PageJSON, deck: Deck): number | null {
 }
 
 function parsePage(
-  raw: PageJSON | null, deck: Deck, warnings: string[], strokeIds: Set<string>, kept: PageJSON[], notices: string[],
+  raw: PageJSON | null, deck: Deck, warnings: CappedList, strokeIds: Set<string>, kept: PageJSON[], notices: CappedList,
   budget: ImageBudget,
 ): Page | null {
   if (!raw || typeof raw.id !== 'string') { warnings.push('Skipped a page without id'); return null; }
@@ -1109,7 +1170,7 @@ function parsePage(
       budget.count++;
       budget.chars += i && typeof i.src === 'string' ? i.src.length : 0;
     }
-    const what = raw.kind === 'slide' ? `notes for slide ${beyond}` : `blank page ${raw.id} after slide ${beyond}`;
+    const what = raw.kind === 'slide' ? `notes for slide ${beyond}` : `blank page ${quote(raw.id)} after slide ${beyond}`;
     notices.push(`Kept ${what} (deck has ${deck.slides}): saved with the notes, not shown`);
     return null;
   }
@@ -1117,7 +1178,7 @@ function parsePage(
   if (raw.kind === 'slide') {
     const n = Number(raw.slide);
     if (!inDeck(n, deck)) {
-      warnings.push(`Skipped notes for slide ${raw.slide} (deck has ${deck.slides})`);
+      warnings.push(`Skipped notes for slide ${quote(raw.slide)} (deck has ${deck.slides})`);
       return null;
     }
     // The id follows this deck (s<n> or p<n>), so v1 Marp notes load onto PDF pages.
@@ -1125,32 +1186,32 @@ function parsePage(
   } else if (raw.kind === 'blank') {
     const after = Number(raw.after);
     if (!inDeck(after, deck)) {
-      warnings.push(`Skipped blank page ${raw.id} after slide ${raw.after} (deck has ${deck.slides})`);
+      warnings.push(`Skipped blank page ${quote(raw.id)} after slide ${quote(raw.after)} (deck has ${deck.slides})`);
       return null;
     }
     const paper = PAPERS.includes(raw.paper as Paper) ? raw.paper as Paper : 'plain';
     page = { id: raw.id, kind: 'blank', after, paper, strokes: [], images: [] };
   } else {
-    warnings.push(`Skipped page ${raw.id} of unknown kind ${(raw as { kind?: string }).kind}`);
+    warnings.push(`Skipped page ${quote(raw.id)} of unknown kind ${quote((raw as { kind?: string }).kind)}`);
     return null;
   }
   const strokes: Stroke[] = [];
   let rawStrokes = raw.strokes || [];
-  if (!Array.isArray(rawStrokes)) { warnings.push(`Skipped the strokes of page ${raw.id}: not a list`); rawStrokes = []; }
+  if (!Array.isArray(rawStrokes)) { warnings.push(`Skipped the strokes of page ${quote(raw.id)}: not a list`); rawStrokes = []; }
   for (const s of rawStrokes) {
     try {
       const stroke = createStroke(strokeIds.has(s && s.id) ? { ...s, id: null } : s);
       strokeIds.add(stroke.id);
       strokes.push(stroke);
     } catch (e) {
-      warnings.push(`Skipped a malformed stroke on page ${raw.id}: ${(e as Error).message}`);
+      warnings.push(`Skipped a malformed stroke on page ${quote(raw.id)}: ${(e as Error).message}`);
     }
   }
   page.strokes = strokes;
   // Images: checked like strokes, within the limits per page and per file.
   const images: PageImage[] = [];
   let rawImages: unknown = raw.images || [];
-  if (!Array.isArray(rawImages)) { warnings.push(`Skipped the images of page ${raw.id}: not a list`); rawImages = []; }
+  if (!Array.isArray(rawImages)) { warnings.push(`Skipped the images of page ${quote(raw.id)}: not a list`); rawImages = []; }
   for (const i of rawImages as ImageJSON[]) {
     try {
       const image = createImage(strokeIds.has(i && i.id) ? { ...i, id: null } : i);
@@ -1162,7 +1223,7 @@ function parsePage(
       strokeIds.add(image.id);
       images.push(image);
     } catch (e) {
-      warnings.push(`Skipped an image on page ${raw.id}: ${(e as Error).message}`);
+      warnings.push(`Skipped an image on page ${quote(raw.id)}: ${(e as Error).message}`);
     }
   }
   page.images = images;
