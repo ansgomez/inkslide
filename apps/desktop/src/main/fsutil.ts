@@ -1,7 +1,7 @@
 /* Inkslide desktop - file helpers (no Electron) */
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, open, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { access, type FileHandle, lstat, mkdir, open, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 /** Largest PDF that is read (open, recent files) or taken from the page (export, print). */
@@ -120,14 +120,42 @@ export class RefusedLinkError extends Error {
 const isMissing = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === 'ENOENT';
 
 /**
+ * Flags for opening a file to read. O_NONBLOCK: opening a FIFO does not wait
+ * for a writer (it is then refused as not a file); regular files ignore it.
+ */
+const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+
+/**
+ * The whole content of the open file `fh`, which must be a regular file
+ * (not a FIFO or a device such as /dev/zero) of at most `maxBytes`. The size
+ * comes from the handle (fstat), and the read stops there: a file that grows
+ * meanwhile is refused, one that shrinks gives what it has. `name` is for the errors.
+ */
+async function readHandle(fh: FileHandle, name: string, maxBytes: number): Promise<Buffer> {
+  const st = await fh.stat();
+  if (!st.isFile()) throw new Error(`${name} is not a file`);
+  if (st.size > maxBytes) throw new Error(`${name} is too large`);
+  const buf = Buffer.allocUnsafe(st.size);
+  let n = 0;
+  while (n < buf.length) {
+    const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
+    if (!bytesRead) break;
+    n += bytesRead;
+  }
+  if (n === buf.length && (await fh.read(Buffer.alloc(1), 0, 1, n)).bytesRead) throw new Error(`${name} changed while it was read`);
+  return buf.subarray(0, n);
+}
+
+/**
  * Bytes of `file`, or null if it does not exist (also a dangling link). A
  * symlink is followed only if `follow` allows its target, else this throws
  * RefusedLinkError without opening the target. The link is resolved once;
  * the file checked is then opened without following links (O_NOFOLLOW where
  * the OS has it) and read through that handle only if it is still the same
- * file (device and inode), so a link swapped in meanwhile is not read.
+ * file (device and inode), so a link swapped in meanwhile is not read. Only
+ * a regular file of at most `maxBytes` is read (readHandle).
  */
-export async function readFileChecked(file: string, follow: FollowLink = () => true): Promise<Buffer | null> {
+export async function readFileChecked(file: string, follow: FollowLink = () => true, maxBytes = MAX_TEXT_BYTES): Promise<Buffer | null> {
   try {
     let path = file;
     let checked = await lstat(file, { bigint: true });
@@ -136,11 +164,12 @@ export async function readFileChecked(file: string, follow: FollowLink = () => t
       checked = await lstat(path, { bigint: true }); // the file `follow` decides on
       if (!follow(path)) throw new RefusedLinkError(file, path);
     }
-    const fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    if (!checked.isFile()) throw new Error(`${basename(file)} is not a file`);
+    const fh = await open(path, READ_FLAGS | (constants.O_NOFOLLOW ?? 0));
     try {
       const opened = await fh.stat({ bigint: true });
       if (opened.dev !== checked.dev || opened.ino !== checked.ino) throw new Error(`${basename(file)} changed while it was read`);
-      return await fh.readFile();
+      return await readHandle(fh, basename(file), maxBytes);
     } finally {
       await fh.close();
     }

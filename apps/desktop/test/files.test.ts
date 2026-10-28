@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { canWriteIn, readFileChecked, RefusedLinkError, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
+import { canWriteIn, MAX_TEXT_BYTES, readFileChecked, RefusedLinkError, renameRetrying, sameFile, writeFileAtomic } from '../src/main/fsutil';
 import {
   backupBeforeSave, BACKUP_MIN_AGE_MS, hasBackup, isUsableNotes, notesWritePath, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup,
   cleanupNotesStore, keepUnreadableFor, OLD_COPIES_MAX_AGE_DAYS,
@@ -130,6 +131,27 @@ describe('readFileChecked', () => {
     const swapLink = () => { rmSync(target); symlinkSync(join(dir, 'secret'), target); return true; };
     const r = await readFileChecked(join(dir, 'side.json'), swapLink).then(b => b?.toString(), (e: Error) => e.message);
     expect(r).not.toBe('secret');
+  });
+  it('reads at most maxBytes (MAX_TEXT_BYTES by default)', async () => {
+    const f = join(tempDir(), 'deck.pdf.notes.json');
+    writeFileSync(f, '12345678');
+    expect((await readFileChecked(f, undefined, 8))?.toString()).toBe('12345678');
+    await expect(readFileChecked(f, undefined, 7)).rejects.toThrow(/too large/);
+    // Sparse: large on disk without taking space; refused before anything is read.
+    const big = join(tempDir(), 'big.pdf.notes.json');
+    writeFileSync(big, '');
+    truncateSync(big, MAX_TEXT_BYTES + 1);
+    await expect(readFileChecked(big)).rejects.toThrow(/too large/);
+  });
+  it.skipIf(process.platform === 'win32')('reads regular files only: no device through a link, no FIFO (without waiting for a writer)', async () => {
+    const dir = tempDir();
+    symlinkSync('/dev/zero', join(dir, 'zero.json'));
+    await expect(readFileChecked(join(dir, 'zero.json'), () => true)).rejects.toThrow(/not a file/);
+    const fifo = join(dir, 'fifo.json');
+    if (spawnSync('mkfifo', [fifo]).status !== 0) return; // no mkfifo
+    await expect(readFileChecked(fifo)).rejects.toThrow(/not a file/);
+    symlinkSync(fifo, join(dir, 'to-fifo.json'));
+    await expect(readFileChecked(join(dir, 'to-fifo.json'), () => true)).rejects.toThrow(/not a file/);
   });
 });
 
