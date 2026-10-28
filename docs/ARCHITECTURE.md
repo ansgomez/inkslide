@@ -335,9 +335,12 @@ themselves fall back to.
   notes need. A failed backup read or write is logged and never fails the save.
 - Notes are written to OPFS, else to `localStorage`; the other copy is then removed. Both can
   remain (removing the older OPFS file failed too), so the `localStorage` item
-  `inkslide-notes-time:<sha256>` keeps when each copy was saved, `{local, opfs}` in ms, taken
-  when the save began: `readNotes` reads the newer copy, and the OPFS file when the
+  `inkslide-notes-time:<sha256>` keeps when each copy was saved, `{local, opfs}`, as stamps
+  taken when the save began: `readNotes` reads the newer copy, and the OPFS file when the
   `localStorage` copy has no time (older data). A write keeps a copy newer than its own start.
+  A stamp (`stampOf`) is `Date.now()` but at least one above the last stamp of that key
+  (`seq`, and the copies' own), so it rises strictly even within one millisecond, and stays
+  comparable with the plain ms times of older markers and with OPFS `lastModified`.
   `writeOpfsFile` aborts a writable whose write or close failed, so the file is not left locked.
 - An OPFS notes file that exists but cannot be read rejects (only `NotFoundError` means "no
   notes"), so `readNotes` reports it and `revertToBackup` stops without changing anything;

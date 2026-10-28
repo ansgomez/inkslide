@@ -317,8 +317,10 @@ There are no file paths. Notes are kept in the site's storage, keyed by the PDF'
 
 When an OPFS write fails, the notes go to `localStorage` instead and the OPFS file is removed.
 If it cannot be removed, both copies exist; the `localStorage` item
-`inkslide-notes-time:<sha256>`, `{"local": <ms>, "opfs": <ms>}`, says when each copy was saved
-(when its save began), and the newer one is read. Without a time for the `localStorage` copy
+`inkslide-notes-time:<sha256>`, `{"local": <stamp>, "opfs": <stamp>, "seq": <stamp>}`, says
+when each copy was saved (when its save began), and the newer one is read. A stamp is the time
+in ms, but always above the last one handed out (`seq`), so of two saves begun in the same
+millisecond the later is still the newer. Without a time for the `localStorage` copy
 (notes saved by an older version) the OPFS file is read. Leaving the page with unsaved notes
 writes them to the same `localStorage` key at once, with their time (a checkpoint of at most
 1 M characters); a later save to OPFS removes it.
