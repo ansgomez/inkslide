@@ -30,7 +30,7 @@ import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/brid
 import { checkDroppedPdf, checkPath, checkPdfBytes, checkText, HashGrants, notesTargetFor, PathGrants } from './access';
 import { CrashRecovery } from './crashRecovery';
 import { MAX_PDF_BYTES, MAX_TEXT_BYTES, readFileLimited, writeExport } from './fsutil';
-import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
+import { confirmLinks, lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
 import { buildMenu } from './menu';
 import {
   cleanupNotesStore, hasBackup, keepUnreadableFor, readBackupFor, readNotesFor, removeAllBackups, removeLegacyBackup, revertToBackupFor,
@@ -277,8 +277,12 @@ function start(): void {
       refreshMenu(); // Presenter Mode needs a window
     });
 
-    // The page never navigates or opens windows; links go to the browser.
-    lockNavigation(wc, url => void shell.openExternal(url));
+    // The page never navigates or opens windows; links go to the browser
+    // once the user confirms them (the dialog shows where they lead).
+    lockNavigation(wc, confirmLinks(async url => (await dialog.showMessageBox(w, {
+      type: 'question', buttons: ['Cancel', 'Open in Browser'], defaultId: 0, cancelId: 0,
+      title: 'Inkslide', message: `Open a link to ${url.host} in your browser?`, detail: url.href,
+    })).response === 1, url => void shell.openExternal(url)));
 
     wc.on('did-start-loading', () => { loaded = false; });
     // A new page asks initialPath() again; a reload (menu in development,

@@ -1,6 +1,6 @@
 import type { Session, WebContents } from 'electron';
 import { describe, expect, it } from 'vitest';
-import { lockNavigation, restrictPermissions } from '../src/main/harden';
+import { confirmLinks, lockNavigation, MAX_LINK_LENGTH, restrictPermissions } from '../src/main/harden';
 
 describe('restrictPermissions', () => {
   it('grants fullscreen only, to requests and to checks', () => {
@@ -42,5 +42,47 @@ describe('lockNavigation', () => {
     } as unknown as WebContents;
     lockNavigation(wc);
     expect(open!({ url: 'https://example.org/' }).action).toBe('deny');
+  });
+});
+
+describe('confirmLinks', () => {
+  const settle = () => new Promise(r => setTimeout(r, 0));
+
+  it('opens a link only after the user confirms it, showing its host and whole URL', async () => {
+    const asked: string[] = [];
+    const opened: string[] = [];
+    let answer = false;
+    const openLink = confirmLinks(async u => { asked.push(`${u.host} ${u.href}`); return answer; }, url => opened.push(url));
+    openLink('https://attacker.example/?data=notes');
+    await settle();
+    expect(asked).toEqual(['attacker.example https://attacker.example/?data=notes']);
+    expect(opened).toEqual([]); // declined
+    answer = true;
+    openLink('https://github.com/ansgomez/inkslide');
+    await settle();
+    expect(opened).toEqual(['https://github.com/ansgomez/inkslide']);
+  });
+  it('asks one question at a time and drops links that are not http(s), too long or broken', async () => {
+    const asked: string[] = [];
+    let reply!: (ok: boolean) => void;
+    const openLink = confirmLinks(u => { asked.push(u.href); return new Promise(r => { reply = r; }); }, () => {});
+    openLink('https://one.example/');
+    openLink('https://two.example/'); // while the first is asked: dropped
+    reply(false);
+    await settle();
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'not a url', `https://x.example/${'a'.repeat(MAX_LINK_LENGTH)}`]) openLink(url);
+    await settle();
+    expect(asked).toEqual(['https://one.example/']);
+    openLink('http://three.example/');
+    expect(asked).toEqual(['https://one.example/', 'http://three.example/']);
+  });
+  it('opens nothing when asking fails', async () => {
+    const opened: string[] = [];
+    const openLink = confirmLinks(() => Promise.reject(new Error('no window')), url => opened.push(url));
+    openLink('https://example.org/');
+    await settle();
+    openLink('https://example.org/');
+    await settle();
+    expect(opened).toEqual([]);
   });
 });

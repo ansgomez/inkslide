@@ -169,7 +169,11 @@ window simply closes.
 All windows (the app, the audience window of presenter mode and the hidden print window) are
 locked down by `harden.ts`: context isolation, sandbox, no Node; no navigation, no new windows;
 every permission request and check is refused except fullscreen. Only the app window hands
-http(s) links to the system browser; in the audience and print windows they are only refused.
+http(s) links to the system browser, and only after the user confirms each in a native dialog
+that shows its host and whole URL (`confirmLinks`; one question at a time, links over 2048
+characters dropped): the page cannot prove a click, and a compromised page could otherwise
+send data out in a URL. The front end has no links of its own today. In the audience and
+print windows links are only refused.
 
 ## Presenter mode
 
