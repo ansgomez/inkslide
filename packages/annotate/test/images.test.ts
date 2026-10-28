@@ -25,6 +25,11 @@ const pngHead = (w: number, h: number): Uint8Array => {
   b[24] = 8; b[25] = 2;
   return b;
 };
+/** A PNG chunk header: length and type (the data and CRC follow; their content is not checked here). */
+const chunkHead = (type: string, length: number): number[] =>
+  [length >>> 24, (length >> 16) & 255, (length >> 8) & 255, length & 255, ...Buffer.from(type, 'latin1')];
+/** A chunk of `length` zero bytes and a zero CRC. */
+const chunk = (type: string, length = 0): number[] => [...chunkHead(type, length), ...new Array(length + 4).fill(0)];
 const u16 = (v: number) => [v >> 8, v & 255];
 const APP0 = [0xff, 0xe0, ...u16(16), 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0];
 /** A JPEG start: SOI, APP0, a frame header (marker `sof`) of w×h, then a scan marker. */
@@ -86,6 +91,20 @@ describe('image size in pixels', () => {
     expect(err(dataUrl('image/png', pngHead(4096, 4096)))).toMatch(/too large/); // 16.8 MP
     expect(err(dataUrl('image/jpeg', jpegHead(65535, 65535)))).toMatch(/too large/);
     expect(MAX_IMAGE_PIXELS).toBe(16_000_000);
+  });
+
+  it('refuses animated PNGs (acTL anywhere) and PNGs of too many chunks, reading only chunk headers', () => {
+    const png = (...chunks: number[][]) => dataUrl('image/png', [...pngHead(10, 10), ...chunks.flat()]);
+    expect(info(png(chunk('IDAT', 20), chunk('IEND')))).toMatchObject({ width: 10, height: 10 });
+    expect(err(png(chunk('acTL', 8), chunk('IDAT', 20), chunk('IEND')))).toMatch(/Animated PNG/);
+    // acTL after the image data (UPNG, which pdf-lib uses, still reads it), and after a large chunk.
+    expect(err(png(chunk('IDAT', 100_000), chunk('acTL', 8), chunk('fdAT', 20), chunk('IEND')))).toMatch(/Animated PNG/);
+    // Chunks after IEND are not read.
+    expect(info(png(chunk('IDAT', 20), chunk('IEND'), chunk('acTL', 8)))).not.toBeNull();
+    // A truncated file (a chunk longer than the data) is no reason to refuse here: the decoder does.
+    expect(info(dataUrl('image/png', [...pngHead(10, 10), ...chunkHead('IDAT', 1e6), 1, 2, 3]))).not.toBeNull();
+    const many = Array.from({ length: 10_001 }, () => chunk('tEXt'));
+    expect(err(png(...many, chunk('IEND')))).toMatch(/too many PNG chunks/);
   });
 
   it('refuses images whose size cannot be read', () => {
@@ -175,7 +194,9 @@ describe('NotesDoc images', () => {
 
   it('refuses images whose data would make the notes file too large', () => {
     const doc = pdfDoc();
-    const big = dataUrl('image/png', pngHead(10, 10), Math.floor((MAX_IMAGE_CHARS - 40) / 4) * 3 - 33);
+    // One IDAT chunk as large as the data URL limit allows.
+    const n = Math.floor((MAX_IMAGE_CHARS - 40) / 4) * 3 - 45;
+    const big = dataUrl('image/png', [...pngHead(10, 10), ...chunkHead('IDAT', n)], n + 4);
     const fat = (id: string) => createImage({ id, x: 0, y: 0, w: 1, h: 1, src: big });
     for (let i = 0; i < 8; i++) doc.addItems('p1', [], [fat(`f${i}`)]);
     expect(doc.imageRoom('p2', [fat('g')])).toMatch(/MB/);

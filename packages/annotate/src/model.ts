@@ -260,10 +260,43 @@ export interface ImageInfo {
 
 /** The first `bytes` bytes of base64 `data` (fewer if it is shorter). */
 function headBytes(data: string, bytes: number): Uint8Array {
-  const head = atob(data.slice(0, Math.ceil(bytes / 3) * 4));
-  const out = new Uint8Array(head.length);
-  for (let i = 0; i < head.length; i++) out[i] = head.charCodeAt(i);
+  return bytesAt(data, 0, bytes);
+}
+
+/** `n` bytes from byte `offset` of base64 `data`, decoding only the base64 groups that hold them. */
+function bytesAt(data: string, offset: number, n: number): Uint8Array {
+  const first = Math.floor(offset / 3);
+  const raw = atob(data.slice(first * 4, Math.ceil((offset + n) / 3) * 4));
+  const skip = offset - first * 3;
+  const out = new Uint8Array(Math.max(0, Math.min(n, raw.length - skip)));
+  for (let i = 0; i < out.length; i++) out[i] = raw.charCodeAt(skip + i);
   return out;
+}
+
+/** Most chunks of a PNG walked; canvas PNGs have a handful plus one IDAT per 8–64 KB. */
+const MAX_PNG_CHUNKS = 10_000;
+
+/**
+ * Why a PNG (base64 `data`) is refused for its chunks, or '': animated (an
+ * acTL chunk: pdf-lib decodes every frame of an APNG before it rejects it,
+ * so many large frames in a small file exhaust memory) or more than
+ * MAX_PNG_CHUNKS chunks. Walks the chunk headers by their lengths, decoding
+ * only the 8 bytes of each header, not the chunk data.
+ */
+function pngChunkProblem(data: string): string {
+  const pad = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  const size = (data.length / 4) * 3 - pad;
+  let offset = 8; // after the signature
+  for (let chunks = 0; offset + 8 <= size; chunks++) {
+    if (chunks >= MAX_PNG_CHUNKS) return 'Image has too many PNG chunks';
+    const h = bytesAt(data, offset, 8);
+    const length = ((h[0] << 24) >>> 0) + (h[1] << 16) + (h[2] << 8) + h[3];
+    const type = String.fromCharCode(h[4], h[5], h[6], h[7]);
+    if (type === 'acTL') return 'Animated PNG images are not supported';
+    if (type === 'IEND') break;
+    offset += 12 + length; // length, type, data, CRC
+  }
+  return '';
 }
 
 /**
@@ -321,6 +354,8 @@ function inspectImage(src: unknown): ImageInfo | string {
   if (size.width > MAX_IMAGE_SIDE || size.height > MAX_IMAGE_SIDE || size.width * size.height > MAX_IMAGE_PIXELS) {
     return `Image too large (${size.width}×${size.height} pixels; at most ${MAX_IMAGE_SIDE} on a side)`;
   }
+  const chunks = type === 'image/png' ? pngChunkProblem(data) : '';
+  if (chunks) return chunks;
   return { type, ...size };
 }
 

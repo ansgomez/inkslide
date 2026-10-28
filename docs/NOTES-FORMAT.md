@@ -160,7 +160,7 @@ tool and pasted onto a page. They live in an `images` array next to `strokes`:
 | `id` | string | Unique within the file, among stroke and image ids. A missing, non-string, longer than 200 characters or duplicate id gets a new one on load. |
 | `x`, `y` | number, ≤ 10⁶ in size | Top-left corner, page units (origin top-left, y down). |
 | `w`, `h` | number, 0.01 ≤ w, h ≤ 10⁶ | Size on the page, page units. The image is stretched to fill it. Smaller sizes would round to 0 when saved, so they are invalid. |
-| `src` | string | A base64 `data:` URL of type `image/png` or `image/jpeg`; the data must start with the PNG or JPEG signature, and its size in pixels must be readable from the start of the data (PNG: the IHDR chunk; JPEG: the first frame header, SOFn, within the first 256 KB). Nothing else (no SVG, no GIF, no links). |
+| `src` | string | A base64 `data:` URL of type `image/png` or `image/jpeg`; the data must start with the PNG or JPEG signature, and its size in pixels must be readable from the start of the data (PNG: the IHDR chunk; JPEG: the first frame header, SOFn, within the first 256 KB). A PNG must not be animated (no `acTL` chunk; at most 10 000 chunks are walked). Nothing else (no SVG, no GIF, no links). |
 
 Images are drawn below all ink (highlighter and pen strokes), in the order of the array.
 Position and size are rounded to 2 decimals when saved.
