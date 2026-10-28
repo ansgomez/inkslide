@@ -7,6 +7,7 @@
  * only .pdf files (others open from their bytes, without a path).
  */
 import { resolve } from 'node:path';
+import { MAX_TEXT_BYTES } from './fsutil';
 
 /** Paths the renderer may read: granted ones plus those `extra` accepts (the recent files). */
 export class PathGrants {
@@ -40,4 +41,15 @@ export function checkDroppedPdf(value: unknown): string {
   const p = checkPath(value, 'dropped file');
   if (!/\.pdf$/i.test(p)) throw new Error('only PDF files can be dropped with their path');
   return p;
+}
+
+/**
+ * Notes text from IPC: a string of at most MAX_TEXT_BYTES in UTF-8 (what is
+ * written), not in UTF-16 code units (`length`), which count a 3-byte
+ * character once. The length check first: UTF-8 never has fewer bytes than code units.
+ */
+export function checkText(value: unknown, maxBytes = MAX_TEXT_BYTES): string {
+  if (typeof value !== 'string') throw new Error('notes must be a string');
+  if (value.length > maxBytes || Buffer.byteLength(value, 'utf8') > maxBytes) throw new Error('notes too large');
+  return value;
 }

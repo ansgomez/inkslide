@@ -27,9 +27,9 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePresenterMessage } from '@inkslide/annotate/presenter';
 import { IPC, type MenuCommand, type PdfFile, type PdfRef } from '../shared/bridge';
-import { checkDroppedPdf, checkPath, PathGrants } from './access';
+import { checkDroppedPdf, checkPath, checkText, PathGrants } from './access';
 import { CrashRecovery } from './crashRecovery';
-import { sameFile, writeFileAtomic } from './fsutil';
+import { MAX_PDF_BYTES, MAX_TEXT_BYTES, sameFile, writeFileAtomic } from './fsutil';
 import { lockNavigation, restrictPermissions, SAFE_WEB_PREFERENCES } from './harden';
 import { buildMenu } from './menu';
 import {
@@ -46,9 +46,6 @@ import { fitToDisplays, loadWindowState, MIN_SIZE, saveWindowState, type WindowS
 
 /** true in a test build (dist.mjs --test-build, via build.mjs): packaged, it still takes the test variables. */
 declare const INKSLIDE_TEST_BUILD: boolean;
-
-const MAX_PDF_BYTES = 2 ** 31 - 1;
-const MAX_TEXT_BYTES = 256 * 2 ** 20;
 
 // Native Wayland when available (pen pressure, tilt and eraser need it).
 app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -458,12 +455,6 @@ function start(): void {
   }
 
   const checkTarget = (ref: unknown, sha256: unknown): NotesTarget => ({ ...checkRef(ref), sha256: checkSha(sha256) });
-
-  function checkText(value: unknown): string {
-    if (typeof value !== 'string') throw new Error('notes must be a string');
-    if (value.length > MAX_TEXT_BYTES) throw new Error('notes too large');
-    return value;
-  }
 
   handle(IPC.openPdf, async (path?: unknown): Promise<PdfFile | null> => {
     let p: string | null;

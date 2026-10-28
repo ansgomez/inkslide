@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { checkDroppedPdf, checkPath, PathGrants } from '../src/main/access';
+import { checkDroppedPdf, checkPath, checkText, PathGrants } from '../src/main/access';
 
 describe('PathGrants', () => {
   it('allows granted and extra paths only, normalized', () => {
@@ -19,5 +19,12 @@ describe('PathGrants', () => {
     for (const bad of ['/home/u/.ssh/id_ed25519', '/home/u/a.pdf.notes.json', '/etc/passwd', 42]) {
       expect(() => checkDroppedPdf(bad)).toThrow();
     }
+  });
+  it('checkText limits notes by their UTF-8 bytes, not their length', () => {
+    expect(checkText('aé€', 6)).toBe('aé€'); // 1 + 2 + 3 bytes
+    expect(() => checkText('aé€x', 6)).toThrow('too large');
+    expect(() => checkText('€€€', 8)).toThrow('too large'); // 3 code units, 9 bytes
+    expect(() => checkText('x'.repeat(9), 8)).toThrow('too large');
+    for (const bad of [undefined, null, 42, {}]) expect(() => checkText(bad)).toThrow('must be a string');
   });
 });

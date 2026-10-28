@@ -4,6 +4,11 @@ import { constants } from 'node:fs';
 import { access, lstat, mkdir, open, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
+/** Largest PDF that is read (open, recent files) or taken from the page (export, print). */
+export const MAX_PDF_BYTES = 2 ** 31 - 1;
+/** Largest notes file that is read or written, in bytes (UTF-8). */
+export const MAX_TEXT_BYTES = 256 * 2 ** 20;
+
 /** Whether a symlink to `target` (resolved) may be followed. */
 export type FollowLink = (target: string) => boolean;
 
