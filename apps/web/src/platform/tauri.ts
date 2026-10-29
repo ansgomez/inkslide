@@ -82,9 +82,12 @@ export function shareName(name: string): string {
   return `${base.trim() || 'document'}.pdf`;
 }
 
-/** Key of a PDF's notes: its SHA-256, else a safe form of its name ([A-Za-z0-9_-] only, as write_notes requires). */
+/** Max. length of a notes key (ASCII), as read_notes and write_notes accept. */
+const NOTES_KEY_BYTES = 200;
+
+/** Key of a PDF's notes: its SHA-256, else a safe form of its name ([A-Za-z0-9_-] only, at most 200 characters, as write_notes requires). */
 export const notesKey = (pdf: Pick<PdfFile, 'name'>, sha256?: string): string =>
-  sha256 && /^[0-9a-f]{64}$/.test(sha256) ? sha256 : safeFileName(`name-${pdf.name}`, '');
+  sha256 && /^[0-9a-f]{64}$/.test(sha256) ? sha256 : safeFileName(`name-${pdf.name}`, '').slice(0, NOTES_KEY_BYTES);
 
 /** Notes file of a PDF in the app data directory: notes/<sha256>.notes.json, as the desktop's app storage. */
 export const notesFile = (pdf: Pick<PdfFile, 'name'>, sha256?: string): string =>

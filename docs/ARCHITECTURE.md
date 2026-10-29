@@ -145,7 +145,7 @@ Main checks every call:
   comes with (the preload sends them until main has taken that hash). A hash alone, of a
   PDF never opened, reaches no notes in app storage;
 - hashes must be 64 hex characters, text and PDFs have size limits (notes in UTF-8 bytes,
-  256 MB; PDFs 2 GB). Main reads a PDF, an imported notes file or a sidecar through one
+  256 MB; PDFs 1 GB). Main reads a PDF, an imported notes file or a sidecar through one
   handle: only a regular file (no FIFO or device), its size taken from that handle, and the
   read stops at the limit (`fsutil.ts`, `readFileLimited`, `readFileChecked`). PDF bytes
   from the page (export, print) have the PDF limit, and a window prints one PDF at a time

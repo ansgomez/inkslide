@@ -293,7 +293,7 @@ const MAX_PICKED: usize = 8;
 
 /// Files picked with `pick_file` and not read yet, with their kind, by the id
 /// handed to the web view (oldest first). Reading one consumes it: a file is
-/// read once per pick, and the list stays short over a long session.
+/// read once per pick (a failed read keeps it), and the list stays short over a long session.
 #[derive(Default)]
 struct Picked(Mutex<VecDeque<(String, FilePath, Kind)>>);
 
@@ -359,12 +359,18 @@ fn read_all(open: impl FnOnce(OpenOptions) -> std::io::Result<fs::File>, limit: 
 #[tauri::command]
 async fn read_picked<R: Runtime>(app: AppHandle<R>, picked: State<'_, Picked>, id: String) -> Result<Response, String> {
     let (file, kind) = picked.take(&id)?;
-    let read = read_all(|opts| app.fs().open(file.clone(), opts), kind.max_bytes());
+    let bytes = match read_all(|opts| app.fs().open(file.clone(), opts), kind.max_bytes()) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            picked.add(file, kind); // a failed read does not use up the pick: it can be tried again
+            return Err(e.to_string());
+        }
+    };
     #[cfg(target_os = "ios")]
     let _ = app.fs().stop_accessing_security_scoped_resource(file);
     #[cfg(not(target_os = "ios"))]
     drop(file);
-    Ok(Response::new(read.map_err(|e| e.to_string())?))
+    Ok(Response::new(bytes))
 }
 
 /// Reads the notes of a PDF (app data `notes/<key>.notes.json`, at most

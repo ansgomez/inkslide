@@ -16,7 +16,7 @@ desktop app uses Electron.
 | Presenter mode: page, ink and laser mirrored in a second window (desktop, browser) | Done, not yet tried with a projector |
 | Desktop on Linux (AppImage) | Done |
 | Web app and PWA (installable, offline) | Done |
-| Desktop on Windows and macOS | Configured, not yet built or tested there |
+| Desktop on Windows and macOS | Built by the release workflow (v0.1.0), not yet tested there |
 | iPad and Android (Tauri 2) | Builds, not yet run on a device |
 
 ## Open work
@@ -24,9 +24,8 @@ desktop app uses Electron.
 - **Devices:** check the PWA on a real iPad (install from Safari, safe areas, Pencil and palm
   rejection, export through the share sheet, storage kept over time). Run the Tauri shells on
   iPad and Android (`apps/mobile/README.md`).
-- **Packages:** build the RPM once on Fedora (needs `rpm-build` and `libxcrypt-compat`). Build
-  and test the NSIS installer on Windows and the DMG on a Mac; sign the macOS app and wire its
-  dark icon.
+- **Packages:** test the RPM on Fedora, the NSIS installer on Windows and the DMG on a Mac (the
+  release workflow builds them all); sign the macOS app and wire its dark icon.
 - **Licenses for store builds:** bundle the full license texts of the Rust crates (for example
   with `cargo about generate`); `THIRD_PARTY_NOTICES.md` only counts them per license.
 - **Export checks:** open an export in Acrobat (Poppler and MuPDF are checked automatically) and

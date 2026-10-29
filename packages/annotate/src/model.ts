@@ -1085,9 +1085,10 @@ export class NotesDoc {
     for (const meta of list) {
       const after = Number(meta.after);
       if (!inDeck(after, this.deck) || seen.has(meta.id)) continue;
-      seen.add(meta.id);
       let page = this.pages.get(meta.id);
-      if (!page || page.kind !== 'blank') {
+      if (this.slideRe.test(meta.id) || (page && page.kind !== 'blank')) continue; // never replaces a slide page
+      seen.add(meta.id);
+      if (!page) {
         page = { id: meta.id, kind: 'blank', after, paper: 'plain', strokes: [], images: [] };
         this.pages.set(meta.id, page);
       }

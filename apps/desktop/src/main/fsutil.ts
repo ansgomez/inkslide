@@ -5,7 +5,7 @@ import { access, type FileHandle, lstat, mkdir, open, realpath, rename, stat, un
 import { basename, dirname, join } from 'node:path';
 
 /** Largest PDF that is read (open, recent files) or taken from the page (export, print). */
-export const MAX_PDF_BYTES = 2 ** 31 - 1;
+export const MAX_PDF_BYTES = 2 ** 30; // main and the page each hold a copy
 /** Largest notes file that is read or written, in bytes (UTF-8). */
 export const MAX_TEXT_BYTES = 256 * 2 ** 20;
 

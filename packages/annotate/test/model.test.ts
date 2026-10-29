@@ -255,6 +255,19 @@ describe('NotesDoc blank pages', () => {
     expect((doc.getPage(b) as BlankPage).paper).toBe('plain');
     expect(doc.setPaper('s1', 'grid')).toBeNull();
   });
+
+  it('applyRemoteBlanks never turns a slide page into a blank page', () => {
+    const doc = marpDoc();
+    doc.addStroke('s1', stroke('a'));
+    doc.applyRemoteBlanks([
+      { id: 's1', after: 1, paper: 'grid' }, // an existing slide page
+      { id: 's3', after: 2, paper: 'grid' }, // a slide page not created yet
+      { id: 'b-x-1', after: 2, paper: 'grid' },
+    ]);
+    expect(doc.sequence()).toEqual(['s1', 's2', 'b-x-1', 's3']);
+    expect(doc.getPage('s1')?.kind).toBe('slide');
+    expect(ids(doc, 's1')).toEqual(['a']);
+  });
 });
 
 describe('PDF decks', () => {

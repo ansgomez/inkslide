@@ -161,6 +161,8 @@ describe('helpers', () => {
     expect(notesFile({ name: 'a.pdf' }, '../../etc')).toBe('notes/name-a_pdf.notes.json');
     // Keys are what write_notes accepts: [A-Za-z0-9_-] only.
     for (const name of ['../x.pdf', 'a b/c:d.pdf', '講義.pdf', '']) expect(notesKey({ name })).toMatch(/^[A-Za-z0-9_-]+$/);
+    // ...of at most 200 characters, however long the name.
+    expect(notesKey({ name: `${'a'.repeat(300)}.pdf` })).toBe(`name-${'a'.repeat(195)}`);
   });
 
   it('names shared files safely, always as a PDF', () => {
