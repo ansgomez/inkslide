@@ -188,6 +188,32 @@ body.ann-on[data-ann-dock="right"] .ann-preview { order: -1; width: 100%; }
 body[data-ann-dock="left"] .ann-label,
 body[data-ann-dock="right"] .ann-label { min-width: 0; width: 100%; padding: 4px 0; white-space: normal; }
 
+/* Drop-down menu of a group (its ⋯ button): one item per row, icon and label. */
+.ann-menu {
+  position: fixed;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 180px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--ann-bar-bg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+.ann-menu[hidden], body:not(.ann-on) .ann-menu { display: none; }
+.ann-menu .ann-btn {
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 0 10px 0 7px;
+  font: inherit;
+  white-space: nowrap;
+}
+/* In the menu a hidden item leaves no gap (on the bar it keeps its place). */
+.ann-menu .ann-btn[hidden] { display: none; }
+.ann-menu-label { pointer-events: none; }
+
 /* ── Layout offsets ───────────────────────────────────────────── */
 
 /* The viewer insets its page area by these (the bar may wrap). */

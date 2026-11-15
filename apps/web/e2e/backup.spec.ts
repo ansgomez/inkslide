@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { FIXTURE, openPdf, penStroke, penStrokes } from './helpers';
+import { fileItem, FIXTURE, openPdf, penStroke, penStrokes } from './helpers';
 
 const sha = createHash('sha256').update(readFileSync(FIXTURE)).digest('hex');
 
@@ -362,29 +362,29 @@ test('browser: a save after a save makes a backup, and the toolbar\'s Revert to 
   await openPdf(page);
   const revert = page.locator('.ann-bar [data-id="revert"]');
   const saved = page.locator('.ann-bar [data-id="save"]:not(.is-unsaved)');
-  await expect(revert).toBeHidden();
+  await expect(revert).toHaveJSProperty('hidden', true);
   // The first save has no saved notes before it: no backup yet.
   await penStroke(page, [0.2, 0.2], [0.3, 0.5]);
   await page.keyboard.press('Control+s');
   await expect(saved).toHaveCount(1);
-  await expect(revert).toBeHidden();
+  await expect(revert).toHaveJSProperty('hidden', true);
   // The second copies the 1-stroke notes to the backup.
   await penStroke(page, [0.5, 0.2], [0.6, 0.5]);
   await page.keyboard.press('Control+s');
   await expect(saved).toHaveCount(1);
-  await expect(revert).toBeVisible();
+  await expect(revert).toHaveJSProperty('hidden', false);
 
-  await revert.click();
+  await (await fileItem(page, 'revert')).click();
   await expect(penStrokes(page)).toHaveCount(1);
   await expect(page.locator('.ann-banner-info')).toContainText('Reverted to the backup');
-  await revert.click();
+  await (await fileItem(page, 'revert')).click();
   await expect(penStrokes(page)).toHaveCount(2);
 
   // Reopened, the notes are the 2 strokes and the button is there at once.
   await page.reload();
   await openPdf(page);
   await expect(penStrokes(page)).toHaveCount(2);
-  await expect(revert).toBeVisible();
+  await expect(revert).toHaveJSProperty('hidden', false);
 });
 
 /** A file in the browser's OPFS notes directory, from the page: written or removed first if asked; its text ('' if missing). */
@@ -414,20 +414,20 @@ test('browser: the Revert to Backup button goes when the backup does (on a click
   const backup = `inkslide-notes_${sha}.notes.backup.json`;
   await strokeAndSave(0.2);
   await strokeAndSave(0.4);
-  await expect(revert).toBeVisible();
+  await expect(revert).toHaveJSProperty('hidden', false);
 
   // Deleted behind the page's back (as when the PDF leaves the recent files): a click says so and hides it.
   await opfsFile(page, backup, { remove: true });
-  await revert.click();
+  await (await fileItem(page, 'revert')).click();
   await expect(page.locator('.ann-banner-warn')).toContainText('There is no backup of these notes.');
-  await expect(revert).toBeHidden();
+  await expect(revert).toHaveJSProperty('hidden', true);
 
   // Made again by the next save; deleted again, coming back to the tab hides it.
   await strokeAndSave(0.6);
-  await expect(revert).toBeVisible();
+  await expect(revert).toHaveJSProperty('hidden', false);
   await opfsFile(page, backup, { remove: true });
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await expect(revert).toBeHidden();
+  await expect(revert).toHaveJSProperty('hidden', true);
 });
 
 test('browser: notes that cannot be read are kept as they are before "open anyway" replaces them', async ({ page }) => {

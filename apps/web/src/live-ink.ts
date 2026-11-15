@@ -27,6 +27,8 @@ interface Session {
   raw: Point[];
   predicted: Point[];
   straight: boolean;
+  /** The tool straightened the stroke (held still): it stays straight, whatever Shift does. */
+  held: boolean;
   style: Pick<Stroke, 'color' | 'size'> | null;
   /** Smoothed points from the tool (fallback when no pointer events were seen). */
   toolPoints: readonly Point[];
@@ -63,7 +65,7 @@ export function createLiveInk(canvas: HTMLCanvasElement, events: HTMLElement): L
     let pts: Point[];
     if (s.raw.length) {
       const all = s.predicted.length ? s.raw.concat(s.predicted) : s.raw;
-      pts = s.straight ? [all[0], all[all.length - 1]] : smoothPoints(all);
+      pts = s.straight || s.held ? [all[0], all[all.length - 1]] : smoothPoints(all);
     } else {
       pts = s.toolPoints.slice();
     }
@@ -113,21 +115,25 @@ export function createLiveInk(canvas: HTMLCanvasElement, events: HTMLElement): L
   events.addEventListener('pointerdown', onDown, true);
   events.addEventListener('pointermove', onMove, true);
 
-  function begin(layer: Layer, tool: StrokeTool): { update(stroke: Stroke): void; remove(): void } {
+  function begin(layer: Layer, tool: StrokeTool): { update(stroke: Stroke, straight?: boolean): void; remove(): void } {
     const down = pendingDown;
     pendingDown = null;
     const s: Session = {
       layer, tool, pointerId: down ? down.pointerId : null, raw: [], predicted: [],
-      straight: !!(down && down.shift), style: null, toolPoints: [], drawn: false,
+      straight: !!(down && down.shift), held: false, style: null, toolPoints: [], drawn: false,
     };
     session = s;
     canvas.classList.toggle('is-hl', tool === 'highlighter');
     return {
-      update(stroke) {
+      update(stroke, straight) {
         if (session !== s) return;
         const was = s.style;
         s.style = { color: stroke.color, size: stroke.size };
         if (!was || was.color !== stroke.color || was.size !== stroke.size) s.drawn = false;
+        // Straight but not by Shift: the tool's hold timer straightened it.
+        const held = !!straight && !s.straight;
+        if (held && !s.held) s.drawn = false;
+        if (held) s.held = true;
         s.toolPoints = stroke.points;
         // The tool's first point is the pointerdown position (not in the raw list yet).
         if (!s.raw.length && s.pointerId !== null && stroke.points[0]) s.raw.push(stroke.points[0].slice() as Point);

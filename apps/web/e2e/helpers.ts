@@ -22,12 +22,20 @@ export async function useFileInput(page: Page): Promise<void> {
   await page.evaluate(() => { delete (window as { showOpenFilePicker?: unknown }).showOpenFilePicker; });
 }
 
+/** Item `id` of the toolbar's file menu (⋯), with the menu opened if it is closed. */
+export async function fileItem(page: Page, id: string) {
+  const panel = page.locator('.ann-menu-file');
+  if (await panel.isHidden()) await page.locator('.ann-bar [data-id="file-menu"]').click();
+  await expect(panel).toBeVisible();
+  return panel.locator(`[data-id="${id}"]`);
+}
+
 /** Open a PDF through the "Open PDF" button and the file chooser. */
 export async function openPdf(page: Page, file = FIXTURE): Promise<void> {
   await useFileInput(page);
   const chooser = page.waitForEvent('filechooser');
   if (await page.locator('.ink-open').isVisible()) await page.locator('.ink-open').click();
-  else await page.locator('.ann-bar [data-id="open"]').click();
+  else await (await fileItem(page, 'open')).click();
   await (await chooser).setFiles(file);
   await expect(page.locator('.ink-stage')).toBeVisible();
   await expect(page.locator('.ink-page svg.ann-page')).toHaveCount(1);

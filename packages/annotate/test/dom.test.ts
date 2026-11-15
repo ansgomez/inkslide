@@ -131,7 +131,7 @@ describe('annotator, toolbar and keys', () => {
       'ann-group ann-group-sizes', 'ann-group ann-group-history', 'ann-group ann-group-edit',
       'ann-group ann-group-pages ann-placeholder', 'ann-group ann-group-file ann-placeholder',
     ]);
-    expect(bar.querySelectorAll('.ann-swatch').length).toBe(8);
+    expect(bar.querySelectorAll('.ann-swatch').length).toBe(7);
     expect(bar.querySelector('[data-id="pen"]')!.classList.contains('is-active')).toBe(true);
     expect((bar.querySelector('[data-id="undo"]') as HTMLButtonElement).disabled).toBe(true);
     expect(document.body.dataset.annDock).toBe('top');
@@ -665,6 +665,46 @@ describe('annotator, toolbar and keys', () => {
       expect(style.getPropertyValue('--ann-bar-h')).toBe('48px');
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it('menu items go into the group\'s ⋯ menu, which closes on a choice, outside or Escape', () => {
+    const { app } = setup();
+    const exported = vi.fn();
+    registerGroup('file', () => ({
+      id: 'file', label: 'File',
+      items: [
+        { id: 'save', title: 'Save', icon: 'save', onClick: () => {} },
+        { id: 'pdf', title: 'Export PDF', icon: 'pdf', onClick: exported, menu: true, label: 'Export PDF' },
+        { id: 'revert', title: 'Revert', icon: 'load', onClick: () => {}, menu: true, label: 'Revert', hidden: () => true },
+      ],
+    }));
+    try {
+      const bar = createToolbar(app);
+      const group = bar.el.querySelector('.ann-group-file')!;
+      const more = group.querySelector<HTMLButtonElement>('[data-id="file-menu"]')!;
+      const panel = bar.el.querySelector<HTMLElement>('.ann-menu-file')!;
+      expect([...group.children].map(b => (b as HTMLElement).dataset.id)).toEqual(['save', 'file-menu']);
+      expect(panel.hidden).toBe(true);
+      expect(more.getAttribute('aria-expanded')).toBe('false');
+      more.click();
+      expect(panel.hidden).toBe(false);
+      expect(more.getAttribute('aria-expanded')).toBe('true');
+      const pdf = panel.querySelector<HTMLButtonElement>('[data-id="pdf"]')!;
+      expect(pdf.querySelector('.ann-menu-label')!.textContent).toBe('Export PDF');
+      expect(panel.querySelector<HTMLElement>('[data-id="revert"]')!.hidden).toBe(true);
+      pdf.click();
+      expect(exported).toHaveBeenCalledTimes(1);
+      expect(panel.hidden).toBe(true);
+      more.click();
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      expect(panel.hidden).toBe(true);
+      more.click();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      expect(panel.hidden).toBe(true);
+      bar.destroy();
+    } finally {
+      registerGroup('file', () => ({ id: 'file', label: 'File', placeholder: true, items: [] }));
     }
   });
 

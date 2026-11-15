@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
-import { expectCounter, FIXTURE, openPdf, penStroke, penStrokes } from './helpers';
+import { expectCounter, fileItem, FIXTURE, openPdf, penStroke, penStrokes } from './helpers';
 
 const A4: [number, number] = [595.28, 841.89];
 const PAGES = 5;
@@ -97,7 +97,7 @@ test('many strokes on an A4 PDF, page 2 after page turns: no errors, notes round
 
   // Export with all of it.
   await page.evaluate(() => { delete (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker; });
-  const [download] = await Promise.all([page.waitForEvent('download'), page.locator('.ann-bar [data-id="pdf"]').click()]);
+  const [download] = await Promise.all([page.waitForEvent('download'), fileItem(page, 'pdf').then(b => b.click())]);
   const out = await PDFDocument.load(readFileSync((await download.path())!));
   expect(out.getPageCount()).toBe(PAGES);
   await expect(page.locator('.ann-banners')).toContainText('Exported a4-notes.pdf');

@@ -880,10 +880,11 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     });
     return group;
   });
+  // Save stays on the bar (its dot shows unsaved changes); the rest is in the ⋯ menu.
   registerGroup('file', (app: ToolbarHost) => ({
     id: 'file', label: 'File',
     items: [
-      { id: 'open', title: 'Open PDF (Ctrl/Cmd+O)', icon: 'open', onClick: () => void viewer.openFrom() },
+      { id: 'open', title: 'Open PDF (Ctrl/Cmd+O)', icon: 'open', onClick: () => void viewer.openFrom(), menu: true, label: 'Open PDF…' },
       {
         id: 'save', icon: 'save', onClick: () => void viewer.save(),
         title: () => ({
@@ -894,14 +895,15 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         })[saveState()],
       },
       { id: 'load', title: 'Import notes from .json (or drop a file on the window)', icon: 'load',
-        onClick: () => void viewer.importNotes(), disabled: () => !adapter.importNotes },
-      { id: 'pdf', title: 'Export PDF with notes', icon: 'pdf', onClick: () => void viewer.exportPdf() },
+        onClick: () => void viewer.importNotes(), disabled: () => !adapter.importNotes, menu: true, label: 'Import notes…' },
+      { id: 'pdf', title: 'Export PDF with notes', icon: 'pdf', onClick: () => void viewer.exportPdf(), menu: true, label: 'Export PDF' },
       { id: 'print', title: 'Print with notes (Ctrl/Cmd+P)', icon: 'print', onClick: () => void viewer.print(),
-        disabled: () => printing },
+        disabled: () => printing, menu: true, label: 'Print…' },
       { id: 'revert', title: 'Revert to backup: the notes as saved a few minutes ago (asks first)', icon: 'revert',
-        onClick: () => void viewer.revertToBackup(), hidden: () => !backupButton || !s?.hasBackup },
+        onClick: () => void viewer.revertToBackup(), hidden: () => !backupButton || !s?.hasBackup, menu: true, label: 'Revert to backup…' },
       ...(presenterMode ? [{
         id: 'present', icon: 'present', onClick: () => presenterMode.toggle(), active: () => presenterMode.on,
+        menu: true, label: 'Presenter mode',
         title: () => (presenterMode.on ? 'End presenter mode (F5): close the audience window'
           : 'Presenter mode (F5): show the page in a second window, e.g. on a projector'),
       }] : []),

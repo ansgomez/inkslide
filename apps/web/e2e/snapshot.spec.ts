@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib';
-import { expectCounter, firePointers, openPdf, pageBox, penStroke } from './helpers';
+import { expectCounter, fileItem, firePointers, openPdf, pageBox, penStroke } from './helpers';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
@@ -87,7 +87,7 @@ test('snapshot an area, paste it on another page, reload, export', async ({ page
 
   // The export has the image as an image XObject.
   await page.evaluate(() => { delete (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker; });
-  const [download] = await Promise.all([page.waitForEvent('download'), bar.locator('[data-id="pdf"]').click()]);
+  const [download] = await Promise.all([page.waitForEvent('download'), fileItem(page, 'pdf').then(b => b.click())]);
   const pdf = await PDFDocument.load(readFileSync((await download.path())!));
   const xobjects = pdf.context.enumerateIndirectObjects().map(([, o]) => (o as { dict?: PDFDict }).dict)
     .filter(d => !!d && d.get(PDFName.of('Subtype')) === PDFName.of('Image'));

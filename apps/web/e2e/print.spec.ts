@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
-import { expectCounter, openPdf, penStroke } from './helpers';
+import { expectCounter, fileItem, openPdf, penStroke } from './helpers';
 
 /* Print on the web: the annotated PDF as page images and window.print().
  * window.print() is replaced by a recorder (headless Chromium has no print
@@ -25,7 +25,7 @@ test('prints the PDF pages with the notes and blank pages as images', async ({ p
   await page.locator('.ann-bar [data-id="page-insert"]').click();
   await expectCounter(page, '1 / 3 · blank 1/1');
 
-  await page.locator('.ann-bar [data-id="print"]').click();
+  await (await fileItem(page, 'print')).click();
   await expect.poll(() => printCalls(page)).toBe(1);
   await expect(page.locator('body')).toHaveClass(/ink-printing/);
   const imgs = page.locator('.ink-print .ink-print-page img');
@@ -60,7 +60,7 @@ test('the browser prints only the page images, each page at its own size', async
   await openPdf(page);
   await page.locator('.ann-bar [data-id="page-insert"]').click();
   await expectCounter(page, '1 / 3 · blank 1/1');
-  await page.locator('.ann-bar [data-id="print"]').click();
+  await (await fileItem(page, 'print')).click();
   await expect(page.locator('.ink-print .ink-print-page img')).toHaveCount(4);
   const pdf = await PDFDocument.load(await page.pdf({ preferCSSPageSize: true, printBackground: true }));
   const sizes = pdf.getPages().map(p => p.getSize()).map(s => `${Math.round(s.width)}x${Math.round(s.height)}`);

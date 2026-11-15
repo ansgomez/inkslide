@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTools, DEFAULT_PREFS, nextSize, SIZE_PRESETS, SIZES, TOOLS, type Prefs, type Selection, type Surface, type ToolHost, type ToolRenderer } from '../src/tools';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createTools, DEFAULT_PREFS, HOLD_MS, nextSize, SIZE_PRESETS, SIZES, TOOLS, type Prefs, type Selection, type Surface, type ToolHost, type ToolRenderer } from '../src/tools';
 import type { NotesDoc, PageImage } from '../src/model';
 import { pageUnit, type Layer } from '../src/render';
 import { loadPrefs, nearestPreset } from '../src/app';
@@ -164,6 +164,52 @@ describe('pen and highlighter', () => {
     expect(s.tool).toBe('highlighter');
     expect(s.color).toBe('#ffd200');
     expect(s.points).toEqual([[0, 0, 0.5], [50, 50, 0.5]]);
+  });
+
+  describe('holding the pen still', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('straightens a nearly straight stroke; the end then follows the pen', () => {
+      const { pen } = createTools(app, R.r);
+      pen.down!(surface, [0, 0, 0.5]);
+      pen.move!(surface, [40, 4, 0.5]);
+      pen.move!(surface, [80, -3, 0.5]);
+      pen.move!(surface, [100, 2, 0.5]);
+      vi.advanceTimersByTime(HOLD_MS - 1);
+      expect(R.live.update).not.toHaveBeenLastCalledWith(expect.anything(), true);
+      pen.move!(surface, [102, 3, 0.5]); // jitter while resting: still holding
+      vi.advanceTimersByTime(1);
+      expect(R.live.update).toHaveBeenLastCalledWith(expect.objectContaining({ points: [[0, 0, 0.5], [102, 3, 0.5]] }), true);
+      pen.move!(surface, [150, 40, 0.5]); // still straight, without Shift
+      pen.up!(surface, [160, 50, 0.5]);
+      expect((doc.calls[0].args[0] as Stroke).points).toEqual([[0, 0, 0.5], [160, 50, 0.5]]);
+    });
+
+    it('leaves curves, short strokes and moving pens alone', () => {
+      const { pen } = createTools(app, R.r);
+      // A curve: its middle is far from the line between its ends.
+      pen.down!(surface, [0, 0, 0.5]);
+      pen.move!(surface, [50, 40, 0.5]);
+      pen.move!(surface, [100, 0, 0.5]);
+      vi.advanceTimersByTime(HOLD_MS * 2);
+      pen.up!(surface, null);
+      expect((doc.calls[0].args[0] as Stroke).points.length).toBeGreaterThan(2);
+      // Too short to be meant as a line (a dot, a comma).
+      pen.down!(surface, [0, 0, 0.5]);
+      pen.move!(surface, [10, 0, 0.5]);
+      vi.advanceTimersByTime(HOLD_MS * 2);
+      pen.up!(surface, null);
+      expect((doc.calls[1].args[0] as Stroke).points.length).toBeGreaterThan(2);
+      // A pen that keeps moving never rests.
+      pen.down!(surface, [0, 0, 0.5]);
+      for (let x = 20; x <= 200; x += 20) {
+        pen.move!(surface, [x, 0, 0.5]);
+        vi.advanceTimersByTime(HOLD_MS / 2);
+      }
+      pen.up!(surface, null);
+      expect((doc.calls[2].args[0] as Stroke).points.length).toBeGreaterThan(2);
+    });
   });
 
   it('uses the current prefs', () => {
@@ -432,7 +478,8 @@ describe('previews (presenter mode)', () => {
     const { partial } = createTools(app, R.r);
     partial.down!(surface, [50, 0, 0.5]);
     expect(log).toHaveLength(1);
-    expect(log[0]).toMatch(/^p1:erase:[^a,|]+,[^a,|]+\|$/); // two pieces, not a
+    expect(log[0]).toMatch(/^p1:erase:[^,|]+,[^,|]+\|$/); // two pieces...
+    expect(log[0].slice('p1:erase:'.length, -1).split(',')).not.toContain('a'); // ...not a
     partial.cancel!(surface);
     expect(log.at(-1)).toBe('p1:end');
   });

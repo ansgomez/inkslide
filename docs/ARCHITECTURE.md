@@ -424,7 +424,7 @@ themselves fall back to.
   removed) loses its backup, not its unreadable copy (maybe the only copy of real notes);
   `cleanupNotesStore`, run when the adapter is made, deletes backups and unreadable copies
   older than 90 days, reading each file's time again just before deleting it.
-- The viewer shows a Revert to Backup button in the toolbar's File group (hidden while there
+- The viewer shows a Revert to Backup item in the File group's ⋯ menu (hidden while there
   is none, via the item's `hidden()`) for adapters with `revertToBackup` that are not
   Electron, which has the menu. It asks `readBackup` when a PDF opens, after each save until
   there is one, and when the tab becomes visible again; a click that finds none hides it.
@@ -464,7 +464,10 @@ One page is shown at a time (`apps/web/src/viewer.ts`):
 4. **Live ink** (`live-ink.ts`): the stroke being drawn goes to a 2D canvas created with
    `desynchronized: true`, fed straight from pointer events (coalesced and predicted points)
    and redrawn in the event handler. On pen up the tool adds the real stroke to the model,
-   which syncs the SVG in the same task, so nothing flickers.
+   which syncs the SVG in the same task, so nothing flickers. A stroke is straight with Shift
+   (seen by both) or once the pen tool's hold timer straightened it (`HOLD_MS` at rest on a
+   nearly straight stroke, tools.ts), which the tool passes to the canvas as
+   `update(stroke, straight)`.
 
 The overview (`overview.ts`) is a grid of small PDF.js renders, made lazily when a tile
 scrolls into view, with the page's notes as SVG on top.

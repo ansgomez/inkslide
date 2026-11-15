@@ -190,7 +190,8 @@ export function syncImages(layer: Layer, images: readonly PageImage[]): void {
 
 /** A stroke being drawn (see liveStroke). */
 export interface LiveStroke {
-  update(stroke: Stroke): void;
+  /** `straight`: drawn as a straight line (the stroke's points are its two ends already). */
+  update(stroke: Stroke, straight?: boolean): void;
   remove(): void;
 }
 

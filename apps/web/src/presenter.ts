@@ -343,8 +343,8 @@ export function createPresenter(send: (message: PresenterMessage) => void, timer
       const mine = { page: pageId, tool, stroke: null as Stroke | null, sent: [] as readonly Point[], ended: false };
       live = mine;
       return {
-        update(stroke) {
-          inner.update(stroke);
+        update(stroke, straight) {
+          inner.update(stroke, straight);
           if (live !== mine) return;
           mine.stroke = stroke;
           scheduleLive();

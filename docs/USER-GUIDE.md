@@ -47,20 +47,30 @@ swipes and the overview still work.
 The toolbar can sit on any edge of the window: the dock button next to the mode button moves
 it to the next edge. The choice is remembered.
 
+At the end of the toolbar, next to **Save**, the **⋯** button opens a menu with the rest of the
+file actions: Open PDF, Import notes, Export PDF, Print, Presenter mode (in the browser) and
+Revert to backup (when there is one). Choosing one, pressing anywhere else or Esc closes it.
+
 ## Tools
 
 | Tool | Key | What it does |
 |---|---|---|
-| Pen | P | Pressure-sensitive ink. Hold **Shift** to draw a straight line. |
-| Highlighter | H | Wide, transparent strokes, always drawn under the pen ink. Shift for a straight line. |
+| Pen | P | Pressure-sensitive ink. For a straight line, hold the pen still at the end of a stroke (or hold **Shift**). |
+| Highlighter | H | Wide, transparent strokes, always drawn under the pen ink. Straight lines as with the pen. |
 | Select | S | Tap a stroke to select it, drag a box, or draw a loop (lasso) around strokes. Drag the selection to move it; pick a color or size to restyle it (− and + make each selected stroke one size thinner or thicker); Delete or Backspace removes it; Esc deselects. Copy, cut, paste and duplicate: see below. |
 | Laser pointer | L | A red trail that fades out. Never saved. |
 | Stroke eraser | E | Removes every stroke it touches, and images it touches when it erases no stroke. |
 | Partial eraser | Shift+E | Erases only the parts of strokes it touches. Images stay. |
 | Snapshot | C | Drag over an area to copy it as an image: the PDF page, the paper and the ink. Paste it with Ctrl/Cmd+V, on any page. See below. |
 
-**Colors:** black, white, red, blue, green, orange, yellow and purple. The pen and the
+**Colors:** black, red, blue, green, orange, yellow and purple. The pen and the
 highlighter each remember their own color.
+
+**Straight lines:** draw a roughly straight stroke and keep the pen (or finger, or mouse) still
+on its end for half a second: the stroke snaps to a straight line. Until you lift the pen, the
+end of the line still follows it, so you can adjust its length and angle. Only strokes that are
+nearly straight already and not very short snap, so a pause while writing leaves the
+handwriting alone. Holding **Shift** while drawing also makes a straight line.
 
 **Sizes:** the size control has **−** and **+** buttons (keys **[** and **]**) and between them a
 dot in the current size and color. It steps through nine sizes and stops at the thinnest and
@@ -279,7 +289,7 @@ Backups and kept unreadable files older than 90 days are deleted when Inkslide s
 
 **In the browser and the installed web app (PWA)** the backup works the same way, kept in the
 browser's storage for the site next to the notes. Instead of a menu, a **Revert to backup**
-button (a clock with an arrow) appears in the File group of the toolbar once the PDF has a
+item appears in the toolbar's **⋯** menu once the PDF has a
 backup; it asks the same question, and pressing it again undoes the revert. There is no switch
 to turn backups off. The backup goes when the PDF is removed from the recent files on the start
 screen (by you, or because newer PDFs pushed it out); its notes and a kept unreadable copy stay.
@@ -360,7 +370,7 @@ This is the same in the desktop app and in the browser.
 - PDFs larger than 256 MB are not mirrored; the audience window says so.
 
 **In the browser** (and the installed web app), press **F5** with a PDF open, or click the
-presenter button (a screen) at the end of the toolbar. The audience window opens as a pop-up:
+**Presenter mode** in the toolbar's **⋯** menu. The audience window opens as a pop-up:
 
 - If the browser blocks it, Inkslide says so. Allow pop-ups for the site (the browser shows
   how in its address bar) and press F5 again.

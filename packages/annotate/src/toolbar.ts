@@ -4,7 +4,8 @@
  * The bar is built from groups in GROUP_ORDER. Each group builder is
  * registered with registerGroup(id, builder) and returns { id, label, items }
  * where an item is { id, title, icon | swatch | dot | text, onClick, active(),
- * disabled(), hidden() }. The app registers its own builders for 'pages' (pages.ts
+ * disabled(), hidden() }. Items with `menu` go into the group's drop-down menu
+ * (a ⋯ button at the group's end) instead of onto the bar. The app registers its own builders for 'pages' (pages.ts
  * pagesGroup) and 'file'; otherwise the disabled placeholders below are used.
  */
 import type { NotesDoc } from './model';
@@ -52,6 +53,7 @@ export const ICONS: Record<string, string> = {
   plus: '<path d="M5 12h14M12 5v14" stroke-width="2.4"/>',
   copy: '<rect x="8" y="8" width="12" height="13" rx="1.5"/><path d="M16 8V4.5A1.5 1.5 0 0014.5 3h-9A1.5 1.5 0 004 4.5v11A1.5 1.5 0 005.5 17H8"/>',
   cut: '<circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.2 15.8L19 3M15.8 15.8L5 3"/>',
+  more: '<circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/>',
   paste: '<path d="M9 4H6.5A1.5 1.5 0 005 5.5v14A1.5 1.5 0 006.5 21h11a1.5 1.5 0 001.5-1.5v-14A1.5 1.5 0 0017.5 4H15"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M9 12h6M9 16h4"/>',
 };
 
@@ -85,6 +87,10 @@ export interface ToolbarItem {
   disabled?: () => boolean;
   /** Hide the button, keeping its place (a group whose buttons are all hidden is hidden too). */
   hidden?: () => boolean;
+  /** Put the button in the group's drop-down menu, named by `label`, instead of on the bar. */
+  menu?: boolean;
+  /** Text of a menu item, next to its icon. */
+  label?: string;
 }
 
 /** A group of toolbar items. */
@@ -332,6 +338,35 @@ function buildButton(item: ToolbarItem, extraClass?: string): HTMLElement {
   return btn;
 }
 
+/** Inner markup of an icon button: the icon, its caption, a menu item's label. */
+function buttonMarkup(item: ToolbarItem, name: string): string {
+  return icon(name) + (item.caption ? `<span class="ann-cap">${item.caption}</span>` : '') +
+    (item.menu && item.label ? `<span class="ann-menu-label">${item.label}</span>` : '');
+}
+
+/** A group's drop-down menu: the ⋯ button that opens it and the panel with its items. */
+interface Menu {
+  button: ToolbarItem;
+  panel: HTMLDivElement;
+  open: boolean;
+}
+
+/** Place an open menu's panel next to its button, on the page side of the docked bar, inside the window. */
+function placeMenu(panel: HTMLElement, btn: HTMLElement): void {
+  const r = btn.getBoundingClientRect(), w = panel.offsetWidth, h = panel.offsetHeight;
+  const vw = window.innerWidth, vh = window.innerHeight, gap = 6;
+  const clamp = (v: number, max: number): number => Math.max(gap, Math.min(v, max - gap));
+  let left: number, top: number;
+  switch (document.body.dataset.annDock) {
+    case 'bottom': left = r.right - w; top = r.top - h - gap; break;
+    case 'left': left = r.right + gap; top = r.top; break;
+    case 'right': left = r.left - w - gap; top = r.top; break;
+    default: left = r.right - w; top = r.bottom + gap;
+  }
+  panel.style.left = `${clamp(left, vw - w)}px`;
+  panel.style.top = `${clamp(top, vh - h)}px`;
+}
+
 /** A built toolbar; update() refreshes icons, states and labels. */
 export interface Toolbar {
   el: HTMLDivElement;
@@ -348,6 +383,14 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
   bar.setAttribute('aria-label', 'Lecture notes');
   const entries: { item: ToolbarItem; btn: HTMLElement }[] = [];
   const hiding = new Set<HTMLElement>(); // groups with buttons that hide
+  const menus: Menu[] = [];
+  const setMenu = (m: Menu, open: boolean): void => {
+    m.open = open;
+    m.panel.hidden = !open;
+    update();
+    if (open) placeMenu(m.panel, entries.find(e => e.item === m.button)!.btn);
+  };
+  const closeMenus = (): void => { for (const m of menus) if (m.open) setMenu(m, false); };
   // Previous/next page sit large at the two ends of the bar, easy to hit
   // on a tablet; every other button stays in its group.
   const edge = {} as Record<'start' | 'end', HTMLDivElement>;
@@ -367,16 +410,70 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
     if (def.placeholder) g.classList.add('ann-placeholder');
     g.setAttribute('role', 'group');
     g.setAttribute('aria-label', def.label);
+    let menu: Menu | null = null;
     for (const item of def.items) {
+      if (item.menu) {
+        if (!menu) menu = buildMenu(gid, def.label);
+        // Choosing an item closes the menu first (a dialog it opens must not sit under it).
+        const run = item.onClick;
+        const entry: ToolbarItem = { ...item, onClick: run && (() => { closeMenus(); run(); }) };
+        const btn = buildButton(entry);
+        btn.classList.add('ann-menu-item');
+        btn.setAttribute('role', 'menuitem');
+        menu.panel.appendChild(btn);
+        entries.push({ item: entry, btn });
+        continue;
+      }
       const btn = buildButton(item);
       (item.edge ? edge[item.edge] : g).appendChild(btn);
       entries.push({ item, btn });
       if (item.hidden && !item.edge) hiding.add(g);
     }
+    if (menu) {
+      const btn = buildButton(menu.button);
+      btn.setAttribute('aria-haspopup', 'menu');
+      g.appendChild(btn);
+      entries.push({ item: menu.button, btn });
+    }
     bar.appendChild(g);
   }
+  for (const m of menus) bar.appendChild(m.panel);
   bar.appendChild(edge.end);
   for (const el of Object.values(edge)) if (!el.childElementCount) el.remove();
+
+  /** The drop-down menu of group `gid`: a ⋯ button (added after the group's bar items) and its panel. */
+  function buildMenu(gid: string, label: string): Menu {
+    const panel = document.createElement('div');
+    panel.className = `ann-menu ann-menu-${gid}`;
+    panel.setAttribute('role', 'menu');
+    panel.setAttribute('aria-label', label);
+    panel.hidden = true;
+    const m: Menu = {
+      panel, open: false,
+      button: {
+        id: `${gid}-menu`, icon: 'more', title: `${label}: more`,
+        onClick: () => setMenu(m, !m.open), active: () => m.open,
+      },
+    };
+    menus.push(m);
+    return m;
+  }
+  // A press anywhere but in an open menu (or on its button) closes it, as does Escape.
+  const onOutside = (e: Event): void => {
+    const t = e.target as Node | null;
+    if (menus.some(m => m.open) && !menus.some(m => m.panel.contains(t) ||
+      entries.find(x => x.item === m.button)!.btn.contains(t))) closeMenus();
+  };
+  const onEscape = (e: KeyboardEvent): void => {
+    if (e.key !== 'Escape' || !menus.some(m => m.open)) return;
+    closeMenus();
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+  document.addEventListener('pointerdown', onOutside, true);
+  window.addEventListener('keydown', onEscape, true);
+  const onResize = (): void => closeMenus();
+  window.addEventListener('resize', onResize);
   // Keys on focused toolbar buttons must not reach the page navigation.
   bar.addEventListener('keydown', e => e.stopPropagation());
   parent.appendChild(bar);
@@ -408,14 +505,14 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
       if (item.icon) {
         const name = typeof item.icon === 'function' ? item.icon() : item.icon;
         if (btn.dataset.icon !== name) {
-          btn.innerHTML = icon(name) + (item.caption ? `<span class="ann-cap">${item.caption}</span>` : '');
+          btn.innerHTML = buttonMarkup(item, name);
           btn.dataset.icon = name;
         }
       }
       if (item.dot !== undefined) setDot(btn, item);
       const on = item.active ? !!item.active() : false;
       btn.classList.toggle('is-active', on);
-      if (item.active) btn.setAttribute('aria-pressed', String(on));
+      if (item.active) btn.setAttribute(btn.hasAttribute('aria-haspopup') ? 'aria-expanded' : 'aria-pressed', String(on));
       (btn as HTMLButtonElement).disabled = item.disabled ? !!item.disabled() : false;
       if (item.hidden) btn.hidden = !!item.hidden(); // keeps its place (toolbar.css): the bar does not reflow
     }
@@ -429,6 +526,9 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
     destroy() {
       destroyed = true;
       if (resize) resize.disconnect();
+      document.removeEventListener('pointerdown', onOutside, true);
+      window.removeEventListener('keydown', onEscape, true);
+      window.removeEventListener('resize', onResize);
       bar.remove();
     },
   };

@@ -5,7 +5,7 @@
  * apps/desktop). Browser: the real thing, a pop-up and a BroadcastChannel. */
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { FIXTURE, firePointers, openPdf, pageBox, penStroke } from './helpers';
+import { fileItem, FIXTURE, firePointers, openPdf, pageBox, penStroke } from './helpers';
 
 interface Stub {
   /** Messages sent to the audience, the PDF bytes as a plain array. */
@@ -242,7 +242,7 @@ test('browser: F5 opens the audience window, which mirrors the tab; reloads, clo
   await openPdf(page);
   await penStroke(page, [0.2, 0.3], [0.6, 0.3]);
   const present = page.locator('.ann-bar .ann-btn[data-id="present"]');
-  await expect(present).toBeVisible();
+  await expect(present).toHaveCount(1);
   await expect(present).not.toHaveClass(/is-active/);
 
   // F5 in a text field does nothing: no pop-up, and no reload that would lose the text.
@@ -293,7 +293,7 @@ test('browser: F5 opens the audience window, which mirrors the tab; reloads, clo
 
   // The toolbar button opens it again; closing the window ends presenter mode.
   const again = context.waitForEvent('page');
-  await present.click();
+  await (await fileItem(page, 'present')).click();
   const second = await again;
   await expect(audienceStrokes(second)).toHaveCount(2);
   await second.close();

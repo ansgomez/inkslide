@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
 import {
-  counter, expectCounter, firePointers, FIXTURE, openPdf, pageBox, penStroke, penStrokes, useFileInput, type PointerStep,
+  counter, expectCounter, fileItem, firePointers, FIXTURE, openPdf, pageBox, penStroke, penStrokes, useFileInput, type PointerStep,
 } from './helpers';
 
 test.beforeEach(async ({ page }) => {
@@ -61,6 +61,27 @@ test('draws the live stroke on the canvas, then moves it into the SVG', async ({
   });
   expect(live).toEqual({ inked: true, svgPaths: 0, pointerEvents: 'none' });
   await expect(penStrokes(page)).toHaveCount(1);
+});
+
+test('holding the pen still at the end of a stroke makes it a straight line', async ({ page }) => {
+  await openPdf(page);
+  const box = await pageBox(page);
+  const pen = { pointerType: 'pen', id: 7 } as const;
+  // A slightly wavy stroke across the page, in one task (no time to rest).
+  const wavy = (y: number): PointerStep[] => Array.from({ length: 21 }, (_, i) => ({
+    ...pen, type: 'pointermove' as const, buttons: 1,
+    x: box.x + box.width * (0.2 + 0.03 * i), y: box.y + box.height * (y + 0.01 * Math.sin(i)),
+  }));
+  const end = (steps: PointerStep[]): PointerStep => ({ ...steps[steps.length - 1], type: 'pointerup', buttons: 0 });
+  const first = wavy(0.3), second = wavy(0.6);
+  await firePointers(page, [{ ...first[0], type: 'pointerdown' }, ...first, end(first)]);
+  await firePointers(page, [{ ...second[0], type: 'pointerdown' }, ...second]);
+  await page.waitForTimeout(800); // resting on the end point
+  await firePointers(page, [end(second)]);
+  await expect(penStrokes(page)).toHaveCount(2);
+  const [kept, straight] = await penStrokes(page).evaluateAll(paths => paths.map(p => (p.getAttribute('d') || '').length));
+  // The straight line's outline is a few segments; the wavy one follows every point.
+  expect(straight).toBeLessThan(kept / 2);
 });
 
 test('draws with the pen, undo and redo', async ({ page }) => {
@@ -470,7 +491,7 @@ test('exports the PDF with the notes and a blank page', async ({ page }) => {
   await page.evaluate(() => { delete (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker; });
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page.locator('.ann-bar [data-id="pdf"]').click(),
+    fileItem(page, 'pdf').then(b => b.click()),
   ]);
   expect(download.suggestedFilename()).toBe('small-notes.pdf');
   const bytes = readFileSync((await download.path())!);

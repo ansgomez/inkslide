@@ -8,17 +8,16 @@
  * snapshot tool only hands the area to the host (ToolHost.snapshot).
  */
 import {
-  isLasso, pathLength, rectHitsSegment, rectPolygon, rectsInPolygon, splitByEraser, createSmoother, strokeHitsSegment,
+  distPointSegment, isLasso, pathLength, rectHitsSegment, rectPolygon, rectsInPolygon, splitByEraser, createSmoother, strokeHitsSegment,
   strokesInPolygon, type BBox, type Point, type RectLike, type Stroke, type StrokeTool, type XY,
 } from './geometry';
 import { createStroke, type NotesDoc, type PageImage } from './model';
 import * as render from './render';
 import type { Layer } from './render';
 
-/** The eight colors of the toolbar. */
+/** The seven colors of the toolbar. */
 export const COLORS = [
   { id: 'black', value: '#000000', label: 'Black' },
-  { id: 'white', value: '#ffffff', label: 'White' },
   { id: 'red', value: '#be1e3c', label: 'TU Braunschweig red' },
   { id: 'blue', value: '#1e64c8', label: 'Blue' },
   { id: 'green', value: '#2e8b3a', label: 'Green' },
@@ -146,7 +145,8 @@ export type Tools = Record<ToolId, Tool>;
 
 /** The render functions the tools use; injectable for tests. */
 export interface ToolRenderer {
-  liveStroke(layer: Layer, tool: StrokeTool): { update(stroke: Stroke): void; remove(): void };
+  /** `straight`: the stroke is drawn as a straight line (Shift, or held still: see HOLD_MS). */
+  liveStroke(layer: Layer, tool: StrokeTool): { update(stroke: Stroke, straight?: boolean): void; remove(): void };
   syncLayer(layer: Layer, strokes: readonly Stroke[]): void;
   /** Show exactly `images` (render.syncImages); renderers without it leave images alone. */
   syncImages?(layer: Layer, images: readonly PageImage[]): void;
@@ -185,9 +185,29 @@ function sizeOf(app: ToolHost, tool: SizedTool, surface: Surface): number {
 
 // ── Pen / highlighter ──────────────────────────────────────────
 
+/** Holding the pen still this long at the end of a stroke straightens it (if it is nearly straight). */
+export const HOLD_MS = 500;
+/** How far the pen may wander while held still, in slide units (times layer.unit). */
+export const HOLD_JITTER = 6;
+/** Shortest stroke that straightens, in slide units. */
+export const HOLD_MIN_LENGTH = 30;
+/** How far a stroke may bend and still straighten: its farthest point from the line, per length. */
+export const HOLD_MAX_BEND = 0.15;
+
+/** Whether the points are nearly on the line from the first to the last, which is at least `minLength` long. */
+export function nearlyStraight(pts: readonly Point[], minLength: number): boolean {
+  const a = pts[0], b = pts[pts.length - 1];
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (len < minLength) return false;
+  return pts.every(p => distPointSegment(p, a, b) <= HOLD_MAX_BEND * len);
+}
+
 function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
   let raw: Point[] | null = null, live: ReturnType<ToolRenderer['liveStroke']> | null = null;
   let frame = 0, straight = false, size = 0;
+  // Hold still: `held` once the stroke straightened (it stays straight to the end; the end
+  // point still follows the pen); `anchor` is where the pen came to rest, `unit` the page's.
+  let held = false, anchor: Point | null = null, holdTimer: ReturnType<typeof setTimeout> | null = null, unit = 1;
   // Smooths only the points added since the last frame; `drawn`: what the live stroke shows.
   let smoother = createSmoother(), drawn = { points: 0, straight: false };
 
@@ -201,11 +221,27 @@ function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
     frame = 0;
     if (!raw || (raw.length === drawn.points && straight === drawn.straight)) return;
     drawn = { points: raw.length, straight };
-    live!.update({ id: 'live', ...current() });
+    live!.update({ id: 'live', ...current() }, straight);
   };
   const stopFrame = (): void => {
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
+  };
+  const stopHold = (): void => {
+    if (holdTimer) clearTimeout(holdTimer);
+    holdTimer = null;
+  };
+  // Restart the hold timer whenever the pen moves away from where it rested.
+  const watchHold = (pt: Point): void => {
+    if (held || (anchor && Math.hypot(pt[0] - anchor[0], pt[1] - anchor[1]) <= HOLD_JITTER * unit)) return;
+    anchor = pt;
+    stopHold();
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      if (!raw || !nearlyStraight(raw, HOLD_MIN_LENGTH * unit)) return;
+      held = straight = true;
+      draw();
+    }, HOLD_MS);
   };
 
   return {
@@ -215,22 +251,29 @@ function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
       smoother = createSmoother();
       drawn = { points: 0, straight: false };
       size = sizeOf(app, id, surface);
+      const u = surface.layer.unit;
+      unit = Number.isFinite(u) && u > 0 ? u : 1;
+      held = false;
+      anchor = null;
       straight = !!(e && e.shiftKey);
       live = R.liveStroke(surface.layer, id);
       draw();
+      watchHold(pt);
     },
     move(_surface, pt, e) {
       if (!raw) return;
       raw.push(pt);
-      straight = !!(e && e.shiftKey);
+      straight = held || !!(e && e.shiftKey);
+      watchHold(pt);
       if (!frame) frame = requestAnimationFrame(draw);
     },
     up(surface, pt, e) {
       if (!raw) return;
       stopFrame();
+      stopHold();
       // Pens report pressure 0 on release: keep the last real pressure.
       if (pt) raw.push([pt[0], pt[1], raw[raw.length - 1][2]]);
-      if (e) straight = !!e.shiftKey;
+      if (e) straight = held || !!e.shiftKey;
       const data = current();
       live!.remove();
       raw = live = null;
@@ -246,6 +289,7 @@ function inkTool(app: ToolHost, id: StrokeTool, R: ToolRenderer): Tool {
     },
     cancel() {
       stopFrame();
+      stopHold();
       if (live) live.remove();
       raw = live = null;
     },
