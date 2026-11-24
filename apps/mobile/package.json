@@ -17,7 +17,8 @@
     "tauri": "tauri",
     "check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "test": "node --test test/*.test.mjs",
-    "smoke": "node test/smoke.mjs"
+    "smoke": "node test/smoke.mjs",
+    "ios-refresh": "node scripts/ios-refresh.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.4"

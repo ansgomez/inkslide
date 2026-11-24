@@ -144,8 +144,11 @@ All commands below run in `apps/mobile` (or prefix them with `pnpm --filter @ink
 
 ## iPad (on a Mac)
 
-1. Install Xcode from the App Store, open it once (accept the license, install the iOS
-   platform), then `xcode-select --install` and `brew install cocoapods`.
+1. Install Xcode from the App Store, open it once (accept the license), point the command
+   line at it (`sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`), then
+   `brew install cocoapods`. Since Xcode 26 the iOS platform is a separate download, needed for
+   device builds too (`tauri ios dev` stops with "iOS platform not installed" without it):
+   `xcodebuild -downloadPlatform iOS` (about 8 GB) or *Xcode → Settings → Components*.
 2. Rust targets (`aarch64-apple-ios-sim` is the simulator on Apple silicon):
 
    ```sh
@@ -173,11 +176,27 @@ All commands below run in `apps/mobile` (or prefix them with `pnpm --filter @ink
    pnpm tauri ios dev --open     # or run from Xcode
    ```
 
+   The `ios dev` build loads the page from the Mac's dev server, so it works only while that
+   runs; install a standalone build (step 6) to use the iPad on its own.
 6. Build: `pnpm tauri ios build` (an IPA in `src-tauri/gen/apple/build/`; `--export-method
    debugging` for your own devices, `app-store-connect` for TestFlight / the App Store).
+   Install it with `xcrun devicectl device install app --device <id> <unpacked .app>`, or
+   drop the IPA on the iPad in *Xcode → Window → Devices and Simulators*. Installing over the
+   app keeps its data (notes); deleting the app deletes them.
+7. Keep it signed (free Apple ID): `pnpm ios-refresh install` adds a launchd agent
+   (`scripts/ios-refresh.mjs`, `~/Library/LaunchAgents/io.github.ansgomez.inkslide.ios-refresh.plist`)
+   that checks every 4 hours and at login. With more than 2 days of signature left it does
+   nothing. Otherwise, when the iPad is reachable (USB, or Wi-Fi with *Connect via network* on
+   in Xcode's device window) and no `tauri ios dev` runs, it builds this working tree with
+   `tauri ios build --export-method debugging` (which renews the profile through
+   `-allowProvisioningUpdates`), installs it and records the new expiry. It runs at background
+   priority with `CARGO_BUILD_JOBS=2` and sends a notification when a build fails or when the
+   app expires within a day while the iPad is out of reach. `pnpm ios-refresh status` shows
+   the expiry, `run --force` rebuilds now, `uninstall` removes the agent; the log is
+   `~/Library/Logs/inkslide-ios-refresh.log`. An install made by hand (`ios dev`) is not
+   recorded, so the agent may rebuild earlier than needed, never later.
 
-The `ios` subcommands exist only in the CLI on macOS, so their flags above are from the Tauri
-2 documentation and were not run here.
+Steps 1-6 ran on macOS 26 with Xcode 26.3 and an iPad Air (M4) on a free Apple ID.
 
 ## Checks on this side
 
@@ -202,8 +221,8 @@ WebKitGTK, IPC calls made before the page's `load` event can hang; the app makes
 
 ## Not tested yet (needs the devices)
 
-Nothing here has run on Android or iOS: the SDKs are not installed on the development
-machine. To check on the devices:
+The iPad build installs and starts on an iPad Air (M4); nothing has run on Android yet. To
+check on the devices:
 
 - `android init` / `ios init` and the builds with these plugins (Gradle, CocoaPods / Swift
   packages), the icons, the minimum versions (iOS 17, Android API 26).

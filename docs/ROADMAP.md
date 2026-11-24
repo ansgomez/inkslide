@@ -17,7 +17,7 @@ desktop app uses Electron.
 | Desktop on Linux (AppImage) | Done |
 | Web app and PWA (installable, offline) | Done |
 | Desktop on Windows and macOS | Built by the release workflow (v0.1.0), not yet tested there |
-| iPad and Android (Tauri 2) | Builds, not yet run on a device |
+| iPad and Android (Tauri 2) | iPad: runs on a device (Tauri, free Apple ID), not yet tested in use; Android: builds, not yet run on a device |
 
 ## Open work
 
@@ -36,6 +36,16 @@ desktop app uses Electron.
   (OPFS); the iPad and Android apps still keep none. Revisit after the device tests (the
   backup could sit next to the notes in the app data directory, with a toolbar button as in
   the browser).
+- **Notes in Dropbox on the iPad:** let the iPad app keep sidecar notes
+  (`lecture.pdf.notes.json`) next to PDFs in a cloud folder (Dropbox through the Files app),
+  so they sync with the desktop's sidecars. Opening a single file only grants access to that
+  file, so the user grants a whole folder once (a folder picker in a small Swift part, as the
+  dialog plugin has no folder access on iOS), kept as a security-scoped bookmark. New commands
+  read and write only `*.pdf.notes.json` inside the granted folder, matching the shell's
+  narrow file access; app storage stays the fallback. To settle first: whether Dropbox's file
+  provider grants folder access and writes in place, offline folders, and what happens with
+  Dropbox's conflicted copies when the iPad and the desktop edit the same notes. A "save notes
+  to Files" button would be a smaller first step.
 - **Presenter mode:** try it with a real projector on Linux, Windows and macOS. On Wayland the
   compositor places windows itself, so the audience window opens as a window for the user to
   drag to the projector. It then goes full screen by itself, but only when the two displays
