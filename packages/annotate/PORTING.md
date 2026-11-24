@@ -51,6 +51,12 @@ originals the parity test needs: `test/legacy.test.ts` runs the same inputs thro
 - **Laser** always uses the classic outline, also when the pen uses perfect-freehand.
 - The two-finger swipe calls `app.pages.step()`, as before; `pages` is now the viewer's
   `PagesController`.
+- **Toolbar layout:** no dock button in the `mode` group; `dockItems()` returns one menu item
+  per edge (a `row` of icons in a group's ⋯ menu, a new `ToolbarItem` field), and the app puts
+  them in its file menu. **Clear page** moved from `history` to its own `clear` group before
+  `file`. Buttons are 32 px wide (36 px tall), groups have no gap between buttons, the bar 3 px
+  between groups, the page-turn buttons are 48 px wide and the page counter is at least 7ch:
+  the bar fits on one row of a 1366 px wide iPad.
 - No file group: `io.js`'s Save / Load / Export buttons are built by the app (`apps/web`
   registers its own `file` group), so only the placeholder is in `toolbar.ts`.
 

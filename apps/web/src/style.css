@@ -65,6 +65,41 @@ html, body {
 .ink-live.is-hl { opacity: 0.35; mix-blend-mode: multiply; }
 .ink-page > svg.ann-page { z-index: 1; }
 
+/* Page scrollbar (scrollbar.ts): only the handle takes input, a 24 px wide
+   hit area around a slim bar at the right edge. */
+.ink-scroll {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  right: 0;
+  width: 24px;
+  z-index: 3;
+  pointer-events: none;
+}
+.ink-scroll-thumb {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 24px;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+}
+.ink-scroll-thumb::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 3px;
+  width: 6px;
+  border-radius: 3px;
+  background: rgba(60, 60, 67, 0.55);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
+  transition: width 0.12s, background 0.12s;
+}
+.ink-scroll.is-dragging .ink-scroll-thumb { cursor: grabbing; }
+.ink-scroll.is-dragging .ink-scroll-thumb::after { width: 10px; border-radius: 5px; background: rgba(60, 60, 67, 0.8); }
+
 /* ── Empty state ──────────────────────────────────────────────── */
 
 .ink-empty {

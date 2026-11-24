@@ -5,8 +5,9 @@
  * registered with registerGroup(id, builder) and returns { id, label, items }
  * where an item is { id, title, icon | swatch | dot | text, onClick, active(),
  * disabled(), hidden() }. Items with `menu` go into the group's drop-down menu
- * (a ⋯ button at the group's end) instead of onto the bar. The app registers its own builders for 'pages' (pages.ts
- * pagesGroup) and 'file'; otherwise the disabled placeholders below are used.
+ * (a ⋯ button at the group's end) instead of onto the bar; menu items with the same `row` sit side by side
+ * in one row of the menu (the toolbar's dock: dockItems()). The app registers its own builders for 'pages'
+ * (pages.ts pagesGroup) and 'file'; otherwise the disabled placeholders below are used.
  */
 import type { NotesDoc } from './model';
 import type { Stroke } from './geometry';
@@ -91,6 +92,8 @@ export interface ToolbarItem {
   menu?: boolean;
   /** Text of a menu item, next to its icon. */
   label?: string;
+  /** Menu items with the same row sit side by side (icons only) in one menu row named by this text. */
+  row?: string;
 }
 
 /** A group of toolbar items. */
@@ -143,7 +146,7 @@ export type GroupBuilder<A = ToolbarHost> = (app: A) => ToolbarGroup;
 // ── Groups ─────────────────────────────────────────────────────
 
 /** Toolbar groups, in bar order. */
-export const GROUP_ORDER = ['mode', 'tools', 'colors', 'sizes', 'history', 'edit', 'pages', 'file'] as const;
+export const GROUP_ORDER = ['mode', 'tools', 'colors', 'sizes', 'history', 'edit', 'pages', 'clear', 'file'] as const;
 const groups: Record<string, GroupBuilder<any>> = {};
 
 /** Register (or replace) the builder of a toolbar group. */
@@ -171,7 +174,17 @@ export function setDock(dock: Dock): void {
   try { localStorage.setItem(DOCK_KEY, dock); } catch (_) { /* convenience only */ }
 }
 
-const nextDock = (): Dock => DOCKS[(DOCKS.indexOf(document.body.dataset.annDock as Dock) + 1) % DOCKS.length];
+/**
+ * Menu items that dock the toolbar to each edge, as one row ("Toolbar") of a group's ⋯ menu;
+ * the app adds them to its file menu. The current edge is shown active.
+ */
+export function dockItems(app: Pick<ToolbarHost, 'refresh'>): ToolbarItem[] {
+  return DOCKS.map(dock => ({
+    id: `dock-${dock}`, icon: `dock${cap(dock)}`, title: `Toolbar at the ${dock}`, menu: true, row: 'Toolbar',
+    onClick: () => { setDock(dock); app.refresh(); },
+    active: () => document.body.dataset.annDock === dock,
+  }));
+}
 
 registerGroup('mode', app => ({
   id: 'mode', label: 'Annotate', items: [{
@@ -179,10 +192,6 @@ registerGroup('mode', app => ({
     icon: () => (app.enabled ? 'close' : 'annotate'),
     onClick: () => app.toggle(),
     active: () => app.enabled,
-  }, {
-    id: 'dock', title: () => `Move toolbar (now ${document.body.dataset.annDock}; next ${nextDock()})`,
-    icon: () => `dock${cap(document.body.dataset.annDock || 'top')}`,
-    onClick: () => { setDock(nextDock()); app.refresh(); },
   },
   // Only shown while annotate mode is off (the page counter opens it when on).
   ...(app.overview ? [{
@@ -231,6 +240,13 @@ registerGroup('history', app => ({
   items: [
     { id: 'undo', title: 'Undo (Ctrl/Cmd+Z)', icon: 'undo', onClick: () => app.undo(), disabled: () => !app.doc.history.canUndo() },
     { id: 'redo', title: 'Redo (Ctrl/Cmd+Shift+Z)', icon: 'redo', onClick: () => app.redo(), disabled: () => !app.doc.history.canRedo() },
+  ],
+}));
+
+// Clear page sits apart from undo/redo, near the bar's end, so it is not hit by mistake.
+registerGroup('clear', app => ({
+  id: 'clear', label: 'Clear',
+  items: [
     { id: 'clear', title: 'Clear page (undoable)', icon: 'clear', onClick: () => app.clearPage(), disabled: () => !app.activeStrokes().length && !(app.activeImages && app.activeImages().length) },
   ],
 }));
@@ -420,7 +436,7 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
         const btn = buildButton(entry);
         btn.classList.add('ann-menu-item');
         btn.setAttribute('role', 'menuitem');
-        menu.panel.appendChild(btn);
+        (item.row ? menuRow(menu, item.row) : menu.panel).appendChild(btn);
         entries.push({ item: entry, btn });
         continue;
       }
@@ -440,6 +456,21 @@ export function createToolbar<A extends ToolbarHost>(app: A, parent: HTMLElement
   for (const m of menus) bar.appendChild(m.panel);
   bar.appendChild(edge.end);
   for (const el of Object.values(edge)) if (!el.childElementCount) el.remove();
+
+  /** The row of `m` named `label` (created at the panel's end the first time). */
+  function menuRow(m: Menu, label: string): HTMLElement {
+    const found = [...m.panel.querySelectorAll<HTMLElement>('.ann-menu-row')].find(r => r.dataset.row === label);
+    if (found) return found.querySelector<HTMLElement>('.ann-menu-row-items')!;
+    const row = document.createElement('div');
+    row.className = 'ann-menu-row';
+    row.dataset.row = label;
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', label);
+    row.innerHTML = `<span class="ann-menu-row-label"></span><span class="ann-menu-row-items"></span>`;
+    row.firstElementChild!.textContent = label;
+    m.panel.appendChild(row);
+    return row.querySelector<HTMLElement>('.ann-menu-row-items')!;
+  }
 
   /** The drop-down menu of group `gid`: a ⋯ button (added after the group's bar items) and its panel. */
   function buildMenu(gid: string, label: string): Menu {

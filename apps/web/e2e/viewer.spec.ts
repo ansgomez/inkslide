@@ -224,14 +224,15 @@ test('− and + next to the counter zoom around the middle; Ctrl+= and Ctrl+− 
   await expect(page.locator('.ann-bar [data-id="fit-width"]')).toHaveClass(/is-active/);
   expect(await transform()).toBe('');
   await expect(zin).toBeEnabled();
-  // A page turn starts at the fit; zooming to the same step as before still updates the bar.
+  // A page turn keeps the zoom (the same part of each slide stays in view), and back again.
   await zin.click();
   await page.keyboard.press('ArrowRight');
-  await expect(out).toBeDisabled();
-  await zin.click();
+  await expectCounter(page, '2 / 3');
   expect(await transform()).toContain('scale(1.25)');
   await expect(out).toBeEnabled();
   await expect(out).toHaveAttribute('title', /now 125% of fit width/);
+  await page.keyboard.press('ArrowLeft');
+  expect(await transform()).toContain('scale(1.25)');
   // With a toolbar button focused the keys still zoom the page (capture phase).
   await zin.focus();
   await page.keyboard.press('Control+Equal');
@@ -241,6 +242,38 @@ test('− and + next to the counter zoom around the middle; Ctrl+= and Ctrl+− 
   await expect(page.locator('#ann-ov')).toBeVisible();
   await page.keyboard.press('Control+Equal');
   expect(await transform()).toContain('scale(1.5)');
+});
+
+test('the scrollbar shows only when the page scrolls; dragging its handle scrolls the page', async ({ page }) => {
+  await openPdf(page);
+  const bar = page.locator('.ink-scroll'), thumb = page.locator('.ink-scroll-thumb');
+  const ty = () => page.locator('.ink-page').evaluate(el => {
+    const m = /translate\([^,]+,\s*(-?[\d.]+)px\)/.exec((el as HTMLElement).style.transform);
+    return m ? Number(m[1]) : 0;
+  });
+  await expect(bar).toBeHidden(); // fit page: nothing to scroll
+  await page.locator('.ann-bar [data-id="zoom-in"]').click();
+  await page.locator('.ann-bar [data-id="zoom-in"]').click();
+  await expect(bar).toBeVisible(); // zoomed in: the page is taller than the stage
+  const b = (await thumb.boundingBox())!;
+  const x = b.x + b.width / 2, y = b.y + b.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y + 60, { steps: 4 });
+  await page.mouse.up();
+  const after = await ty();
+  expect(after).toBeLessThan(0);
+  expect((await thumb.boundingBox())!.y).toBeGreaterThan(b.y + 30);
+  // Back up past the top: clamped at the page's top.
+  const b2 = (await thumb.boundingBox())!;
+  await page.mouse.move(b2.x + b2.width / 2, b2.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(b2.x + b2.width / 2, b2.y - 2000, { steps: 4 });
+  await page.mouse.up();
+  expect(await ty()).toBe(0);
+  await page.keyboard.press('Control+Minus');
+  await page.keyboard.press('Control+Minus');
+  await expect(bar).toBeHidden();
 });
 
 test('a file that is not a PDF shows an error; no PDF.js worker stays behind', async ({ page }) => {
@@ -452,11 +485,17 @@ test('annotate mode off: the bar collapses, keys still turn pages', async ({ pag
   await expectCounter(page, '2 / 3');
   await page.keyboard.press('a');
   await expect(page.locator('body')).toHaveClass(/ann-on/);
-  // Dock cycles through the four edges.
+  // The ⋯ menu's Toolbar row docks the bar to each edge; the current one is shown pressed.
   for (const dock of ['right', 'bottom', 'left', 'top']) {
-    await page.locator('.ann-bar [data-id="dock"]').click();
+    const item = await fileItem(page, `dock-${dock}`);
+    await item.click();
     await expect(page.locator('body')).toHaveAttribute('data-ann-dock', dock);
+    await expect(page.locator('.ann-menu-file')).toBeHidden(); // choosing closes the menu
+    await expect(item).toHaveAttribute('aria-pressed', 'true');
   }
+  await page.reload();
+  await openPdf(page);
+  await expect(page.locator('body')).toHaveAttribute('data-ann-dock', 'top'); // remembered
 });
 
 // A large real-world PDF of your own; the test is skipped without one.

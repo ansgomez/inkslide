@@ -129,8 +129,12 @@ describe('annotator, toolbar and keys', () => {
     expect(groups).toEqual([
       'ann-group ann-group-mode', 'ann-group ann-group-tools', 'ann-group ann-group-colors',
       'ann-group ann-group-sizes', 'ann-group ann-group-history', 'ann-group ann-group-edit',
-      'ann-group ann-group-pages ann-placeholder', 'ann-group ann-group-file ann-placeholder',
+      'ann-group ann-group-pages ann-placeholder', 'ann-group ann-group-clear', 'ann-group ann-group-file ann-placeholder',
     ]);
+    // Clear page sits apart from undo/redo; the dock is no bar button (dockItems puts it in a menu).
+    expect(bar.querySelector('.ann-group-history [data-id="clear"]')).toBeNull();
+    expect(bar.querySelector('.ann-group-clear [data-id="clear"]')).not.toBeNull();
+    expect(bar.querySelector('[data-id^="dock"]')).toBeNull();
     expect(bar.querySelectorAll('.ann-swatch').length).toBe(7);
     expect(bar.querySelector('[data-id="pen"]')!.classList.contains('is-active')).toBe(true);
     expect((bar.querySelector('[data-id="undo"]') as HTMLButtonElement).disabled).toBe(true);

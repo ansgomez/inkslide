@@ -24,7 +24,7 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 3px;
   box-sizing: border-box;
   padding: 4px 6px;
   background: var(--ann-bar-bg);
@@ -45,8 +45,7 @@ body:not(.ann-on) .ann-bar {
   transition: opacity 0.2s;
 }
 body:not(.ann-on) .ann-bar:hover { opacity: 1; }
-body:not(.ann-on) .ann-group:not(.ann-group-mode),
-body:not(.ann-on) .ann-btn[data-id="dock"] { display: none; }
+body:not(.ann-on) .ann-group:not(.ann-group-mode) { display: none; }
 body:not(.ann-on) .ann-group { background: none; padding: 0; }
 /* The overview button is the way in while annotate mode is off; when on, the page counter opens it. */
 body.ann-on .ann-btn[data-id="overview"] { display: none; }
@@ -87,7 +86,7 @@ body.ann-on[data-ann-dock="right"] .ann-group { width: 100%; flex-wrap: wrap; ju
 
 /* Previous/next page: large, at the two ends of the bar (top/bottom when
    docked left or right), so they are easy to hit on a tablet. */
-.ann-edge .ann-btn { width: 56px; height: 48px; }
+.ann-edge .ann-btn { width: 48px; height: 48px; }
 .ann-edge .ann-btn svg { width: 34px; height: 34px; stroke-width: 2.5; }
 .ann-edge-start { margin-right: auto; }
 .ann-edge-end { margin-left: auto; }
@@ -102,7 +101,7 @@ body.ann-on[data-ann-dock="right"] .ann-edge-end { margin-top: auto; }
 .ann-group {
   display: flex;
   align-items: center;
-  gap: 1px;
+  gap: 0;
   padding: 2px;
   border-radius: 10px;
   background: var(--ann-group-bg);
@@ -117,9 +116,10 @@ body.ann-on[data-ann-dock="right"] .ann-edge-end { margin-top: auto; }
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 36px;
+  /* Narrower than tall: a tight bar (room on one row on a tablet), still a full-height target. */
+  width: 32px;
   height: 36px;
-  min-width: 36px;
+  min-width: 32px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -167,7 +167,7 @@ body.ann-on[data-ann-dock="right"] .ann-edge-end { margin-top: auto; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
+  width: 32px;
   height: 36px;
 }
 /* Docked left or right: the preview gets its own row, − and + share the next one. */
@@ -175,7 +175,8 @@ body.ann-on[data-ann-dock="left"] .ann-preview,
 body.ann-on[data-ann-dock="right"] .ann-preview { order: -1; width: 100%; }
 
 .ann-label {
-  min-width: 84px;
+  /* Room for "88 / 88" (the digits are tabular), so turning pages does not shift the bar. */
+  min-width: 7ch;
   padding: 0 4px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -184,7 +185,7 @@ body.ann-on[data-ann-dock="right"] .ann-preview { order: -1; width: 100%; }
   opacity: 0.9;
 }
 /* The page counter is a button that opens the slide overview. */
-.ann-btn.ann-label { width: auto; height: 36px; padding: 0 4px; font: inherit; font-size: 12px; }
+.ann-btn.ann-label { width: auto; height: 36px; padding: 0 6px; font: inherit; font-size: 12px; }
 body[data-ann-dock="left"] .ann-label,
 body[data-ann-dock="right"] .ann-label { min-width: 0; width: 100%; padding: 4px 0; white-space: normal; }
 
@@ -210,6 +211,18 @@ body[data-ann-dock="right"] .ann-label { min-width: 0; width: 100%; padding: 4px
   font: inherit;
   white-space: nowrap;
 }
+/* A row of icon items (the toolbar's dock): its name, then the icons side by side. */
+.ann-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 3px;
+  padding: 4px 0 0 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+.ann-menu-row-label { flex: 1; opacity: 0.8; }
+.ann-menu-row-items { display: flex; gap: 1px; }
+.ann-menu .ann-menu-row .ann-btn { width: 36px; padding: 0; justify-content: center; }
 /* In the menu a hidden item leaves no gap (on the bar it keeps its place). */
 .ann-menu .ann-btn[hidden] { display: none; }
 .ann-menu-label { pointer-events: none; }

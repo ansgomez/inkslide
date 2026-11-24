@@ -10,7 +10,9 @@
  * Fit modes (W, toolbar): "page" shows the whole page; "width" fills the
  * stage width and scrolls a taller page vertically. The − and + next to the
  * page counter (Ctrl/Cmd+= and Ctrl/Cmd+−) zoom by ZOOM_STEPS around the
- * middle of the view. The scroll position is
+ * middle of the view. A page turn keeps the zoom and the horizontal pan (the
+ * same part of every slide stays in view); fit width starts the new page at
+ * its top. Opening a PDF or changing the fit mode starts at the fit. The scroll position is
  * the view's ty at zoom 1, so pinch zoom, pan and scroll are one transform
  * (clampPan keeps the page over the visible part, see fit.ts). Render scale,
  * bitmap cache and prefetch follow the fit of the current mode.
@@ -34,7 +36,7 @@ import { deckFromPdf, loadNotesText, serializeNotes, sha256Hex } from '@inkslide
 import { PAPERS, pagesGroup, type PagesController, type PagesHost } from '@inkslide/annotate/pages';
 import * as render from '@inkslide/annotate/render';
 import type { ToolRenderer } from '@inkslide/annotate/tools';
-import { ICONS, isTyping, registerGroup, type ToolbarHost, type ToolbarItem } from '@inkslide/annotate/toolbar';
+import { dockItems, ICONS, isTyping, registerGroup, type ToolbarHost, type ToolbarItem } from '@inkslide/annotate/toolbar';
 import { banner } from './banner';
 import { pageCounter, pdfPageNumber, sourceStep } from './counter';
 import { storedItem, storeItem } from './dom';
@@ -52,6 +54,7 @@ import type { AppAdapter } from './platform';
 import type { ViewerMirror } from './presenter';
 import type { PresenterSwitch } from './presenter-web';
 import { printPageImages } from './print';
+import { createScrollbar } from './scrollbar';
 import { captureArea, importImage, snapshotScale } from './snapshot';
 
 /** Gap around the fitted page, CSS px. */
@@ -345,6 +348,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
   function applyView(): void {
     pageEl.style.transform = view.zoom === 1 && !view.tx && !view.ty ? ''
       : `translate(${view.tx}px, ${view.ty}px) scale(${view.zoom})`;
+    if (fit) scrollbar.update(view.ty, panLimits(fit, view.zoom, vis)[1], vis.height, fit.height * view.zoom);
   }
 
   /** Part of the page box the stage shows (pan and scroll limits); set by layout(), not read per gesture event. */
@@ -389,10 +393,19 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     }
   }
 
-  /** Back to the fit, unzoomed (page turn, W); the caller refreshes the toolbar. */
+  /** Back to the fit, unzoomed (a PDF opened, W); the caller refreshes the toolbar. */
   function resetView(): void {
     view = { zoom: 1, tx: 0, ty: 0 };
     barZoom = 1;
+    pageEl.classList.remove('is-moving'); // a two-finger swipe turned the page mid-gesture
+  }
+
+  /**
+   * Page turn: keep the zoom and pan, so the same part of each slide stays in view (layout()
+   * clamps it to the new page); fit width starts the new page at its top.
+   */
+  function keepView(): void {
+    if (fitMode === 'width') view = { ...view, ty: 0 };
     pageEl.classList.remove('is-moving'); // a two-finger swipe turned the page mid-gesture
   }
 
@@ -464,6 +477,12 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     resizeTimer = setTimeout(() => { resizeTimer = null; paint(); prefetch(); }, 120);
   }).observe(stage);
 
+  const scrollbar = createScrollbar(stage, {
+    scroll: () => ({ ty: view.ty, minTy: fit ? panLimits(fit, view.zoom, vis)[1] : 0 }),
+    scrollTo: (ty, done) => setView(view.zoom, view.tx, ty, done),
+    drawing: () => !!s && (s.app.input.busy || s.overview.isOpen()),
+  });
+
   attachGestures(stage, {
     // Only a finger's stroke: a pen stroke must not be dropped by a palm (penSeen may
     // also have turned true while the finger was drawing, by a hovering pen).
@@ -513,7 +532,10 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
     if (!surface) return;
     const turned = prev !== surface;
     s.current = pageId;
-    if (turned) resetView();
+    if (turned) {
+      if (prev) keepView();
+      else resetView(); // the first page of a PDF
+    }
     layout();
     if (prev && turned) prev.svg.remove();
     if (!surface.svg.isConnected) pageEl.insertBefore(surface.svg, liveCanvas);
@@ -907,6 +929,7 @@ export function createViewer(els: ViewerElements, adapter: AppAdapter, mirror: V
         title: () => (presenterMode.on ? 'End presenter mode (F5): close the audience window'
           : 'Presenter mode (F5): show the page in a second window, e.g. on a projector'),
       }] : []),
+      ...dockItems(app), // the edge the toolbar sits on, one row of four
     ],
   }));
 

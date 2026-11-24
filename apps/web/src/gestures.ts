@@ -18,6 +18,8 @@
  *     pinch or pan running when the pen comes is ended. The pen's up is
  *     also seen outside the stage (lifted over the toolbar), and a window
  *     blur ends it, so touch is not ignored for good.
+ *   - A touch on the page scrollbar (scrollbar.ts) is left to it, after
+ *     the pen check above (a palm never drags it).
  *   - Ctrl + wheel (also a touchpad pinch in Chromium) zooms at the pointer;
  *     a plain wheel (touchpad two-finger scroll) pans or scrolls the page;
  *     neither while the pen is down or a stroke is being drawn.
@@ -115,6 +117,8 @@ export function attachGestures(stage: HTMLElement, host: GestureHost): () => voi
       e.stopPropagation();
       return;
     }
+    // The scrollbar's own drag (scrollbar.ts): neither a stroke nor half of a pinch.
+    if ((e.target as Element | null)?.closest?.('.ink-scroll')) return;
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (touches.size === 2) {
       host.discardStroke();

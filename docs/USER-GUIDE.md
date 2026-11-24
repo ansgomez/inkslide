@@ -44,8 +44,9 @@ A PDF opens in annotate mode, ready to write on. **A** (or the first toolbar but
 between annotate mode and plain viewing. In plain viewing the bar collapses, and the page keys,
 swipes and the overview still work.
 
-The toolbar can sit on any edge of the window: the dock button next to the mode button moves
-it to the next edge. The choice is remembered.
+The toolbar can sit on any edge of the window: the **Toolbar** row at the bottom of the **⋯**
+menu has one button per edge (top, right, bottom, left), the current one highlighted. The
+choice is remembered.
 
 At the end of the toolbar, next to **Save**, the **⋯** button opens a menu with the rest of the
 file actions: Open PDF, Import notes, Export PDF, Print, Presenter mode (in the browser) and
@@ -101,8 +102,8 @@ else was copied after the strokes, Ctrl/Cmd+V pastes nothing. In the desktop app
 copied strokes stay within the app window.
 
 **Undo** (Ctrl/Cmd+Z) and **redo** (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y) work per finished stroke,
-erase, move or page change. **Clear page** (trash button) removes all ink and images on the
-page and can be undone.
+erase, move or page change. **Clear page** (trash button, near the end of the bar next to
+**Save**, away from undo and redo) removes all ink and images on the page and can be undone.
 
 ## Snapshots
 
@@ -176,7 +177,9 @@ toolbar turn pages too.
 **W** (or the fit-width button next to the page buttons) switches between showing the whole
 page and filling the window width. Fit width suits a portrait page (A4) on a landscape screen:
 the page is larger and scrolls up and down. Scroll with the wheel, the touchpad or two
-fingers on the screen. **PgDn** and **Space** scroll about a screen and turn to the next page at the bottom; **PgUp** and
+fingers on the screen, or drag the slim handle at the right edge with one finger (it shows
+whenever the page is taller than the window, also when zoomed in; a palm while the pen
+writes does not move it). **PgDn** and **Space** scroll about a screen and turn to the next page at the bottom; **PgUp** and
 **Shift+Space** scroll back and, at the top, go to the bottom of the previous page. The arrow
 keys still turn pages; a new page starts at its top. Pinch zoom works on top. The mode is
 remembered.
@@ -190,8 +193,9 @@ The **−** and **+** on both sides of the page counter (or **Ctrl/Cmd+=** and *
 zoom out and in around the middle of the view, in steps from the fitted page (whole page or
 width) through 125%, 150%, 200%, 300% and 400% to 600% of it. − is greyed out at the fit, +
 at 600%. Their tooltips show the zoom ("now 150% of fit page"). Pinch and Ctrl + wheel zoom
-in between; the buttons then go on to the next step. A page turn and **W** start the page at
-the fit again.
+in between; the buttons then go on to the next step. A page turn keeps the zoom and the
+sideways position, so the same part of each slide stays in view (in fit width the new page
+starts at its top); **W** and opening a PDF start at the fit again.
 
 ## Blank pages
 
